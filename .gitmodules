@@ -1,0 +1,4 @@
+[submodule "3rdparty/MinerU"]
+	path = 3rdparty/MinerU
+	url = https://github.com/opendatalab/MinerU.git
+	branch = master
