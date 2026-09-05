@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Final, Literal, Self
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -119,6 +119,9 @@ class MinerUArchiveMember(BaseModel):
     sha256: Sha256
     size: int = Field(ge=0)
     image: ImageMetadata | None = None
+
+    def asset_id(self, parse_run_id: UUID) -> UUID:
+        return uuid5(parse_run_id, self.path)
 
 
 class MinerUArchiveManifest(BaseModel):

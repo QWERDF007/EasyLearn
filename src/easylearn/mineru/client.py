@@ -29,6 +29,17 @@ class SubmissionUnknown(DomainError):
         self.raw_body = raw_body
 
 
+class SubmissionRejected(DomainError):
+    def __init__(self, raw_body: bytes, *, retryable: bool) -> None:
+        super().__init__(
+            "MINERU_SUBMIT_REJECTED",
+            "MinerU rejected the submission",
+            status=502,
+            retryable=retryable,
+        )
+        self.raw_body = raw_body
+
+
 @contextmanager
 def _download_errors() -> Iterator[None]:
     try:
@@ -98,12 +109,7 @@ class MinerUClient:
         except DomainError:
             raise SubmissionUnknown(request_id) from None
         if 400 <= response.status_code < 500 and response.status_code != 408:
-            raise DomainError(
-                "MINERU_SUBMIT_REJECTED",
-                "MinerU rejected the submission",
-                status=502,
-                retryable=response.status_code == 429,
-            )
+            raise SubmissionRejected(response.content, retryable=response.status_code == 429)
         if response.status_code != 202:
             raise SubmissionUnknown(request_id, response.content)
         try:

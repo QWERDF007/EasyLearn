@@ -35,5 +35,6 @@ class DocumentView(BaseModel):
     original_asset_id: UUID
     filename: str
     client_id: UUID | None
+    active_parse_run_id: UUID | None = None
     created_at: datetime
     preview_runs: list[PreviewView]

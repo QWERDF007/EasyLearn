@@ -7,16 +7,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 from easylearn.database import Base
 
 
-class Asset(Base):
-    __tablename__ = "assets"
-
-    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    sha256: Mapped[str] = mapped_column(String(64), unique=True)
-    size: Mapped[int] = mapped_column(BigInteger)
-    storage_key: Mapped[str] = mapped_column(String(180))
-    mime: Mapped[str] = mapped_column(String(100))
-
-
 class Upload(Base):
     __tablename__ = "uploads"
     __table_args__ = (

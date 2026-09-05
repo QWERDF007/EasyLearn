@@ -42,6 +42,8 @@ class MinerUSettings(_Config):
     archive_limits: MinerUArchiveLimits = Field(default_factory=MinerUArchiveLimits)
     table_limits: MinerUTableLimits = Field(default_factory=MinerUTableLimits)
     validation_timeout_seconds: float = Field(default=MINERU_VALIDATION_TIMEOUT_SECONDS, gt=0)
+    poll_interval_seconds: float = Field(default=1, gt=0)
+    task_timeout_seconds: float = Field(default=3600, gt=0)
 
 
 class ProviderCapabilities(_Config):

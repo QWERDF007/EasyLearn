@@ -2,6 +2,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
+from easylearn.assets import Asset
 from easylearn.database import Database
 from easylearn.documents.models import Document, PreviewRun
 from easylearn.documents.schema import (
@@ -15,8 +16,9 @@ from easylearn.idempotency import IdempotencyRecord
 from easylearn.jobs.models import JobRun
 from easylearn.jobs.schema import JobKind, JobStatus, RunRef
 from easylearn.jobs.service import JobService
+from easylearn.parses.models import ParseArtifact, ParseRun
 from easylearn.previews.schema import PreflightReport
-from easylearn.uploads.models import Asset, Upload
+from easylearn.uploads.models import Upload
 
 
 class DocumentService:
@@ -95,6 +97,7 @@ class DocumentService:
                 original_asset_id=document.original_asset_id,
                 filename=document.filename,
                 client_id=document.client_id,
+                active_parse_run_id=document.active_parse_run_id,
                 created_at=document.created_at,
                 preview_runs=previews,
             )
@@ -109,6 +112,19 @@ class DocumentService:
                 .exists()
             )
             asset = await session.scalar(select(Asset).where(Asset.id == asset_id, belongs))
+            if asset is None:
+                asset = await session.scalar(
+                    select(Asset)
+                    .join(ParseArtifact, ParseArtifact.asset_id == Asset.id)
+                    .join(ParseRun, ParseArtifact.parse_run_id == ParseRun.id)
+                    .join(JobRun, ParseRun.job_id == JobRun.id)
+                    .where(
+                        ParseArtifact.id == asset_id,
+                        ParseArtifact.kind == "image",
+                        ParseRun.document_id == document_id,
+                        JobRun.status == JobStatus.SUCCEEDED,
+                    )
+                )
             if asset is None:
                 raise DomainError(
                     "ASSET_NOT_FOUND", "Published document asset not found", status=404

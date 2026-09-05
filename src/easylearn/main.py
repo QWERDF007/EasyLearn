@@ -223,6 +223,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             headers={"ETag": f'"{asset.sha256}"'},
         )
 
+    @app.get("/api/v1/documents/{document_id}/parse-runs/{parse_run_id}/document-ir")
+    async def get_document_ir(
+        document_id: UUID, parse_run_id: UUID, request: Request
+    ) -> AssetResponse:
+        parses: ParseService = request.app.state.parses
+        storage: LocalStorage = request.app.state.storage
+        asset = await parses.document_ir(document_id, parse_run_id)
+        return AssetResponse(
+            storage.path(asset.storage_key),
+            media_type="application/json",
+            headers={"ETag": f'"{asset.sha256}"'},
+        )
+
     @app.get("/api/v1/jobs/{job_id}")
     async def get_job(job_id: UUID, request: Request) -> JobView:
         jobs: JobService = request.app.state.jobs

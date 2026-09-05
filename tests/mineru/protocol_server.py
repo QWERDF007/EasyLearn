@@ -1,13 +1,15 @@
-"""Synthetic MinerU HTTP protocol peer: transport tests only, no inference or MinerU import."""
+"""Synthetic MinerU HTTP peer: no inference or MinerU import."""
 
 import hashlib
 import json
+import os
 from io import BytesIO
 from uuid import UUID, uuid4
 from zipfile import ZIP_STORED, ZipFile
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from pypdf import PdfReader
 from starlette.datastructures import UploadFile
 
 app = FastAPI()
@@ -26,6 +28,9 @@ async def health():
 
 @app.post("/tasks", status_code=202)
 async def submit(request: Request):
+    key = os.environ.get("EASYLEARN_TEST_MINERU_KEY")
+    if key and request.headers.get("Authorization") != f"Bearer {key}":
+        raise HTTPException(401)
     async with request.form() as form:
         files = form.getlist("files")
         if len(files) != 1 or not isinstance(files[0], UploadFile):
@@ -53,8 +58,45 @@ async def submit(request: Request):
         }
         archive = BytesIO()
         with ZipFile(archive, "w", compression=ZIP_STORED) as package:
-            package.writestr("transport-test/input.pdf", content)
-            package.writestr("transport-test/received.json", json.dumps(evidence))
+            if os.environ.get("EASYLEARN_TEST_PARSE_RESULT"):
+                pages = PdfReader(BytesIO(content)).pages
+                middle = {
+                    "_version_name": "3.4.5",
+                    "_backend": "vlm",
+                    "pdf_info": [
+                        {
+                            "page_idx": index,
+                            "page_size": [float(page.cropbox.width), float(page.cropbox.height)],
+                            "para_blocks": [
+                                {
+                                    "type": "text",
+                                    "bbox": [10, 20, 50, 40],
+                                    "lines": [
+                                        {
+                                            "bbox": [10, 20, 50, 40],
+                                            "spans": [
+                                                {
+                                                    "type": "text",
+                                                    "content": f"Synthetic page {index + 1}",
+                                                }
+                                            ],
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                        for index, page in enumerate(pages)
+                    ],
+                }
+                package.writestr("input/vlm/input_origin.pdf", content)
+                package.writestr("input/vlm/input_middle.json", json.dumps(middle))
+                package.writestr("input/vlm/input_model.json", json.dumps(evidence))
+                package.writestr("input/vlm/input_content_list.json", "[]")
+                package.writestr("input/vlm/input_content_list_v2.json", "[]")
+                package.writestr("input/vlm/input.md", "Synthetic test output, not inference.")
+            else:
+                package.writestr("transport-test/input.pdf", content)
+                package.writestr("transport-test/received.json", json.dumps(evidence))
         results[task_id] = receipt, archive.getvalue()
     return JSONResponse(status_code=202, content=receipt)
 

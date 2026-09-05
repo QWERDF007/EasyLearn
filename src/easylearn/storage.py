@@ -1,13 +1,14 @@
 import hashlib
 import os
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import AsyncIterable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryFile
 from uuid import uuid4
 
 from easylearn.errors import DomainError
+from easylearn.execution import run_blocking
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,14 @@ class LocalStorage:
                 yield chunk
         if digest.hexdigest() != key.removeprefix("objects/"):
             raise DomainError("STORAGE_CORRUPT", "Stored object checksum mismatch", status=500)
+
+    async def write_stream(self, chunks: AsyncIterable[bytes]) -> StoredObject:
+        """Bound memory while keeping the synchronous CAS publication path authoritative."""
+        with TemporaryFile(dir=self.root / "staging") as spool:
+            async for chunk in chunks:
+                await run_blocking(spool.write, chunk)
+            spool.seek(0)
+            return await run_blocking(self.write, iter(lambda: spool.read(1024 * 1024), b""))
 
     def path(self, key: str) -> Path:
         if re.fullmatch(r"objects/[a-f0-9]{64}", key) is None:

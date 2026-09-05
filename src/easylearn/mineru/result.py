@@ -2,7 +2,7 @@ import json
 import math
 import sys
 from pathlib import Path
-from uuid import UUID, uuid5
+from uuid import UUID
 from zipfile import ZipFile
 
 import pypdfium2 as pdfium  # type: ignore[import-untyped]
@@ -192,7 +192,7 @@ def normalize_result(
         if member.image is not None:
             name = Path(member.path).name
             assets[name] = AssetDescriptor(
-                asset_id=uuid5(source.parse_run_id, member.path),
+                asset_id=member.asset_id(source.parse_run_id),
                 sha256=member.sha256,
                 mime=member.image.mime,
                 export_path=f"images/{name}",

@@ -1,6 +1,7 @@
 from alembic import context
 from sqlalchemy import create_engine, pool
 
+from easylearn.assets import Asset  # noqa: F401
 from easylearn.database import Base
 from easylearn.documents import models as document_models  # noqa: F401
 from easylearn.idempotency import IdempotencyRecord  # noqa: F401

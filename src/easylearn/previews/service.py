@@ -2,15 +2,14 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
+from easylearn.assets import Asset
 from easylearn.config import Settings
 from easylearn.database import Database
 from easylearn.documents.models import Document, PreviewRun
 from easylearn.errors import DomainError
-from easylearn.jobs.schema import JobFailure
 from easylearn.jobs.service import JobService
 from easylearn.previews.pdf import PdfPreflight
 from easylearn.storage import LocalStorage
-from easylearn.uploads.models import Asset
 
 
 class PreviewService:
@@ -54,20 +53,4 @@ class PreviewService:
                 run.preview_asset_id = asset.id
                 run.report = report.model_dump(mode="json")
         except DomainError as exc:
-            if exc.code != "JOB_LEASE_LOST":
-                try:
-                    await self.jobs.fail(
-                        lease,
-                        JobFailure(code=exc.code, message=exc.message, retryable=exc.retryable),
-                    )
-                except DomainError as failure_race:
-                    if failure_race.code != "JOB_LEASE_LOST":
-                        raise
-                else:
-                    return
-            try:
-                await self.jobs.acknowledge_cancel(lease)
-            except DomainError as expired:
-                if expired.code != "JOB_LEASE_LOST":
-                    raise
-                return
+            await self.jobs.handle_error(lease, exc)

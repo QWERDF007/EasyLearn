@@ -452,14 +452,18 @@ def test_result_validation_deadline_and_json_limit_use_file_configuration(tmp_pa
     content = {
         "toml": 'database_url = "postgresql+asyncpg://user@localhost/test"\n'
         '[mineru]\nbase_url = "http://127.0.0.1:8001"\nprofile_revision = "v1"\n'
-        "validation_timeout_seconds = 45\n[mineru.archive_limits]\nmax_json_bytes = 4096\n",
+        "validation_timeout_seconds = 45\npoll_interval_seconds = 0.25\n"
+        "task_timeout_seconds = 1800\n[mineru.archive_limits]\nmax_json_bytes = 4096\n",
         "yaml": "database_url: postgresql+asyncpg://user@localhost/test\n"
         "mineru:\n  base_url: http://127.0.0.1:8001\n  profile_revision: v1\n"
-        "  validation_timeout_seconds: 45\n  archive_limits:\n    max_json_bytes: 4096\n",
+        "  validation_timeout_seconds: 45\n  poll_interval_seconds: 0.25\n"
+        "  task_timeout_seconds: 1800\n  archive_limits:\n    max_json_bytes: 4096\n",
     }
     (tmp_path / f"config.{suffix}").write_text(content[suffix], encoding="utf-8")
     settings = Settings()
     assert settings.mineru.validation_timeout_seconds == 45
     assert settings.mineru.archive_limits.max_json_bytes == 4096
+    assert settings.mineru.poll_interval_seconds == 0.25
+    assert settings.mineru.task_timeout_seconds == 1800
     with pytest.raises(ValidationError):
         Settings(mineru={"validation_timeout_seconds": float("inf")})

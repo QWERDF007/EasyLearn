@@ -11,12 +11,15 @@ import pytest
 import yaml
 
 from easylearn.config import Settings
+from easylearn.document_ir.schema import DocumentIR
+from easylearn.jobs.service import JobService
+from easylearn.parses.worker import ParseWorker
 from easylearn.previews.service import PreviewService
 from easylearn.storage import LocalStorage
 
 
 @pytest.fixture(params=["toml", "yaml"])
-def live_client(database_url, tmp_path, request, uvicorn_server):
+def live_client(database_url, tmp_path, request, uvicorn_server, monkeypatch, native_mineru):
     env = {key: value for key, value in os.environ.items() if not key.startswith("EASYLEARN_")}
     configuration = tmp_path / f"native.{request.param}"
     template = Path(f"config.example.{request.param}").read_text(encoding="utf-8")
@@ -28,10 +31,18 @@ def live_client(database_url, tmp_path, request, uvicorn_server):
                 line for line in template.splitlines() if not line.startswith("database_url =")
             )
         )
-    else:
-        configuration_text = yaml.safe_dump(
-            dict(yaml.safe_load(template), database_url=database_url, storage_root=str(tmp_path))
+        configuration_text = configuration_text.replace(
+            'base_url = "http://127.0.0.1:8001"',
+            f'base_url = "{native_mineru.base_url}"\napi_key = "native-test-key"',
         )
+    else:
+        configuration_data = dict(
+            yaml.safe_load(template), database_url=database_url, storage_root=str(tmp_path)
+        )
+        configuration_data["mineru"].update(
+            base_url=str(native_mineru.base_url), api_key="native-test-key"
+        )
+        configuration_text = yaml.safe_dump(configuration_data)
     configuration.write_text(
         configuration_text,
         encoding="utf-8",
@@ -56,17 +67,36 @@ def live_client(database_url, tmp_path, request, uvicorn_server):
         creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
     )
     assert migrated.returncode == 0, migrated.stderr
+    with monkeypatch.context() as context:
+        for name in os.environ:
+            if name.startswith("EASYLEARN_"):
+                context.delenv(name)
+        context.setenv("EASYLEARN_CONFIG", str(configuration))
+        settings = Settings()
     with uvicorn_server(
         "easylearn.main:create_app",
         health_path="/health/ready",
         env=dict(env, EASYLEARN_CONFIG=str(configuration)),
         factory=True,
     ) as client:
+        yield client, settings
+
+
+@pytest.fixture
+def native_mineru(uvicorn_server):
+    with uvicorn_server(
+        "protocol_server:app",
+        health_path="/health",
+        app_dir=Path("tests/mineru"),
+        env=dict(
+            os.environ, EASYLEARN_TEST_PARSE_RESULT="1", EASYLEARN_TEST_MINERU_KEY="native-test-key"
+        ),
+    ) as client:
         yield client
 
 
 def test_real_uvicorn_process_accepts_pdf_upload(live_client, pdf_bytes):
-    client = live_client
+    client, _ = live_client
     response = client.post(
         "/api/v1/uploads",
         json={
@@ -109,7 +139,7 @@ async def test_user_paper_is_validated_and_served_unchanged_over_real_http(
     content = source.read_bytes()
     digest = hashlib.sha256(content).hexdigest()
     assert digest == "9674284d4722ff5596dec155495423b7709d2051fbe8476b09cb9f64f522d5d8"
-    client = live_client
+    client, settings = live_client
     upload = client.post(
         "/api/v1/uploads", json={"filename": source.name, "size": len(content), "sha256": digest}
     )
@@ -161,7 +191,19 @@ async def test_user_paper_is_validated_and_served_unchanged_over_real_http(
     fixed_preview = client.get(parse_path + f"/{parsed.json()['parse_run_id']}/preview")
     assert fixed_preview.status_code == 200
     assert hashlib.sha256(fixed_preview.content).hexdigest() == digest
+    async with ParseWorker.open(JobService(database), LocalStorage(tmp_path), settings) as worker:
+        await worker.execute(UUID(parsed.json()["job_id"]), generation=1)
+    status = client.get(parsed.json()["status_url"]).json()
+    assert status["status"] == "SUCCEEDED", status
+    snapshot = client.get(parse_path + f"/{parsed.json()['parse_run_id']}/document-ir")
+    assert snapshot.status_code == 200
+    ir = DocumentIR.model_validate_json(snapshot.content)
+    assert len(ir.pages) == 27
+    assert len(ir.blocks) == 27
+    assert ir.preview_sha256 == digest
+    assert ir.blocks[0].source_regions[0].bbox_pdf == (10, 752, 50, 772)
+    assert "Synthetic page 27" in snapshot.text
     assert hashlib.sha256(source.read_bytes()).hexdigest() == digest
     print(
-        f"27-page PDF preview, parse acceptance and download: {time.perf_counter() - started:.2f}s"
+        f"27-page PDF + synthetic HTTP parse + published IR: {time.perf_counter() - started:.2f}s"
     )

@@ -269,3 +269,22 @@ class JobService:
                 raise DomainError(
                     "JOB_LEASE_LOST", "Job lease expired during publication", status=409
                 )
+
+    async def handle_error(self, lease: JobLease, error: DomainError) -> None:
+        """Record a domain failure, or acknowledge cancellation if it won the lease race."""
+        if error.code != "JOB_LEASE_LOST":
+            try:
+                await self.fail(
+                    lease,
+                    JobFailure(code=error.code, message=error.message, retryable=error.retryable),
+                )
+            except DomainError as race:
+                if race.code != "JOB_LEASE_LOST":
+                    raise
+            else:
+                return
+        try:
+            await self.acknowledge_cancel(lease)
+        except DomainError as expired:
+            if expired.code != "JOB_LEASE_LOST":
+                raise

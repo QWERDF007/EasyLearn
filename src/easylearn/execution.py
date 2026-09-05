@@ -2,12 +2,34 @@ import asyncio
 import math
 import subprocess
 import sys
+from collections.abc import Callable
 from contextlib import suppress
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from easylearn.errors import DomainError
 from easylearn.jobs.schema import JobFailure
+
+
+async def run_blocking[**P, T](function: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    """Join blocking I/O before propagating cancellation or releasing its file handles."""
+    task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    cancelled = False
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError:
+            if task.cancelled():
+                raise
+            cancelled = True
+        except Exception:
+            if cancelled:
+                raise asyncio.CancelledError from None
+            raise
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
 
 
 async def run_validation[T: BaseModel](

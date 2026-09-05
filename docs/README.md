@@ -15,6 +15,7 @@
 - [统一错误类型](../src/easylearn/errors.py)、[上传契约验证](../tests/api/test_upload_contract.py)
 - [文档与预览受理](../src/easylearn/documents/service.py)、[请求幂等](../src/easylearn/idempotency.py)
 - [解析受理与固定预览](../src/easylearn/parses/service.py)、[解析请求与配置快照](../src/easylearn/parses/schema.py)、[解析 API 边界测试](../tests/api/test_parses.py)
+- [解析执行与连接生命周期](../src/easylearn/parses/worker.py)、[解析产物与版本关系](../src/easylearn/parses/models.py)、[内容寻址资产登记](../src/easylearn/assets.py)
 - [任务执行与发布](../src/easylearn/jobs/service.py)、[Outbox 领取与确认](../src/easylearn/jobs/delivery.py)、[任务协议类型](../src/easylearn/jobs/schema.py)
 - [PDF 子进程预检](../src/easylearn/previews/pdf.py)、[预览执行](../src/easylearn/previews/service.py)、[预览协议与限额](../src/easylearn/previews/schema.py)
 - [流式资产下载](../src/easylearn/downloads.py)、[预览边界测试](../tests/api/test_previews.py)、[实机 HTTP 测试](../tests/api/test_live_http.py)

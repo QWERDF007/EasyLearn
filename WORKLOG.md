@@ -50,6 +50,30 @@
 
 ---
 
+### 2026-09-05 — 解析执行恢复与产物发布
+
+**目标**
+- 延续完整 A–G，将固定配置/输入接到真实 HTTP、下载、归一化及带租约的事务发布，补齐提交中断与取消恢复边界。
+
+**当前状态**
+- 上批已提交 `efe91d0`。[ParseWorker](src/easylearn/parses/worker.py) 已接通提交、轮询、流式下载、真实子进程验证/归一化和 fenced 发布。`open(jobs, storage, settings)` 管理复用的认证 HTTP 连接生命周期；`execute(job_id, generation=...)` 执行固定任务。服务/profile/本机模型登记改变时拒绝重定向旧运行，操作型限额仍取当前统一配置。
+- [ParseCheckpoint](src/easylearn/parses/schema.py) 保存提交 ID、配置/输入摘要、代次、时间和原始回执 CAS；调用 POST 前提交 SUBMITTING。无回执中断或不确定响应恢复为 SUBMIT_UNKNOWN，通用 retry 拒绝盲目重发；明确 429 拒绝允许新代次新请求并保留旧回执。已接受的任务重试复用 task_id；下载已完成则复用归档。轮询间隔/总预算进入两种配置示例，预算以该次提交时间为起点。
+- [迁移 0005](migrations/versions/0005_parse_results.py) 发布 IR/归档/原始产物与固定坐标证据；ParseArtifact 提供运行内逻辑 ID，[MinerUArchiveMember.asset_id](src/easylearn/mineru/schema.py) 是 UUID5 算法唯一源，底层 Asset 继续按 SHA 去重。图片别名仅可从所属文档的已发布运行下载。当前文档指针只向更新创建的成功运行推进，旧运行迟到/新运行失败或取消不覆盖较新的可用结果。
+- [资产登记](src/easylearn/assets.py) 已从 uploads 移到公共模块，不保留旧导入别名；上传与解析共用按摘要排序的批量登记入口，避免逐产物 N+1。共享 [run_blocking](src/easylearn/execution.py) 在取消时先等待线程 I/O 完成再释放文件句柄；[write_stream](src/easylearn/storage.py) 以临时文件有界接收，复用唯一 CAS 写入路径。JobService.handle_error 统一预览和解析的失败/取消竞争处理。
+- 尚未实现队列消费者/常驻 Outbox 投递与 Reconciler；Web 只受理，当前执行器尚不会自动运行。SUBMIT_UNKNOWN 的显式人工决策/受限再提交策略、清理、SVG、完整上游语义、Markdown 投影、结构查询、三栏 UI、翻译/导出/AI 及真实推理验收仍未完成。未安装或启动 MinerU，没有新截图，没有修改用户论文。
+
+**验证证据**
+- 不确定提交持久化、IR 发布、图片别名下载、取消上游提示、认证连接生命周期和拒绝回执保全均观察到 red→green。覆盖取消等待真实 OS fsync 完成、提交中断租约接管不重发、查询/下载/归一化/轮询超时后复用原任务、迟到旧版本、无效归档、新运行下载后取消、跨版本相同图片内容及配置重定向拒绝。
+- `EASYLEARN_ACCEPTANCE_PDF=D:\Papers\2403.18819v1.pdf`，learn Python `-m pytest tests/api/test_parses.py tests/api/test_previews.py tests/api/test_uploads.py tests/api/test_job_leases.py tests/mineru/test_result.py tests/mineru/test_client.py tests/config -q -p no:cacheprovider --tb=short` → 200 passed，72.50s；随后新增 I/O 取消与配置保护 3 项通过。未运行全量测试。
+- 公共资产模块整理后 `-m pytest tests/api/test_parses.py tests/api/test_uploads.py tests/api/test_live_http.py tests/mineru/test_live_http.py -q -s -p no:cacheprovider --tb=short` → 36 passed，51.17s。TOML/YAML 使用真实 Uvicorn Web、带 Bearer 验证的合成 HTTP peer、真实 PostgreSQL 和归一化子进程；27 页论文各发布 27 个合成文本块，首块 PDF bbox=(10,752,50,772)，端到端分别 1.80s/1.87s，原件与预览摘要不变。这不是实际 MinerU 输出或模型质量验收。
+- 在单独随机测试库执行 Alembic upgrade head、check、downgrade 0004、upgrade head、check → 两次均无 ORM 差异，升降级通过，测试库已回收；没有修改已有业务库。Ruff 与格式检查通过，mypy 50 源文件通过。
+
+**下一步**
+- 本批可独立中文提交；保留用户未跟踪旧版资料目录。
+- 接通原生 Redis/Dramatiq、共享异步运行时、Outbox 投递与常驻 Reconciler，直接复用 PreviewService / ParseWorker / JobService / Outbox；不得为队列另写提交或状态逻辑。用户约束是不使用 Docker、不直接部署 MinerU，learn 环境保持不变。
+- 再推进页面/块/Markdown 读取、三栏交互和完整 A–G；明确人工处理未知提交的可见操作，不能靠创建新任务静默消耗重复算力。
+- 资产清理必须覆盖 ParseRun/ParseArtifact、Job checkpoint 中的原始回执和未引用 CAS；取消路径只回收自身临时文件，不删共享内容。引用表/证据不代表全部上游语义已校验，仍需固定版本实际服务捕获。
+
 ### 2026-09-05 — 解析受理与固定配置快照
 
 **目标**

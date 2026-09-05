@@ -2,17 +2,17 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from itertools import chain
 from pathlib import PurePath
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert
 
+from easylearn.assets import Asset
 from easylearn.config import Settings
 from easylearn.database import Database
 from easylearn.errors import DomainError
 from easylearn.storage import LocalStorage
 from easylearn.uploads.filetypes import validate_input
-from easylearn.uploads.models import Asset, Upload, UploadChunk
+from easylearn.uploads.models import Upload, UploadChunk
 from easylearn.uploads.schema import UploadRequest, UploadView
 
 
@@ -134,20 +134,7 @@ class UploadService:
             if expired:
                 upload.status = "EXPIRED"
             elif failure is None:
-                await session.execute(
-                    insert(Asset)
-                    .values(
-                        id=uuid4(),
-                        sha256=stored.sha256,
-                        size=stored.size,
-                        storage_key=stored.key,
-                        mime=mime,
-                    )
-                    .on_conflict_do_nothing(index_elements=[Asset.sha256])
-                )
-                upload.asset_id = await session.scalar(
-                    select(Asset.id).where(Asset.sha256 == stored.sha256)
-                )
+                upload.asset_id = (await Asset.register(session, stored, mime)).id
                 upload.status = "UPLOADED"
             else:
                 upload.status = "INVALID"

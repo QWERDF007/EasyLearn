@@ -2,6 +2,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
+from easylearn.assets import Asset
 from easylearn.config import Settings
 from easylearn.database import Database
 from easylearn.documents.models import Document, PreviewRun
@@ -12,9 +13,14 @@ from easylearn.jobs.schema import JobKind, JobStatus, RunRef
 from easylearn.jobs.service import JobService
 from easylearn.mineru.schema import MinerUOptions
 from easylearn.parses.models import ParseRun
-from easylearn.parses.schema import ParseAccepted, ParseConfiguration, ParseRequest, ParseView
+from easylearn.parses.schema import (
+    ParseAccepted,
+    ParseCheckpoint,
+    ParseConfiguration,
+    ParseRequest,
+    ParseView,
+)
 from easylearn.previews.schema import PreflightReport
-from easylearn.uploads.models import Asset
 
 
 class ParseService:
@@ -106,9 +112,14 @@ class ParseService:
                         "preview_asset_id": asset.id,
                         "preview_sha256": asset.sha256,
                         "job_id": job.id,
+                        "upstream_may_be_running": ParseCheckpoint.model_validate(
+                            job.checkpoint
+                        ).upstream_may_be_running,
                         "status": (
                             "READY"
                             if job.status == JobStatus.SUCCEEDED
+                            else "SUBMIT_UNKNOWN"
+                            if job.status == JobStatus.FAILED and job.stage == "SUBMIT_UNKNOWN"
                             else job.stage
                             if job.status == JobStatus.RUNNING
                             else job.status
@@ -129,4 +140,24 @@ class ParseService:
             )
             if asset is None:
                 raise DomainError("PARSE_NOT_FOUND", "Document parse run not found", status=404)
+            return asset
+
+    async def document_ir(self, document_id: UUID, parse_run_id: UUID) -> Asset:
+        async with self.database.sessions() as session:
+            row = (
+                await session.execute(
+                    select(ParseRun, JobRun)
+                    .join(JobRun, ParseRun.job_id == JobRun.id)
+                    .where(ParseRun.document_id == document_id, ParseRun.id == parse_run_id)
+                )
+            ).one_or_none()
+            if row is None:
+                raise DomainError("PARSE_NOT_FOUND", "Document parse run not found", status=404)
+            run, job = row
+            if job.status != JobStatus.SUCCEEDED or run.document_ir_asset_id is None:
+                raise DomainError(
+                    "PARSE_NOT_READY", "Parse output has not been published", status=409
+                )
+            asset = await session.get(Asset, run.document_ir_asset_id)
+            assert asset is not None
             return asset
