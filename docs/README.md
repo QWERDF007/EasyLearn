@@ -11,5 +11,6 @@
 - [依赖与开发工具配置](../pyproject.toml)
 - [DocumentIR 与身份类型](../src/easylearn/document_ir/schema.py)、[坐标映射](../src/easylearn/document_ir/coordinates.py)
 - [HTTP 应用与 OpenAPI](../src/easylearn/main.py)、[上传模块](../src/easylearn/uploads/service.py)
+- [统一错误类型](../src/easylearn/errors.py)、[上传契约验证](../tests/api/test_upload_contract.py)
 - [数据库迁移](../migrations/versions)、[资产存储](../src/easylearn/storage.py)
 - [协议测试](../tests/document_ir)、[真实 PostgreSQL 接口测试](../tests/api)

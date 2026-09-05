@@ -5,15 +5,18 @@ from typing import Annotated
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Header, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
+from starlette.exceptions import HTTPException
+from starlette.middleware.base import RequestResponseEndpoint
 
 from easylearn.config import Settings
 from easylearn.database import Database
-from easylearn.errors import DomainError
+from easylearn.errors import DomainError, ErrorView
 from easylearn.storage import LocalStorage
-from easylearn.uploads.schema import UploadRequest, UploadView
+from easylearn.uploads.schema import UploadCreatedView, UploadLimits, UploadRequest, UploadView
 from easylearn.uploads.service import UploadService
 
 
@@ -33,6 +36,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await database.close()
 
     app = FastAPI(title="EasyLearn", version="0.1.0", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def request_identity(request: Request, call_next: RequestResponseEndpoint) -> Response:
+        request.state.request_id = str(uuid4())
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request.state.request_id
+        return response
 
     @app.get("/health/live")
     async def live() -> dict[str, str]:
@@ -68,20 +78,56 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def domain_error(request: Request, exc: DomainError) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status,
-            content={
-                "code": exc.code,
-                "message": exc.message,
-                "retryable": exc.retryable,
-                "request_id": str(uuid4()),
-                "run_ref": None,
-                "details": {},
-            },
+            content=ErrorView(
+                code=exc.code,
+                message=exc.message,
+                retryable=exc.retryable,
+                request_id=request.state.request_id,
+            ).model_dump(mode="json"),
         )
 
-    @app.post("/api/v1/uploads", status_code=201, response_model=UploadView)
-    async def create_upload(body: UploadRequest, request: Request) -> UploadView:
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content=ErrorView(
+                code="REQUEST_INVALID",
+                message="Request does not satisfy the contract",
+                request_id=request.state.request_id,
+                details={
+                    "issues": [
+                        {"location": list(issue["loc"]), "type": issue["type"]}
+                        for issue in exc.errors()
+                    ]
+                },
+            ).model_dump(mode="json"),
+        )
+
+    @app.exception_handler(HTTPException)
+    async def http_error(request: Request, exc: HTTPException) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.status_code,
+            headers=exc.headers,
+            content=ErrorView(
+                code=f"HTTP_{exc.status_code}",
+                message="HTTP request could not be served",
+                request_id=request.state.request_id,
+            ).model_dump(mode="json"),
+        )
+
+    @app.post("/api/v1/uploads", status_code=201, response_model=UploadCreatedView)
+    async def create_upload(body: UploadRequest, request: Request) -> UploadCreatedView:
         uploads: UploadService = request.app.state.uploads
-        return await uploads.create(body)
+        upload = await uploads.create(body)
+        return UploadCreatedView.model_validate(
+            {
+                **upload.model_dump(),
+                "limits": UploadLimits(
+                    max_file_bytes=settings.upload_max_bytes,
+                    max_chunk_bytes=settings.upload_chunk_bytes,
+                ),
+            }
+        )
 
     @app.get("/api/v1/uploads/{upload_id}", response_model=UploadView)
     async def get_upload(upload_id: UUID, request: Request) -> UploadView:

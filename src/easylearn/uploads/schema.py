@@ -28,7 +28,7 @@ class UploadRequest(BaseModel):
 
 
 class UploadView(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     upload_id: UUID = Field(validation_alias="id")
     filename: str
@@ -38,3 +38,12 @@ class UploadView(BaseModel):
     status: Literal["CREATED", "UPLOADING", "UPLOADED", "INVALID", "EXPIRED"]
     expires_at: datetime
     asset_id: UUID | None
+
+
+class UploadLimits(BaseModel):
+    max_file_bytes: int
+    max_chunk_bytes: int
+
+
+class UploadCreatedView(UploadView):
+    limits: UploadLimits
