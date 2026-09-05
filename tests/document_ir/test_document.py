@@ -94,3 +94,13 @@ def test_snapshot_rejects_unresolvable_structure(changes, error):
             ),
             blocks=(Block(block_id="b1", block_type="paragraph", order_index=0, **changes),),
         )
+
+
+@pytest.mark.parametrize("orders", [[0, 0], [1, 0]])
+def test_snapshot_has_unambiguous_reading_order(document_payload, orders):
+    document_payload["blocks"] = [
+        {"block_id": f"p{index}", "block_type": "paragraph", "order_index": order}
+        for index, order in enumerate(orders)
+    ]
+    with pytest.raises(ValidationError, match="Reading order"):
+        DocumentIR.model_validate(document_payload)

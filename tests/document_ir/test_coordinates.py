@@ -1,7 +1,7 @@
 import pytest
 
-from easylearn.document_ir.coordinates import CoordinateMapper, SourceCoordinates
-from easylearn.document_ir.schema import PageGeometry
+from easylearn.document_ir.coordinates import CoordinateMapper
+from easylearn.document_ir.schema import PageGeometry, SourceCoordinates
 from easylearn.errors import DomainError
 
 

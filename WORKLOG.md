@@ -6,6 +6,8 @@
 
 <!-- 没有待裁决事项时保持本节为空。 -->
 
+- 2026-09-05：PDF 预览真实集成复测被审批工具拒绝（审批服务 429、重试次数耗尽，要求明确批准后方可重试）。请决定是否允许再次运行指定 learn 环境的 `tests/api/test_previews.py`：创建/删除自身隔离测试数据库并启动短时 PDF Python 子进程，不修改业务数据库。证据与恢复入口见下方“PDF 预览预检草稿与验证审批”日志。
+
 
 ---
 
@@ -47,6 +49,51 @@
 **边界**：不动导出的字段结构；不顺手重构 handler。
 
 ---
+
+### 2026-09-05 — 结构化文档与定位证据协议
+
+**目标**
+- 补齐阶段 A 的 DocumentIR 结构协议，为解析适配、翻译、检索与导出提供同一结构输入；完整 A–G 目标保持不变。
+
+**当前状态**
+- 已实现并通过定向验证：页序/阅读序、源框/变换/四边形/归一化坐标一致性、SourceCoordinates 证据持久化；region/page/element/none 定位级别从唯一证据派生，原生元素或页级 fallback 不与精确区域同时声明。
+- 已实现并验证：有独立版本身份的表格单元格、行列合并/表头/不完整表格、越界/重叠/父子归属拒绝；图片/引用节点、公式可选截图、内部资产及关系边、完整版本引用校验；可移植导出路径与大小写/目录冲突检查；派生内容摘要与页数。
+- 坐标声明定义集中到 schema，Mapper 复用其有效变换，不保留第二套缩放算法；实现及测试入口见 [协议索引](docs/protocols.md)。
+- 本批未运行数据库或子进程。PDF 集成复测仍等待顶部列出的明确授权；没有把自动续跑当作许可，也没有换命令执行被拒测试。此前 PDF 草稿及其 `0003` 迁移仍未提交，保持原状。
+- 阶段 A 尚未全部完成：MinerU Adapter/版本契约、Provider 协议、30 份人工标注基准集仍待完成。模型约束测试不等于真实解析、Office 锚点可点击或最终质量验收；前端、翻译、导出与 AI 链路尚未完成。
+
+**验证证据**
+- 指定 learn Python `-m pytest tests/document_ir -q -p no:cacheprovider --tb=short` → 65 passed（0.15s），逐条观察新增行为失败后实现；只运行协议模块，未运行全量测试。
+- `-m ruff check src tests migrations` → All checks passed；`-m mypy src/easylearn` → 28 文件通过。静态检查包含尚未运行验证的 PDF 草稿，不代表该草稿通过集成验证。
+- 表格缺格不会制造新单元格；只有整表框时未给单元格生成伪造 bbox。版本、表格归属、坐标和资产冲突测试均通过实际 Pydantic/Mapper 实现，无内部 mock。
+
+**下一步**
+- 本批独立中文提交，不暂存 PDF 草稿、其他配置改动或旧版用户参考资料。
+- 可继续读取 MinerU 固定版本的真实原始产物，开发 Adapter 与纯文件协议测试；不得把它替代真实 MinerU 服务验收。
+- 用户明确允许后，恢复上一条 PDF 工作项：先复测，再补长任务心跳/主动取消监督、错误 PDF 与下载边界，然后接入原生队列及剩余 A–G。
+
+### 2026-09-05 — PDF 预览预检草稿与验证审批
+
+**目标**
+- 接通独立 PDF 预检进程、预览资产与页面几何发布、Range 下载，并继续完成原定 A–G 全功能目标。
+
+**当前状态**
+- 已提交并经真实环境验证的上一批：`4e90376 实现文档受理与可靠任务持久化`；本轮此前另一批为 `6ef4a90 补齐上传限额与统一错误契约`。
+- 工作区已有未提交草稿：`previews/` 的独立 learn 子进程与类型化预检结果；PDF 摘要/页数/尺寸/页面渲染检查；预览执行入口；预览结果迁移 `0003`；文档预览信息、资产归属与 FileResponse 下载；首条纵向测试 `tests/api/test_previews.py`。这些运行行为全部尚未验证，不作为完成能力交付，不提交未过验证的批次。
+- 静态检查通过。原件 PDF 未改写；仅在忽略目录 `tmp/pdfs/` 渲染了样本 PNG 并人工检查。新增依赖声明 `pypdf==6.16.2` 已存在 learn 环境，无新包安装；PDFium 现有版本不能取得 UserUnit 且页面盒继承有已知限制，因此使用 pypdf 元数据与 PDFium 渲染几何核对，来源见官方 API 与本地包源码。
+- 当前中断点：新增测试先观察到缺少 previews 模块的红灯；写入实现后，复测调用被审批工具拒绝，原因是审批服务 `429 Too Many Requests`、重试耗尽。拒绝明确禁止换路径执行同一操作，要求用户知情后明确允许；没有重试、没有绕过，仅继续沙箱内静态检查。
+- 已知待继续开发的点：预览执行尚无长任务心跳/主动取消监督（默认 PDF 超时 120 秒、任务租约 60 秒，不能据此支持长 PDF）；预览详情的状态投影及重复 report 校验需整理；需验证并补齐损坏/加密/超限 PDF、过期发布、跨文档下载拒绝、错误 Range 契约。图片/Office 转换、原生队列与后续 A–G 仍未完成。
+
+**验证证据**
+- `learn python -m pytest tests/api/test_previews.py -q -p no:cacheprovider --tb=short` 的实现前执行 → ModuleNotFoundError；实现后复测未获准执行，不能记录为通过。
+- 实现后 `-m mypy src/easylearn` → 28 文件通过；Ruff 检查与格式化通过。没有运行全量测试，没有在沙箱内改用另一命令执行被拒的集成测试。
+- `pdfinfo 3rdparty/MinerU/tests/unittest/pdfs/test.pdf` → 1 页、612×792 pt、rotation=0、未加密、125121 字节；Poppler 渲染并检查了唯一一页，原图包含图组、公式、文本与竖排表格。
+- 官方资料：[PDFium Python API](https://pypdfium2.readthedocs.io/en/stable/python_api.html)、[pypdf 页面属性](https://pypdf.readthedocs.io/en/stable/modules/PageObject.html)。本地 pypdfium2 `page.py` 明确标注 UserUnit 无查询接口及页面盒继承限制。
+
+**下一步**
+- 等用户明确允许上述复测后，首先运行 `tests/api/test_previews.py`，修正真实失败，逐条继续 TDD；再完成心跳/取消监督及预览故障用例，独立中文提交。
+- 重启或恢复时先验证 PostgreSQL 会话 `31334` 是否仍存活；本次拒绝不代表 PostgreSQL 已退出。不要重新安装已有 PostgreSQL/pypdf，不要安装 MinerU，不要使用 Docker/WSL。
+- 已完成批次的证据见下一条日志。旧版未跟踪规格目录仍为用户原资料，不纳入新批次。
 
 ### 2026-09-05 — 文档受理与可靠任务持久化
 
