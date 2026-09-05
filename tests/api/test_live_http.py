@@ -77,6 +77,20 @@ def test_real_uvicorn_process_accepts_pdf_upload(
                 == 204
             )
             assert client.post(path + "/complete").json()["status"] == "UPLOADED"
+            document = client.post(
+                "/api/v1/documents",
+                json={"upload_id": response.json()["upload_id"]},
+                headers={"Idempotency-Key": "native-document"},
+            )
+            assert document.status_code == 202
+            status_url = document.headers["Location"]
+            assert client.get(status_url).json()["status"] == "QUEUED"
+            assert client.post(status_url + "/cancel").json()["status"] == "CANCELLED"
+            retried = client.post(
+                status_url + "/retry", headers={"Idempotency-Key": "native-retry"}
+            )
+            assert retried.status_code == 202
+            assert retried.json()["generation"] == 2
     finally:
         process.terminate()
         try:

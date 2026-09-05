@@ -48,6 +48,28 @@
 
 ---
 
+### 2026-09-05 — 文档受理与可靠任务持久化
+
+**目标**
+- 交付同事务文档/预览运行/任务/Outbox、幂等受理和数据库驱动的租约/取消/恢复机制，作为独立预览 Worker 的基础。
+
+**当前状态**
+- 已实现并验证：202 文档创建、文档详情、任务查询、取消与带幂等键的重试；并发相同键仅创建一个逻辑运行，冲突参数返回 409，拒绝请求不留下任务或占用幂等键。
+- 已实现并验证：Outbox 并发领取、超时接管、迟到确认拒绝；任务原子领取、DB 时钟租约、心跳、checkpoint、generation 隔离、丢失派发的补投、取消后写回拒绝、退出确认/过期取消、失败可重试性与事务发布入口。
+- 公共接口与实现入口统一索引在 [docs/README.md](docs/README.md)，数据库迁移为 `0002`。任务本批只支持 PREVIEW 类型；未宣称通用外部任务恢复策略已经完成。
+- 已提交前一批：`6ef4a90 补齐上传限额与统一错误契约`。本批单独中文提交。
+- 未完成：实际预览转换/可渲染性验证与资产发布、文档列表/新预览运行、常驻 dispatcher/reconciler 入口、真实 Redis/Dramatiq、Office、MinerU、前端及 A–G 其余功能。当前创建任务后不会自动生成 PDF；不能将数据库恢复测试视为 Redis 故障验收通过。
+
+**验证证据**
+- learn Python `-m pytest tests/api/test_documents.py tests/api/test_job_delivery.py tests/api/test_job_leases.py -q -p no:cacheprovider --tb=short` → 9 passed（6.73s）；新增行为逐条红绿推进，真实 PostgreSQL 与磁盘，未 mock 内部依赖。
+- `-m pytest tests/api/test_live_http.py tests/api/test_upload_contract.py -q -p no:cacheprovider --tb=short` → 3 passed（2.72s）；短时原生 Uvicorn 经真实 HTTP 接受 PDF，创建任务、取消、重试 generation=2，测试进程已关闭。
+- `-m mypy src/easylearn` → 24 文件通过；未运行全量测试。
+- PostgreSQL 前台会话仍为 `31334`；没有安装 MinerU，没有 Docker/WSL。
+
+**下一步**
+- 实现原生独立进程 PDF 预检和图片标准预览；通过现有 fenced publication 同事务发布预览结果，补充过期发布/错误 PDF 与真实页面几何测试。
+- 随后接入本机 Redis/Dramatiq、常驻 Outbox/Reconciler 与 Office 转换；接入独立 MinerU 服务及剩余 A–G 功能。用户已授权总体实施，不重复确认。
+
 ### 2026-09-05 — 上传限额与统一错误契约
 
 **目标**

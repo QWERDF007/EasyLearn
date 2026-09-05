@@ -12,5 +12,7 @@
 - [DocumentIR 与身份类型](../src/easylearn/document_ir/schema.py)、[坐标映射](../src/easylearn/document_ir/coordinates.py)
 - [HTTP 应用与 OpenAPI](../src/easylearn/main.py)、[上传模块](../src/easylearn/uploads/service.py)
 - [统一错误类型](../src/easylearn/errors.py)、[上传契约验证](../tests/api/test_upload_contract.py)
+- [文档与预览受理](../src/easylearn/documents/service.py)、[请求幂等](../src/easylearn/idempotency.py)
+- [任务执行与发布](../src/easylearn/jobs/service.py)、[Outbox 领取与确认](../src/easylearn/jobs/delivery.py)、[任务协议类型](../src/easylearn/jobs/schema.py)
 - [数据库迁移](../migrations/versions)、[资产存储](../src/easylearn/storage.py)
 - [协议测试](../tests/document_ir)、[真实 PostgreSQL 接口测试](../tests/api)

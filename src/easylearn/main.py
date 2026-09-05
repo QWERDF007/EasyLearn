@@ -14,7 +14,11 @@ from starlette.middleware.base import RequestResponseEndpoint
 
 from easylearn.config import Settings
 from easylearn.database import Database
+from easylearn.documents.schema import DocumentAccepted, DocumentRequest, DocumentView
+from easylearn.documents.service import DocumentService
 from easylearn.errors import DomainError, ErrorView
+from easylearn.jobs.schema import JobView
+from easylearn.jobs.service import JobService
 from easylearn.storage import LocalStorage
 from easylearn.uploads.schema import UploadCreatedView, UploadLimits, UploadRequest, UploadView
 from easylearn.uploads.service import UploadService
@@ -30,6 +34,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.database = database
         app.state.storage = storage
         app.state.uploads = UploadService(database, storage, settings)
+        app.state.documents = DocumentService(database)
+        app.state.jobs = JobService(database)
         try:
             yield
         finally:
@@ -151,5 +157,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def complete_upload(upload_id: UUID, request: Request) -> UploadView:
         uploads: UploadService = request.app.state.uploads
         return await uploads.complete(upload_id)
+
+    @app.post("/api/v1/documents", status_code=202)
+    async def create_document(
+        body: DocumentRequest,
+        request: Request,
+        response: Response,
+        idempotency_key: Annotated[str, Header(min_length=1, max_length=200)],
+    ) -> DocumentAccepted:
+        documents: DocumentService = request.app.state.documents
+        accepted = await documents.create(body, idempotency_key)
+        response.headers["Location"] = accepted.status_url
+        return accepted
+
+    @app.get("/api/v1/documents/{document_id}")
+    async def get_document(document_id: UUID, request: Request) -> DocumentView:
+        documents: DocumentService = request.app.state.documents
+        return await documents.get(document_id)
+
+    @app.get("/api/v1/jobs/{job_id}")
+    async def get_job(job_id: UUID, request: Request) -> JobView:
+        jobs: JobService = request.app.state.jobs
+        return await jobs.get(job_id)
+
+    @app.post("/api/v1/jobs/{job_id}/cancel")
+    async def cancel_job(job_id: UUID, request: Request) -> JobView:
+        jobs: JobService = request.app.state.jobs
+        return await jobs.cancel(job_id)
+
+    @app.post("/api/v1/jobs/{job_id}/retry", status_code=202)
+    async def retry_job(
+        job_id: UUID,
+        request: Request,
+        response: Response,
+        idempotency_key: Annotated[str, Header(min_length=1, max_length=200)],
+    ) -> JobView:
+        jobs: JobService = request.app.state.jobs
+        view = await jobs.retry(job_id, idempotency_key)
+        response.headers["Location"] = f"/api/v1/jobs/{job_id}"
+        return view
 
     return app

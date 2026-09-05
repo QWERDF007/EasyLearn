@@ -2,7 +2,10 @@ from alembic import context
 from sqlalchemy import create_engine, pool
 
 from easylearn.database import Base
-from easylearn.uploads import models  # noqa: F401
+from easylearn.documents import models as document_models  # noqa: F401
+from easylearn.idempotency import IdempotencyRecord  # noqa: F401
+from easylearn.jobs import models as job_models  # noqa: F401
+from easylearn.uploads import models as upload_models  # noqa: F401
 
 url = context.config.get_main_option("sqlalchemy.url")
 if not url:
