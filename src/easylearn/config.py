@@ -1,9 +1,10 @@
 import os
 import tomllib
 from pathlib import Path
+from typing import Self
 
 import yaml  # type: ignore[import-untyped]
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     InitSettingsSource,
@@ -14,6 +15,8 @@ from pydantic_settings import (
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
+from easylearn.document_ir.schema import Identifier
+from easylearn.inference.config import LocalModel, MinerUSettings, ModelRoutes, ProviderProfile
 from easylearn.previews.schema import PreviewLimits
 
 
@@ -22,7 +25,9 @@ class Settings(BaseSettings):
 
     Priority: constructor > environment > cwd .env > selected file > secrets > defaults.
     EASYLEARN_CONFIG selects a file; otherwise discover exactly one config.toml/yaml/yml
-    in cwd. Relative storage paths supplied by a file are rooted at its directory.
+    in cwd. File-supplied storage_root and models_root are relative to that file;
+    local model paths are relative to the final models_root after all overrides.
+    Loading settings does not access models or start/connect to inference services.
     """
 
     model_config = SettingsConfigDict(
@@ -40,6 +45,11 @@ class Settings(BaseSettings):
     upload_session_ttl: int = Field(default=86400, gt=0)
     preview_limits: PreviewLimits = Field(default_factory=PreviewLimits)
     preview_timeout_seconds: float = Field(default=120, gt=0)
+    models_root: Path = Path("D:/Models")
+    local_models: dict[Identifier, LocalModel] = Field(default_factory=dict)
+    mineru: MinerUSettings | None = None
+    providers: dict[Identifier, ProviderProfile] = Field(default_factory=dict)
+    model_routes: ModelRoutes = Field(default_factory=ModelRoutes)
 
     @classmethod
     def settings_customise_sources(
@@ -86,8 +96,9 @@ class Settings(BaseSettings):
                 data = {}
             if not isinstance(data, dict) or not all(isinstance(key, str) for key in data):
                 raise SettingsError(f"Configuration must be a mapping with string keys: {path}")
-            if isinstance(data.get("storage_root"), str):
-                data["storage_root"] = (path.parent / data["storage_root"]).resolve()
+            for name in ("storage_root", "models_root"):
+                if isinstance(data.get(name), str):
+                    data[name] = (path.parent / data[name]).resolve()
             sources += (InitSettingsSource(settings_cls, init_kwargs=data),)
         return sources + (file_secret_settings,)
 
@@ -101,3 +112,31 @@ class Settings(BaseSettings):
         if url.drivername != "postgresql+asyncpg":
             raise ValueError("DATABASE_URL must use postgresql+asyncpg")
         return value
+
+    @model_validator(mode="after")
+    def validate_model_configuration(self) -> Self:
+        if (
+            self.mineru is not None
+            and self.mineru.local_model is not None
+            and self.mineru.local_model not in self.local_models
+        ):
+            raise ValueError("MinerU local_model must reference a registered local model")
+        for profile in self.providers.values():
+            for reference in (profile.local_model, profile.tokenizer_model):
+                if reference is not None and reference not in self.local_models:
+                    raise ValueError(
+                        "Provider model references must identify registered local models"
+                    )
+        for purpose, profile_id in self.model_routes.model_dump().items():
+            if profile_id is None:
+                continue
+            if profile_id not in self.providers:
+                raise ValueError("Model routes must reference a registered provider profile")
+            capability = "chat" if purpose in ("translation", "qa") else purpose
+            if not getattr(self.providers[profile_id].capabilities, capability):
+                raise ValueError(f"Selected provider does not support {purpose}")
+        self.local_models = {
+            name: model.model_copy(update={"path": (self.models_root / model.path).resolve()})
+            for name, model in self.local_models.items()
+        }
+        return self

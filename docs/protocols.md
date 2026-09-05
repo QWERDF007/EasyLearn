@@ -10,5 +10,6 @@
 - MinerU 客户端真实网络传输：[HTTP 测试](../tests/mineru/test_live_http.py)，使用[合成协议服务](../tests/mineru/protocol_server.py)，不代表真实推理契约验收。
 - MinerU ZIP 结构、校验和与资源限额：[归档检查器](../src/easylearn/mineru/archive.py)、[归档测试](../tests/mineru/test_archive.py)；检查不解压、不发布，也不替代 JSON/图片/坐标语义验证。
 - 跨平台资产名称：[共用路径类型](../src/easylearn/paths.py)。
+- 模型路径登记、MinerU/LLM 连接、能力与用途路由：[配置类型](../src/easylearn/inference/config.py)、[统一加载](../src/easylearn/config.py)、[文件/覆盖/约束测试](../tests/config/test_settings.py)；服务地址复用 [ServiceUrl](../src/easylearn/urls.py)。
 
 JSON Schema 从 Pydantic 模型生成，不手写第二份字段或约束定义。

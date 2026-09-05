@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 from pydantic_settings import SettingsError
 
@@ -155,4 +156,261 @@ def test_malformed_or_non_mapping_files_fail_without_dumping_file_contents(
 def test_database_configuration_errors_are_typed_and_redacted(value):
     with pytest.raises(ValidationError) as error:
         Settings(database_url=value)
+    assert "private-password" not in str(error.value)
+
+
+@pytest.mark.parametrize("suffix", ["toml", "yaml"])
+def test_model_paths_mineru_connection_and_shared_llm_routes_come_from_the_selected_file(
+    tmp_path, suffix
+):
+    data = {
+        "database_url": "postgresql+asyncpg://user@localhost/test",
+        "models_root": "models",
+        "local_models": {"mineru_vlm": {"path": "mineru-weights", "revision": "weights-v1"}},
+        "mineru": {
+            "base_url": "http://127.0.0.1:8001",
+            "profile_revision": "mineru-v1",
+            "local_model": "mineru_vlm",
+            "parse": {"backend": "vlm-engine", "language": "en"},
+        },
+        "providers": {
+            "main": {
+                "base_url": "http://127.0.0.1:8002/v1",
+                "model": "chat-model",
+                "revision": "chat-v1",
+                "api_key": "private-model-key",
+                "context_limit": 32768,
+                "capabilities": {"chat": True, "stream": True},
+            }
+        },
+        "model_routes": {"translation": "main", "qa": "main"},
+    }
+    toml = """
+database_url = "postgresql+asyncpg://user@localhost/test"
+models_root = "models"
+[local_models.mineru_vlm]
+path = "mineru-weights"
+revision = "weights-v1"
+[mineru]
+base_url = "http://127.0.0.1:8001"
+profile_revision = "mineru-v1"
+local_model = "mineru_vlm"
+[mineru.parse]
+backend = "vlm-engine"
+language = "en"
+[providers.main]
+base_url = "http://127.0.0.1:8002/v1"
+model = "chat-model"
+revision = "chat-v1"
+api_key = "private-model-key"
+context_limit = 32768
+[providers.main.capabilities]
+chat = true
+stream = true
+[model_routes]
+translation = "main"
+qa = "main"
+"""
+    configuration = tmp_path / f"config.{suffix}"
+    configuration.write_text(toml if suffix == "toml" else yaml.safe_dump(data), encoding="utf-8")
+    settings = Settings()
+    assert settings.models_root == tmp_path / "models"
+    assert settings.local_models["mineru_vlm"].path == tmp_path / "models" / "mineru-weights"
+    assert settings.mineru.parse.backend == "vlm-engine"
+    assert settings.mineru.parse.language == "en"
+    assert settings.mineru.local_model == "mineru_vlm"
+    assert str(settings.mineru.base_url) == "http://127.0.0.1:8001/"
+    assert settings.providers["main"].model == "chat-model"
+    assert settings.providers["main"].api_key.get_secret_value() == "private-model-key"
+    assert settings.model_routes.translation == settings.model_routes.qa == "main"
+    assert "private-model-key" not in repr(settings)
+
+
+@pytest.mark.parametrize("case", ["missing_profile", "qa", "embedding", "vision", "local_model"])
+def test_model_routes_require_existing_profiles_with_the_requested_capability(case):
+    data = {
+        "database_url": "postgresql+asyncpg://user@localhost/test",
+        "providers": {
+            "main": {
+                "base_url": "http://127.0.0.1:8002/v1",
+                "model": "configured-model",
+                "revision": "v1",
+                "context_limit": 8192,
+                "capabilities": {"chat": case != "qa"},
+            }
+        },
+    }
+    if case == "missing_profile":
+        data["model_routes"] = {"qa": "missing"}
+    elif case == "local_model":
+        data["mineru"] = {
+            "base_url": "http://127.0.0.1:8001",
+            "profile_revision": "v1",
+            "local_model": "missing",
+        }
+    else:
+        data["model_routes"] = {case: "main"}
+    with pytest.raises(ValidationError):
+        Settings(**data)
+
+
+def test_generation_and_embedding_profiles_have_separate_models_budgets_and_transport_limits(
+    tmp_path,
+):
+    settings = Settings(
+        database_url="postgresql+asyncpg://user@localhost/test",
+        models_root=tmp_path,
+        local_models={"chat_weights": {"path": "chat", "revision": "weights-v1"}},
+        providers={
+            "chat": {
+                "base_url": "http://127.0.0.1:8002/v1",
+                "model": "chat-model",
+                "revision": "v2",
+                "scope": "local",
+                "local_model": "chat_weights",
+                "tokenizer_model": "chat_weights",
+                "model_revision": "served-v2",
+                "chat_template_revision": "template-v1",
+                "context_limit": 32768,
+                "capabilities": {"chat": True, "stream": True},
+                "generation": {
+                    "max_output_tokens": 4096,
+                    "temperature": 0.2,
+                    "top_p": 0.9,
+                    "reasoning_budget": 1024,
+                    "safety_margin": 512,
+                },
+                "timeouts": {"connect_seconds": 5, "read_idle_seconds": 30, "total_seconds": 120},
+                "scheduling": {
+                    "max_inflight": 4,
+                    "reserved_qa_slots": 1,
+                    "tokens_per_minute": 60000,
+                },
+            },
+            "embed": {
+                "base_url": "http://127.0.0.1:8003/v1",
+                "model": "embedding-model",
+                "revision": "v1",
+                "context_limit": 8192,
+                "capabilities": {"embedding": True},
+                "embedding": {"dimensions": 1024, "normalize": True, "max_batch_size": 16},
+            },
+        },
+        model_routes={"translation": "chat", "qa": "chat", "embedding": "embed"},
+    )
+    assert settings.providers["chat"].generation.max_output_tokens == 4096
+    assert settings.providers["chat"].timeouts.total_seconds == 120
+    assert settings.providers["chat"].scheduling.reserved_qa_slots == 1
+    assert settings.providers["chat"].tokenizer_model == "chat_weights"
+    assert settings.providers["embed"].embedding.dimensions == 1024
+    assert settings.providers["embed"].capabilities.chat is False
+    assert settings.local_models["chat_weights"].path == tmp_path / "chat"
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"model": "   "},
+        {"base_url": "http://user:private-password@127.0.0.1/v1"},
+        {"base_url": "http://127.0.0.1/v1?api_key=private-password"},
+        {"base_url": "http://127.0.0.1/v1#fragment"},
+        {"local_model": "missing"},
+        {"tokenizer_model": "missing"},
+        {"generation": {"max_output_tokens": 8192}},
+        {"generation": {"max_output_tokens": 100, "reasoning_budget": 101}},
+        {"scheduling": {"max_inflight": 1, "reserved_qa_slots": 2}},
+        {"timeouts": {"total_seconds": float("inf")}},
+        {"capabilities": {"embedding": True}},
+        {"capabilities": {"vision": True}},
+        {"capabilities": {"stream": True}},
+        {"capabilities": {"json_schema": True}},
+        {"embedding": {"dimensions": 1024}},
+    ],
+)
+def test_invalid_model_connection_budgets_capabilities_and_references_are_rejected_without_secrets(
+    changed,
+):
+    provider = {
+        "base_url": "http://127.0.0.1/v1",
+        "model": "chat",
+        "revision": "v1",
+        "context_limit": 8192,
+        "capabilities": {"chat": True},
+        "api_key": "private-password",
+        **changed,
+    }
+    with pytest.raises(ValidationError) as error:
+        Settings(
+            database_url="postgresql+asyncpg://user@localhost/test", providers={"main": provider}
+        )
+    assert "private-password" not in str(error.value)
+
+
+def test_distributed_toml_and_yaml_examples_describe_the_same_model_deployment(monkeypatch):
+    project = Path(__file__).resolve().parents[2]
+    configurations = []
+    for suffix in ("toml", "yaml"):
+        monkeypatch.setenv("EASYLEARN_CONFIG", str(project / f"config.example.{suffix}"))
+        configurations.append(Settings())
+    toml, yaml_settings = configurations
+    assert toml.model_dump() == yaml_settings.model_dump()
+    assert toml.models_root == Path("D:/Models")
+    assert toml.local_models["mineru_vlm"].path == Path("D:/Models/MinerU2.5-Pro-2605-1.2B")
+    assert toml.mineru.local_model == "mineru_vlm"
+    assert toml.mineru.parse.backend == "vlm-engine"
+    assert (
+        toml.model_routes.translation == toml.model_routes.qa == toml.model_routes.vision == "chat"
+    )
+    assert toml.model_routes.embedding == "embed"
+    assert toml.providers["chat"].tokenizer_model == "chat_weights"
+    assert toml.local_models["chat_weights"].path == Path("D:/Models/replace-with-chat-model")
+    assert toml.providers["embed"].embedding.dimensions == 1024
+
+
+@pytest.mark.parametrize("suffix", ["toml", "yaml"])
+def test_model_environment_overrides_merge_with_file_and_resolve_only_relative_paths(
+    monkeypatch, tmp_path, suffix
+):
+    project = Path(__file__).resolve().parents[2]
+    root = tmp_path / "environment-models"
+    absolute_chat = tmp_path / "separate-chat-model"
+    monkeypatch.setenv("EASYLEARN_CONFIG", str(project / f"config.example.{suffix}"))
+    monkeypatch.setenv("EASYLEARN_MODELS_ROOT", str(root))
+    monkeypatch.setenv("EASYLEARN_LOCAL_MODELS__CHAT_WEIGHTS__PATH", str(absolute_chat))
+    monkeypatch.setenv("EASYLEARN_PROVIDERS__CHAT__MODEL", "env-chat-model")
+    monkeypatch.setenv("EASYLEARN_PROVIDERS__CHAT__API_KEY", "private-env-key")
+    monkeypatch.setenv("EASYLEARN_PROVIDERS__CHAT__GENERATION__TEMPERATURE", "0.5")
+    monkeypatch.setenv("EASYLEARN_MINERU__LIMITS__REQUEST_TIMEOUT_SECONDS", "45")
+    settings = Settings(providers={"chat": {"model": "constructor-chat-model"}})
+    assert settings.providers["chat"].model == "constructor-chat-model"
+    assert Settings().providers["chat"].model == "env-chat-model"
+    assert settings.providers["chat"].generation.temperature == 0.5
+    assert settings.providers["chat"].generation.max_output_tokens == 4096
+    assert settings.providers["chat"].api_key.get_secret_value() == "private-env-key"
+    assert "private-env-key" not in repr(settings)
+    assert settings.mineru.limits.request_timeout_seconds == 45
+    assert settings.models_root == root
+    assert settings.local_models["mineru_vlm"].path == root / "MinerU2.5-Pro-2605-1.2B"
+    assert settings.local_models["chat_weights"].path == absolute_chat
+    assert not root.exists()
+    assert not absolute_chat.exists()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://user:private-password@127.0.0.1/service",
+        "http://127.0.0.1/service?api_key=private-password",
+        "http://127.0.0.1/service#private-password",
+    ],
+)
+@pytest.mark.parametrize("endpoint", ["mineru", "mineru_backend"])
+def test_mineru_connections_share_service_url_validation_without_exposing_input(url, endpoint):
+    mineru = {"base_url": "http://127.0.0.1/mineru", "profile_revision": "v1"}
+    if endpoint == "mineru":
+        mineru["base_url"] = url
+    else:
+        mineru["parse"] = {"backend": "vlm-http-client", "server_url": url}
+    with pytest.raises(ValidationError) as error:
+        Settings(database_url="postgresql+asyncpg://user@localhost/test", mineru=mineru)
     assert "private-password" not in str(error.value)

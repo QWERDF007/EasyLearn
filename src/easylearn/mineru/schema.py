@@ -3,14 +3,16 @@ from datetime import datetime
 from typing import Literal, Self
 from uuid import UUID
 
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from easylearn.document_ir.schema import Sha256
 from easylearn.paths import PortablePath
+from easylearn.urls import ServiceUrl
 
 MinerUBackend = Literal[
     "pipeline", "vlm-engine", "hybrid-engine", "vlm-http-client", "hybrid-http-client"
 ]
+MinerUVersion = Literal["3.4.5"]
 
 
 @dataclass(frozen=True)
@@ -29,12 +31,11 @@ class MinerULimits(BaseModel):
     download_timeout_seconds: float = Field(default=300, gt=0, allow_inf_nan=False)
 
 
-class MinerUOptions(BaseModel):
+class MinerUParseOptions(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    page_count: int = Field(gt=0, le=100000)
     backend: MinerUBackend = "vlm-engine"
-    server_url: AnyHttpUrl | None = None
+    server_url: ServiceUrl | None = None
     language: Literal["ch", "en"] = "ch"
     parse_method: Literal["auto", "txt", "ocr"] = "auto"
     effort: Literal["medium", "high"] = "medium"
@@ -47,6 +48,10 @@ class MinerUOptions(BaseModel):
         if self.backend.endswith("-http-client") != (self.server_url is not None):
             raise ValueError("server_url is required only for HTTP-client backends")
         return self
+
+
+class MinerUOptions(MinerUParseOptions):
+    page_count: int = Field(gt=0, le=100000)
 
 
 class MinerUTask(BaseModel):
@@ -75,7 +80,7 @@ class MinerUHealth(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     status: Literal["healthy"]
-    version: Literal["3.4.5"]
+    version: MinerUVersion
     protocol_version: Literal[2]
     task_retention_seconds: int = Field(ge=0)
 

@@ -1,2 +1,83 @@
-# 字段与默认值见 src/easylearn/config.py。
+# 字段与默认值见 src/easylearn/config.py、src/easylearn/inference/config.py。
+# 服务端口、LLM 名称、能力及预算为示例，按实际服务修改；配置加载不会启动推理服务。
 database_url = "postgresql+asyncpg://easylearn@127.0.0.1:55432/easylearn"
+models_root = "D:/Models"
+
+[local_models.mineru_vlm]
+path = "MinerU2.5-Pro-2605-1.2B"
+revision = "bff20d4ae2bf202df9f45284b4d43681555a97ed"
+
+[local_models.chat_weights]
+path = "replace-with-chat-model"
+revision = "replace-with-weights-revision"
+
+[mineru]
+base_url = "http://127.0.0.1:8001"
+profile_revision = "mineru-v1"
+local_model = "mineru_vlm"
+# 需要认证时设置 api_key，或通过 EASYLEARN_MINERU__API_KEY 注入。
+# api_key = "replace-with-mineru-key"
+
+[mineru.parse]
+backend = "vlm-engine"
+language = "en"
+
+[providers.chat]
+protocol = "openai_compatible"
+base_url = "http://127.0.0.1:8002/v1"
+model = "replace-with-served-chat-model"
+revision = "chat-v1"
+scope = "local"
+local_model = "chat_weights"
+tokenizer_model = "chat_weights"
+context_limit = 32768
+# 外部 API：填写实际 base_url、model、api_key，scope 改为 external；
+# 无本机权重时删除 local_model/tokenizer_model 及对应 local_models 条目。
+# 密钥也可通过 EASYLEARN_PROVIDERS__CHAT__API_KEY 注入。
+# api_key = "replace-with-chat-key"
+
+[providers.chat.capabilities]
+chat = true
+stream = true
+json_schema = true
+vision = true
+
+[providers.chat.generation]
+max_output_tokens = 4096
+temperature = 0.2
+top_p = 0.9
+safety_margin = 512
+
+[providers.chat.timeouts]
+connect_seconds = 5
+read_idle_seconds = 60
+total_seconds = 180
+
+[providers.chat.scheduling]
+max_inflight = 4
+reserved_qa_slots = 1
+tokens_per_minute = 60000
+
+[providers.embed]
+base_url = "http://127.0.0.1:8003/v1"
+model = "replace-with-served-embedding-model"
+revision = "embed-v1"
+scope = "local"
+context_limit = 8192
+
+[providers.embed.capabilities]
+embedding = true
+
+[providers.embed.embedding]
+dimensions = 1024
+normalize = true
+max_batch_size = 16
+
+[providers.embed.scheduling]
+reserved_qa_slots = 0
+
+[model_routes]
+translation = "chat"
+qa = "chat"
+embedding = "embed"
+vision = "chat"

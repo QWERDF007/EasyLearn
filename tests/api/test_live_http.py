@@ -19,11 +19,21 @@ from easylearn.storage import LocalStorage
 def live_client(database_url, tmp_path, request, uvicorn_server):
     env = {key: value for key, value in os.environ.items() if not key.startswith("EASYLEARN_")}
     configuration = tmp_path / f"native.{request.param}"
-    config_data = {"database_url": database_url, "storage_root": str(tmp_path)}
+    template = Path(f"config.example.{request.param}").read_text(encoding="utf-8")
+    if request.param == "toml":
+        configuration_text = (
+            f"database_url = {json.dumps(database_url)}\n"
+            f"storage_root = {json.dumps(str(tmp_path))}\n"
+            + "\n".join(
+                line for line in template.splitlines() if not line.startswith("database_url =")
+            )
+        )
+    else:
+        configuration_text = yaml.safe_dump(
+            dict(yaml.safe_load(template), database_url=database_url, storage_root=str(tmp_path))
+        )
     configuration.write_text(
-        "\n".join(f"{key} = {json.dumps(value)}" for key, value in config_data.items())
-        if request.param == "toml"
-        else yaml.safe_dump(config_data),
+        configuration_text,
         encoding="utf-8",
     )
     migrated = subprocess.run(

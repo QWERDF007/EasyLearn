@@ -50,6 +50,27 @@
 
 ---
 
+### 2026-09-05 — 模型路径与 LLM 文件配置
+
+**目标**
+- 按用户补充要求优先完成 TOML/YAML 的模型、模型路径与 LLM 接入配置；保持完整 A–G 目标。
+
+**当前状态**
+- 归档批次已提交：`94e1e26 校验 MinerU 结果归档并统一可移植资产路径`。
+- [模型配置](src/easylearn/inference/config.py) 已完成本机模型登记、MinerU、Provider、能力与用途路由；[Settings](src/easylearn/config.py) 统一文件加载、嵌套覆盖和模型路径解析。服务地址复用 [ServiceUrl](src/easylearn/urls.py)，MinerU 文件选项和运行请求复用同一解析类型；错误引用、能力组合、预算、并发预留与无穷超时均在配置入口拒绝。
+- [TOML](config.example.toml) / [YAML](config.example.yaml) 模型部署示例已补齐并验证等价；[实机运行索引](docs/native.md) 指向类型与示例，不再单独维护模型路径/修订。模型路径只登记，无加载时磁盘写入、模型下载或推理服务启动。真实 LLM/MinerU 服务尚未配置，本批不是生成/推理联调。
+- [Adapter 草稿](src/easylearn/mineru/adapter.py) 当前仅支持 title/text/interline_equation，复用坐标映射，保留行级区域并核对跨页来源；表格、图片、嵌套块和 ParseService 未完成，不混入配置批次提交。
+
+**验证证据**
+- 本轮恢复后观察已有 13 个配置红灯并修正；完整示例和 MinerU 后端地址规则均先 red 后 green。pytest 临时目录在沙箱内拒绝访问，获准沙箱外定向运行。
+- learn Python `-m pytest tests/config tests/mineru/test_client.py tests/mineru/test_adapter.py -q -p no:cacheprovider --tb=short` → 117 passed（1.64s；配置 51、客户端 51、Adapter 15）。含两种示例等价、嵌套环境/构造覆盖、绝对与相对路径；不运行全量测试。Adapter 样例为合成数据。
+- 设置 `EASYLEARN_ACCEPTANCE_PDF=D:\Papers\2403.18819v1.pdf`，`-m pytest tests/api/test_live_http.py tests/mineru/test_live_http.py -q -s -p no:cacheprovider --tb=short` → 6 passed（12.18s）。Web 从完整 TOML/YAML 示例加载并迁移，真实 27 页论文预览/下载分别 0.56s/0.55s，原件与下载摘要一致；合成 MinerU HTTP peer 传输分别 0.02s/0.05s，不代表真实模型推理。
+- PostgreSQL PID 33064 仍存在，未重新初始化。Ruff 全源码/测试/迁移通过，mypy 38 源文件通过，配置相关格式与 `git diff --check` 通过；本轮未新增截图。
+
+**下一步**
+- 本配置批次全部定向检查通过，独立中文提交；不包含 Adapter 实现/测试草稿和用户未跟踪旧版资料。
+- 再继续完整 Adapter、产物语义/几何验证和 ParseService。真实 MinerU 与 LLM 服务地址未提供，不自行安装或部署 MinerU。
+
 ### 2026-09-05 — MinerU 结果归档检查
 
 **目标**

@@ -28,15 +28,15 @@ API 文档由运行中的 `/docs` 和 `/openapi.json` 提供。存活与就绪�
 
 ## 依赖部署约束
 
-应用采用本机 Python 进程，不使用 Docker。MinerU 仅作为独立服务接入，本项目不安装 MinerU 包或模型。Redis、转换服务、LLM 与索引能力的最终部署及验收合同见[产品规格第 20 节](FastAPI_MinerU方案与交互示例_v2/FastAPI_MinerU完整开发方案_v2.md#20-部署拓扑与配置契约)。
+应用采用本机 Python 进程，不使用 Docker。MinerU 仅作为独立服务接入，本项目不安装 MinerU 包或启动 MinerU 服务。Redis、转换服务、LLM 与索引能力的最终部署及验收合同见[产品规格第 20 节](FastAPI_MinerU方案与交互示例_v2/FastAPI_MinerU完整开发方案_v2.md#20-部署拓扑与配置契约)。
 
 所有访问资产的进程必须使用同一存储根目录及有效读写权限；禁止为不同进程配置互不相通的私有资产目录。
 
-## MinerU 模型资产
+## 模型与 LLM 接入
 
-本机 VLM 模型存放在 `D:\Models\MinerU2.5-Pro-2605-1.2B`，下载缓存位于 `D:\Models\.cache\huggingface`。官方仓库为 [opendatalab/MinerU2.5-Pro-2605-1.2B](https://huggingface.co/opendatalab/MinerU2.5-Pro-2605-1.2B)，固定 revision 为 `bff20d4ae2bf202df9f45284b4d43681555a97ed`，对应仓库内 [MinerU 模型声明](../3rdparty/MinerU/mineru/utils/enum_class.py)。
+[TOML](../config.example.toml) / [YAML](../config.example.yaml) 提供等价的模型登记、MinerU 解析、聊天/Embedding profile 和用途路由示例。将占位服务地址、LLM 名称、能力及预算替换为实际部署值；外部 API 的填写位置和密钥环境变量也在示例中。模型参数与能力约束的唯一类型源是 [推理配置](../src/easylearn/inference/config.py)，MinerU 解析参数复用[协议类型](../src/easylearn/mineru/schema.py)。路径解析和覆盖语义见 [Settings](../src/easylearn/config.py)。
 
-模型是供独立 MinerU 服务使用的资产，不作为应用 Python 依赖。服务使用本地模型的配置契约见[上游模型来源说明](https://opendatalab.github.io/MinerU/usage/model_source/)；服务部署时填写实际路径，不修改用户级全局模型配置。下载与验证证据见 [WORKLOG](../WORKLOG.md)。
+模型目录登记不等于部署服务；应用不据此下载模型、检查权重完整性或启动推理进程。已有 MinerU VLM 模型的本机路径与固定 revision 见示例的 `local_models.mineru_vlm`，下载缓存位于 `D:\Models\.cache\huggingface`；官方来源对应仓库内 [MinerU 模型声明](../3rdparty/MinerU/mineru/utils/enum_class.py)。独立服务自身使用本机权重的契约见[上游模型来源说明](https://opendatalab.github.io/MinerU/usage/model_source/)，不修改用户级全局模型配置；下载与验证证据见 [WORKLOG](../WORKLOG.md)。
 
 ## 针对性测试
 
