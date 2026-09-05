@@ -50,6 +50,31 @@
 
 ---
 
+### 2026-09-05 — 子进程结果验证链路
+
+**目标**
+- 继续完整 A–G，将归档、图片、原始 JSON 与 origin PDF 检查接到可取消的真实子进程，向 ParseService 提供未发布产物证据。
+
+**当前状态**
+- 上批已提交 `4d778ee`。本批 [结果验证器](src/easylearn/mineru/result.py) 已接通真实 ZIP/图片/PDF 检查与 CAS 资产登记；ResultEvidence 包含 manifest、原始文件存储引用与 origin 预检，不返回或发布 READY，不声称 origin 与 preview 对应。
+- 四类原始 JSON 验证可解码、无重复键、有限数字及有效 Unicode；JSON 独立字节限额复用归档配置。这里只验证 JSON 语法，不取代 Adapter 的 middle 版本/块结构校验。Markdown UTF-8 与原始产物完整语义尚未纳入本验证器。
+- PDF 与结果验证复用 [执行模块](src/easylearn/execution.py)。真实故障测试发现并修复 OS 启动尚未返回时取消会遗留子进程的问题；启动任务与回收均受 shield 保护，子进程停止后排空管道、再传播取消。timeout 覆盖启动与执行；无法取回 OS 句柄时仍须等待启动握手以完成回收，不能承诺硬实时结束。
+- 结果配置使用 `mineru.validation_timeout_seconds`、`mineru.archive_limits.max_json_bytes` 与已有顶层 image_limits/preview_limits。类型和默认 timeout 为单一源，TOML/YAML 等价及覆盖已验证；生产 ParseService 尚未实现，调用方后续须显式注入这些配置。
+- CAS 对象在数据库发布前无业务引用；失败/强制结束可能留下未引用对象或 staging，后续仍需实现引用感知清理，不在取消路径删除共享 CAS 内容。
+- 未完成：SVG、可信坐标登记与综合归一化、ParseService、队列/UI/翻译/导出/AI 及真实推理验收。没有安装或运行 MinerU。
+
+**验证证据**
+- 首条真实子进程、JSON 歧义、页数不匹配、JSON 字节预算、启动阶段取消和文件 timeout 配置均先 red 后 green。外部 OS 启动处注入真实 Python 故障子进程；内部 ZIP/存储/Pillow/PDF 依赖未 mock。
+- 设置 `EASYLEARN_ACCEPTANCE_PDF=D:\Papers\2403.18819v1.pdf`，learn Python `-m pytest tests/mineru/test_result.py tests/mineru/test_archive.py tests/mineru/test_adapter.py tests/config -q -p no:cacheprovider --tb=short` → 211 passed（Result 32 / Archive 57 / Adapter 66 / config 56），14.35s。真实 27 页论文在独立子进程内重复验证，证据与对象读取一致，原件 SHA 不变；ZIP/middle 为合成、600×800 middle 尺寸未经匹配，不代表推理/坐标验收。
+- 同环境 `-m pytest tests/api/test_previews.py tests/api/test_live_http.py -q -s -p no:cacheprovider --tb=short` → 14 passed，20.01s；TOML/YAML 的真实 27 页 HTTP 预览/下载分别 0.54s / 0.68s。没有全量测试或新界面截图。
+- Ruff 全源码/测试/迁移通过，mypy 43 源文件通过；`git diff --check` 通过。
+- 旧 PostgreSQL PID 33064 已停止，pg_ctl 在原 `.runtime/postgres-data` 恢复实例，没有重新初始化；启动等待曾超时，但同一 PID 31936 后续完成自动恢复，未重复启动。最终 `Get-Process -Id 31936` 存活、pg_isready 55432 accepting connections，API 测试真实连接成功。此次日志在 data 内导致 fsync sharing violation 重试约 30s；以后启动日志应放数据目录外（如 `.runtime/postgres-server.log`）。
+
+**下一步**
+- 本批已审查并通过定向验证，中文独立提交；保留用户未跟踪旧版资料。
+- 从 ResultEvidence 继续可信坐标登记与综合归一化，再实现 ParseService 的事前 SUBMITTING、SUBMIT_UNKNOWN 恢复及 fenced 发布。需核对固定预览与上游重写 origin 的页面对应关系；不能只比较尺寸，也不能强求 PDF 字节 SHA 相等。
+- 已阅读上游：vlm/model_output_to_middle_json.py 与 pipeline/model_json_to_middle_json.py 记录 int(page.get_size())；VLM MagicModel 将归一化 bbox 乘截断尺寸，pipeline 路径还需按自身缩放合同核对。PDFium 的 PdfPosConv 可从实际页面坐标转换，不复制一套未经验证的旋转矩阵；具体本机源码在 learn 的 pypdfium2/_helpers/bitmap.py。SVG 仍需补齐，不能据本批位图测试缩小整体验收。
+
 ### 2026-09-05 — 恢复图片语义与资源边界测试
 
 **目标**

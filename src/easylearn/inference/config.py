@@ -12,6 +12,7 @@ from pydantic import (
 
 from easylearn.document_ir.schema import Identifier
 from easylearn.mineru.schema import (
+    MINERU_VALIDATION_TIMEOUT_SECONDS,
     MinerUArchiveLimits,
     MinerULimits,
     MinerUParseOptions,
@@ -40,6 +41,7 @@ class MinerUSettings(_Config):
     limits: MinerULimits = Field(default_factory=MinerULimits)
     archive_limits: MinerUArchiveLimits = Field(default_factory=MinerUArchiveLimits)
     table_limits: MinerUTableLimits = Field(default_factory=MinerUTableLimits)
+    validation_timeout_seconds: float = Field(default=MINERU_VALIDATION_TIMEOUT_SECONDS, gt=0)
 
 
 class ProviderCapabilities(_Config):

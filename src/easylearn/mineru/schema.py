@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, Self
+from typing import Final, Literal, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -14,6 +14,7 @@ MinerUBackend = Literal[
     "pipeline", "vlm-engine", "hybrid-engine", "vlm-http-client", "hybrid-http-client"
 ]
 MinerUVersion = Literal["3.4.5"]
+MINERU_VALIDATION_TIMEOUT_SECONDS: Final = 300.0
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,7 @@ class MinerUArchiveLimits(BaseModel):
     max_archive_bytes: int = Field(default=512 * 1024 * 1024, gt=0)
     max_expanded_bytes: int = Field(default=2 * 1024 * 1024 * 1024, gt=0)
     max_member_bytes: int = Field(default=512 * 1024 * 1024, gt=0)
+    max_json_bytes: int = Field(default=32 * 1024 * 1024, gt=0)
     max_members: int = Field(default=10000, gt=0)
 
 

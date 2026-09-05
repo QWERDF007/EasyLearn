@@ -10,6 +10,8 @@
 - MinerU 客户端真实网络传输：[HTTP 测试](../tests/mineru/test_live_http.py)，使用[合成协议服务](../tests/mineru/protocol_server.py)，不代表真实推理契约验收。
 - MinerU ZIP 结构、校验和与资源限额：[归档检查器](../src/easylearn/mineru/archive.py)、[归档测试](../tests/mineru/test_archive.py)；检查不解压、不发布，也不替代 JSON/PDF 坐标语义验证。
 - 图片字节解码、MIME/尺寸/帧数与像素预算：[共用图片校验](../src/easylearn/images.py)，由 [Settings](../src/easylearn/config.py) 的 `image_limits` 统一配置；解码行为参见 [Pillow Image](https://pillow.readthedocs.io/en/stable/reference/Image.html)。
+- MinerU 原始产物验证证据与不可变对象登记：[结果验证器](../src/easylearn/mineru/result.py)、[真实子进程/资产测试](../tests/mineru/test_result.py)。该证据不等同于 DocumentIR 归一化、预览对应关系或任务发布。
+- PDF 与结果验证共用的取消、超时和子进程回收：[执行模块](../src/easylearn/execution.py)。
 - MinerU middle 结构归一化：[Adapter](../src/easylearn/mineru/adapter.py)、[HTML 表格](../src/easylearn/mineru/tables.py)、[内部图片引用](../src/easylearn/mineru/assets.py)、[结构与真实资源组合测试](../tests/mineru/test_adapter.py)。输入样例来源及验收范围见测试标注，运行与真实推理验收证据见 [WORKLOG](../WORKLOG.md)。
 - 跨平台资产名称：[共用路径类型](../src/easylearn/paths.py)。
 - 模型路径登记、MinerU/LLM 连接、能力与用途路由：[配置类型](../src/easylearn/inference/config.py)、[统一加载](../src/easylearn/config.py)、[文件/覆盖/约束测试](../tests/config/test_settings.py)；服务地址复用 [ServiceUrl](../src/easylearn/urls.py)。

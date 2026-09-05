@@ -1,29 +1,24 @@
-import asyncio
 import hashlib
 import math
-import subprocess
 import sys
 from contextlib import closing
 from importlib.metadata import version
 from pathlib import Path
 
 import pypdfium2 as pdfium  # type: ignore[import-untyped]
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ValidationError
 
 from easylearn.document_ir.schema import PageGeometry
 from easylearn.errors import DomainError
+from easylearn.execution import run_validation
 from easylearn.jobs.schema import JobFailure
 from easylearn.previews.schema import PreflightReport, PreflightRequest, PreviewLimits
-
-PreflightResponse: TypeAdapter[PreflightReport | JobFailure] = TypeAdapter(
-    PreflightReport | JobFailure
-)
 
 
 class PdfPreflight:
     def __init__(self, limits: PreviewLimits, *, timeout: float = 120) -> None:
-        if timeout <= 0:
-            raise ValueError("Preflight timeout must be positive")
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("Preflight timeout must be finite and positive")
         self.limits = limits
         self.timeout = timeout
 
@@ -31,37 +26,13 @@ class PdfPreflight:
         request = PreflightRequest(
             path=path.resolve(), expected_sha256=expected_sha256, limits=self.limits
         )
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
+        result = await run_validation(
             "easylearn.previews.pdf",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            request,
+            PreflightReport,
+            timeout=self.timeout,
+            error_prefix="PREVIEW",
         )
-        try:
-            async with asyncio.timeout(self.timeout):
-                stdout, _ = await process.communicate(request.model_dump_json().encode())
-        except (TimeoutError, asyncio.CancelledError) as exc:
-            if process.returncode is None:
-                process.kill()
-            await process.wait()
-            if isinstance(exc, asyncio.CancelledError):
-                raise
-            raise DomainError(
-                "PREVIEW_TIMEOUT", "PDF validation exceeded time limit", retryable=True
-            ) from None
-        if process.returncode != 0:
-            raise DomainError(
-                "PREVIEW_PROCESS_FAILED", "PDF validation process failed", retryable=True
-            )
-        try:
-            result = PreflightResponse.validate_json(stdout)
-        except ValidationError:
-            raise DomainError("PREVIEW_PROTOCOL_INVALID", "Invalid preflight response") from None
-        if isinstance(result, JobFailure):
-            raise DomainError(result.code, result.message, retryable=result.retryable)
         if result.sha256 != expected_sha256:
             raise DomainError("STORAGE_CORRUPT", "PDF checksum does not match the asset")
         return result

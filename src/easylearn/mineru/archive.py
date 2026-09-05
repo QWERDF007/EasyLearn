@@ -25,6 +25,7 @@ RESULT_FILES: Final[dict[str, MinerUArtifactKind]] = {
     "input_origin.pdf": "original",
 }
 IMAGE_SUFFIXES: Final = {".png", ".jpeg", ".jp2", ".webp", ".gif", ".bmp", ".jpg", ".tiff", ".svg"}
+JSON_ARTIFACT_KINDS: Final = {"middle", "model", "content_list", "content_list_v2"}
 
 
 class MinerUArchive:
@@ -109,6 +110,13 @@ class MinerUArchive:
                             kind = "image"
                         if not info.filename.startswith(root) or kind is None:
                             raise DomainError("MINERU_RESULT_INVALID", "Unexpected archive member")
+                        if (
+                            kind in JSON_ARTIFACT_KINDS
+                            and info.file_size > self.limits.max_json_bytes
+                        ):
+                            raise DomainError(
+                                "MINERU_RESULT_TOO_LARGE", "JSON artifact exceeds size limit"
+                            )
                         with archive.open(info) as member:
                             checksum = hashlib.sha256()
                             observed = 0

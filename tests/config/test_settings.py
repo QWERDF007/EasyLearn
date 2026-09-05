@@ -445,3 +445,21 @@ def test_image_limits_load_from_file_and_keep_nested_overrides(tmp_path, monkeyp
     assert Settings(image_limits={"max_frames": 1}).image_limits.max_frames == 1
     with pytest.raises(ValidationError):
         Settings(image_limits={"max_total_pixels": 0})
+
+
+@pytest.mark.parametrize("suffix", ["toml", "yaml"])
+def test_result_validation_deadline_and_json_limit_use_file_configuration(tmp_path, suffix):
+    content = {
+        "toml": 'database_url = "postgresql+asyncpg://user@localhost/test"\n'
+        '[mineru]\nbase_url = "http://127.0.0.1:8001"\nprofile_revision = "v1"\n'
+        "validation_timeout_seconds = 45\n[mineru.archive_limits]\nmax_json_bytes = 4096\n",
+        "yaml": "database_url: postgresql+asyncpg://user@localhost/test\n"
+        "mineru:\n  base_url: http://127.0.0.1:8001\n  profile_revision: v1\n"
+        "  validation_timeout_seconds: 45\n  archive_limits:\n    max_json_bytes: 4096\n",
+    }
+    (tmp_path / f"config.{suffix}").write_text(content[suffix], encoding="utf-8")
+    settings = Settings()
+    assert settings.mineru.validation_timeout_seconds == 45
+    assert settings.mineru.archive_limits.max_json_bytes == 4096
+    with pytest.raises(ValidationError):
+        Settings(mineru={"validation_timeout_seconds": float("inf")})

@@ -20,6 +20,7 @@ mineru:
   base_url: http://127.0.0.1:8001
   profile_revision: mineru-v1
   local_model: mineru_vlm
+  validation_timeout_seconds: 300
   # 需要认证时设置 api_key，或通过 EASYLEARN_MINERU__API_KEY 注入。
   # api_key: replace-with-mineru-key
   parse:
@@ -28,6 +29,8 @@ mineru:
   table_limits:
     max_columns: 1000
     max_cells: 100000
+  archive_limits:
+    max_json_bytes: 33554432
 
 providers:
   chat:
