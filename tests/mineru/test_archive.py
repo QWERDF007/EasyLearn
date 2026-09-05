@@ -224,3 +224,113 @@ def test_real_paper_and_image_are_checksummed_in_a_synthetic_result_package(resu
     assert by_kind["image"].size == len(image.getvalue())
     assert hashlib.sha256(source.read_bytes()).hexdigest() == expected
     assert list(path.parent.iterdir()) == [path]
+
+
+def test_archive_image_metadata_comes_from_actual_decoding(result_zip):
+    with BytesIO() as buffer, Image.new("RGB", (40, 20), "white") as picture:
+        picture.save(buffer, format="PNG")
+        png = buffer.getvalue()
+    path = result_zip(changes={"input/vlm/images/figure.png": png})
+    manifest = MinerUArchive().inspect(path, options=MinerUOptions(page_count=1))
+    member = next(member for member in manifest.members if member.kind == "image")
+    assert member.image.mime == "image/png"
+    assert (member.image.width, member.image.height, member.image.frames) == (40, 20, 1)
+    assert member.sha256 == hashlib.sha256(png).hexdigest()
+    assert next(member for member in manifest.members if member.kind == "original").image is None
+
+
+@pytest.mark.parametrize(
+    "case, code",
+    [
+        ("wrong_suffix", "IMAGE_FORMAT_MISMATCH"),
+        ("missing_end", "IMAGE_INVALID"),
+    ],
+)
+def test_archive_cannot_publish_disguised_or_incomplete_images(result_zip, case, code):
+    with BytesIO() as buffer, Image.new("RGB", (40, 20), "white") as picture:
+        picture.save(buffer, format="JPEG" if case == "wrong_suffix" else "PNG")
+        content = buffer.getvalue()
+    if case == "missing_end":
+        content = content[:-12]
+    path = result_zip(changes={"input/vlm/images/figure.png": content})
+    with pytest.raises(DomainError, match=code):
+        MinerUArchive().inspect(path, options=MinerUOptions(page_count=1))
+
+
+@pytest.mark.parametrize("case", ["pixels", "frames", "archive_total"])
+def test_archive_bounds_decoded_image_resources_not_just_compressed_bytes(result_zip, case):
+    from easylearn.images import ImageLimits
+
+    with BytesIO() as buffer, Image.new("RGB", (40, 20), "white") as first:
+        if case == "frames":
+            with Image.new("RGB", (40, 20), "black") as second:
+                first.save(buffer, format="GIF", save_all=True, append_images=[second])
+        else:
+            first.save(buffer, format="PNG")
+        content = buffer.getvalue()
+    changes = {
+        "input/vlm/images/figure.gif"
+        if case == "frames"
+        else "input/vlm/images/figure.png": content
+    }
+    if case == "archive_total":
+        changes["input/vlm/images/second.png"] = content
+    policy = {
+        "pixels": {"max_pixels": 799},
+        "frames": {"max_frames": 1},
+        "archive_total": {"max_total_pixels": 1200},
+    }
+    path = result_zip(changes=changes)
+    with pytest.raises(DomainError, match="IMAGE_LIMIT"):
+        MinerUArchive(image_limits=ImageLimits(**policy[case])).inspect(
+            path, options=MinerUOptions(page_count=1)
+        )
+
+
+@pytest.mark.parametrize("budget, accepted", [(2400, True), (2399, False)])
+def test_archive_counts_each_frame_at_its_actual_dimensions(result_zip, budget, accepted):
+    from easylearn.images import ImageLimits
+
+    with (
+        BytesIO() as buffer,
+        Image.new("RGB", (40, 20), "white") as first,
+        Image.new("RGB", (40, 40), "black") as second,
+    ):
+        first.save(buffer, format="TIFF", save_all=True, append_images=[second])
+        content = buffer.getvalue()
+    path = result_zip(changes={"input/vlm/images/figure.tiff": content})
+    checker = MinerUArchive(image_limits=ImageLimits(max_frames=2, max_total_pixels=budget))
+    if not accepted:
+        with pytest.raises(DomainError, match="IMAGE_LIMIT"):
+            checker.inspect(path, options=MinerUOptions(page_count=1))
+        return
+    manifest = checker.inspect(path, options=MinerUOptions(page_count=1))
+    metadata = next(member.image for member in manifest.members if member.kind == "image")
+    assert (metadata.width, metadata.height, metadata.frames) == (40, 20, 2)
+    assert metadata.decoded_pixels == 2400
+
+
+@pytest.mark.parametrize(
+    "format, suffix, mime",
+    [
+        ("PNG", ".png", "image/png"),
+        ("JPEG", ".jpeg", "image/jpeg"),
+        ("JPEG", ".JPG", "image/jpeg"),
+        ("JPEG2000", ".jp2", "image/jp2"),
+        ("WEBP", ".webp", "image/webp"),
+        ("GIF", ".gif", "image/gif"),
+        ("BMP", ".bmp", "image/bmp"),
+        ("TIFF", ".tiff", "image/tiff"),
+    ],
+)
+def test_archive_decodes_supported_raster_formats(result_zip, format, suffix, mime):
+    with BytesIO() as buffer, Image.new("RGB", (40, 20), "white") as picture:
+        picture.save(buffer, format=format)
+        content = buffer.getvalue()
+    path = result_zip(changes={f"input/vlm/images/figure{suffix}": content})
+    manifest = MinerUArchive().inspect(path, options=MinerUOptions(page_count=1))
+    metadata = next(member.image for member in manifest.members if member.kind == "image")
+    assert metadata.mime == mime
+    assert metadata.format == format
+    assert (metadata.width, metadata.height, metadata.frames) == (40, 20, 1)
+    assert metadata.decoded_pixels == 800

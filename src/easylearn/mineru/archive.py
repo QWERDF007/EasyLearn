@@ -6,6 +6,7 @@ from typing import Final
 from zipfile import ZIP_DEFLATED, ZIP_STORED, BadZipFile, ZipFile
 
 from easylearn.errors import DomainError
+from easylearn.images import ImageLimits, inspect_image
 from easylearn.mineru.schema import (
     MinerUArchiveLimits,
     MinerUArchiveManifest,
@@ -29,8 +30,11 @@ IMAGE_SUFFIXES: Final = {".png", ".jpeg", ".jp2", ".webp", ".gif", ".bmp", ".jpg
 class MinerUArchive:
     """Inspect fixed-profile artifacts without extracting or publishing any files."""
 
-    def __init__(self, *, limits: MinerUArchiveLimits | None = None) -> None:
+    def __init__(
+        self, *, limits: MinerUArchiveLimits | None = None, image_limits: ImageLimits | None = None
+    ) -> None:
         self.limits = limits or MinerUArchiveLimits()
+        self.image_limits = image_limits or ImageLimits()
 
     def inspect(self, path: Path, *, options: MinerUOptions) -> MinerUArchiveManifest:
         directory = (
@@ -72,6 +76,7 @@ class MinerUArchive:
                             "MINERU_RESULT_INVALID", "Archive member names must be unique"
                         )
                     expanded = 0
+                    remaining_pixels = self.image_limits.max_total_pixels
                     for info in entries:
                         if info.file_size > self.limits.max_member_bytes:
                             raise DomainError(
@@ -123,12 +128,28 @@ class MinerUArchive:
                                 raise DomainError(
                                     "MINERU_RESULT_INVALID", "Archive member size does not match"
                                 )
+                        image = None
+                        if kind == "image":
+                            if remaining_pixels == 0:
+                                raise DomainError(
+                                    "IMAGE_LIMIT", "Archive image pixel budget exhausted"
+                                )
+                            with archive.open(info) as image_source:
+                                image = inspect_image(
+                                    image_source,
+                                    expected_suffix=relative.suffix,
+                                    limits=self.image_limits.model_copy(
+                                        update={"max_total_pixels": remaining_pixels}
+                                    ),
+                                )
+                            remaining_pixels -= image.decoded_pixels
                         members.append(
                             MinerUArchiveMember(
                                 path=info.filename,
                                 kind=kind,
                                 sha256=checksum.hexdigest(),
                                 size=observed,
+                                image=image,
                             )
                         )
             except (BadZipFile, EOFError, zlib.error, UnicodeError):

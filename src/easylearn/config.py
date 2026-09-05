@@ -16,6 +16,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
 from easylearn.document_ir.schema import Identifier
+from easylearn.images import ImageLimits
 from easylearn.inference.config import LocalModel, MinerUSettings, ModelRoutes, ProviderProfile
 from easylearn.previews.schema import PreviewLimits
 
@@ -44,6 +45,7 @@ class Settings(BaseSettings):
     upload_chunk_bytes: int = Field(default=4 * 1024 * 1024, gt=0)
     upload_session_ttl: int = Field(default=86400, gt=0)
     preview_limits: PreviewLimits = Field(default_factory=PreviewLimits)
+    image_limits: ImageLimits = Field(default_factory=ImageLimits)
     preview_timeout_seconds: float = Field(default=120, gt=0)
     models_root: Path = Path("D:/Models")
     local_models: dict[Identifier, LocalModel] = Field(default_factory=dict)

@@ -50,6 +50,26 @@
 
 ---
 
+### 2026-09-05 — 恢复图片语义与资源边界测试
+
+**目标**
+- 延续完整 A–G，完成实际图片解码与资源限额，并复用统一文件配置。
+
+**当前状态**
+- 上批结构归一化已提交 `c6c3d83`。恢复的未提交图片草稿位于 [images.py](src/easylearn/images.py)、归档检查器/manifest 与对应测试。
+- [图片检查](src/easylearn/images.py) 经真实解码登记 MIME/首帧尺寸/帧数及累计像素；拒绝后缀伪装、缺少 PNG IEND 和超出单帧/帧数/归档总预算。逐帧 seek/load，不提前遍历全部帧计数；不同尺寸 TIFF 按每帧实际大小计量，不以首帧尺寸相乘。Pillow 解压炸弹错误归类为 IMAGE_LIMIT，不改全局阈值。
+- 共用 ImageLimits 已接入 [Settings](src/easylearn/config.py) 顶层 `image_limits`，TOML/YAML 示例等价，构造与嵌套环境覆盖已验证。Archive 显式接收该类型，下一步生产结果处理器须从配置注入；本轮没有虚构尚不存在的生产调用入口。
+- 未完成：SVG（当前会被 Pillow 拒绝，不能据此将验收范围永久缩为位图）、受限子进程综合结果处理、origin PDF 几何证明、ParseService 与完整 A–G；实际 MinerU/LLM 服务尚未接入。未安装/启动 MinerU，未改 Python 环境、数据库或用户论文，未新增界面截图。
+
+**验证证据**
+- 上轮图片元数据/伪装/不完整图像 3 项通过；本轮 learn Python `-m pytest tests/mineru/test_archive.py -k bounds_decoded -q -p no:cacheprovider --tb=short` 重现 3 项 red（缺 ImageLimits），实现后 6 项图片定向测试 green。配置文件限额 2 项先 red（未知字段）后 green。
+- 设置 `EASYLEARN_ACCEPTANCE_PDF=D:\Papers\2403.18819v1.pdf`，learn Python `-m pytest tests/mineru/test_archive.py tests/mineru/test_adapter.py tests/config -q -p no:cacheprovider --tb=short` → 177 passed（Archive 57 / Adapter 66 / config 54）。包含 8 种位图格式/后缀组合、不同帧尺寸与精确预算边界、真实 27 页论文只读资源组合；ZIP/middle 仍为合成，不是模型输出捕获。未运行全量测试。
+- Ruff 全源码/测试/迁移与 mypy 41 源文件通过；相关源码/测试格式化通过。
+
+**下一步**
+- 本批图片校验与配置已通过定向验证，独立中文提交；保留用户未跟踪旧版资料。
+- 继续 SVG 处理及受控子进程综合产物验证，复用 PDF 生命周期与存储，验证原始 JSON/origin PDF 并登记可信坐标，再接 ParseService（事前 SUBMITTING、SUBMIT_UNKNOWN 恢复、租约 fenced 发布）。不得把合成产物校验当成真实推理验收；真实服务地址仍未提供，但不阻塞其余实现。
+
 ### 2026-09-05 — MinerU 结构归一化内核
 
 **目标**

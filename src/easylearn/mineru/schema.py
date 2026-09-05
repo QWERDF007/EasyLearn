@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from easylearn.document_ir.schema import Sha256
+from easylearn.images import ImageMetadata
 from easylearn.paths import PortablePath
 from easylearn.urls import ServiceUrl
 
@@ -115,6 +116,7 @@ class MinerUArchiveMember(BaseModel):
     kind: MinerUArtifactKind
     sha256: Sha256
     size: int = Field(ge=0)
+    image: ImageMetadata | None = None
 
 
 class MinerUArchiveManifest(BaseModel):

@@ -426,3 +426,22 @@ def test_mineru_table_limits_use_the_shared_file_configuration(tmp_path):
     settings = Settings()
     assert settings.mineru.table_limits.max_cells == 2500
     assert settings.mineru.table_limits.max_columns == 100
+
+
+@pytest.mark.parametrize("suffix", ["toml", "yaml"])
+def test_image_limits_load_from_file_and_keep_nested_overrides(tmp_path, monkeypatch, suffix):
+    config = {
+        "toml": 'database_url = "postgresql+asyncpg://user@localhost/test"\n'
+        "[image_limits]\nmax_pixels = 900\nmax_frames = 3\nmax_total_pixels = 2400\n",
+        "yaml": "database_url: postgresql+asyncpg://user@localhost/test\n"
+        "image_limits:\n  max_pixels: 900\n  max_frames: 3\n  max_total_pixels: 2400\n",
+    }
+    (tmp_path / f"config.{suffix}").write_text(config[suffix], encoding="utf-8")
+    monkeypatch.setenv("EASYLEARN_IMAGE_LIMITS__MAX_FRAMES", "2")
+    settings = Settings()
+    assert settings.image_limits.max_pixels == 900
+    assert settings.image_limits.max_frames == 2
+    assert settings.image_limits.max_total_pixels == 2400
+    assert Settings(image_limits={"max_frames": 1}).image_limits.max_frames == 1
+    with pytest.raises(ValidationError):
+        Settings(image_limits={"max_total_pixels": 0})
