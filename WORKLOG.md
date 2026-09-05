@@ -50,6 +50,29 @@
 
 ---
 
+### 2026-09-05 — 产物归一化与预览坐标登记
+
+**目标**
+- 延续完整 A–G，将原始产物验证、固定预览对应证据和 DocumentIR 归一化接到同一个受控子进程。
+
+**当前状态**
+- 上批已提交 `265006f`。当前未提交 [结果验证器 normalize](src/easylearn/mineru/result.py) 增加 ParseSource/NormalizedEvidence，复用 validate_result 和 Adapter，稳定 UUID5 图片身份，DocumentIR 存为 CAS 对象，尚不发布数据库 READY。
+- [PDF 登记](src/easylearn/mineru/registration.py)：固定 preview SHA/大小、页数及几何核对；字节不同时使用相同配置逐页渲染、要求像素摘要完全一致，并保存方法/分辨率/摘要证据。这是指定渲染分辨率的页面等价证据，不是两个 PDF 完整语义相同的证明。
+- 坐标复用真实 PDFium 的位置转换：VLM/hybrid 使用 int(page.get_size()) 归一化坐标，pipeline 按固定上游 200dpi / 3500 上限及 ceil 渲染尺寸回推。PDFium 浮点逆矩阵端点按页面尺度容差匹配唯一 CropBox 顶点，锚点取 PDF 元数据精确值，不将任意内容 bbox 四舍五入或裁剪。此为固定本地上游源码推导并验证的合同，仍需真实服务捕获核验服务自身环境。
+- 未完成：原始产物剩余语义/复杂上游变体、SVG、ParseService/队列/UI/翻译/导出/AI 与真实推理验收。没有安装或启动 MinerU，也没有改变用户论文。
+
+**验证证据**
+- 首条归档→IR、上游重写 metadata PDF、pipeline/hybrid 小数页坐标分别 red→green；4 种真实旋转/非零 CropBox 与错误同尺寸页面内容已通过。版本、middle 页尺寸、缺失图片和表格限额传播均有失败用例。
+- 大页渲染上限用例触发 red，实测 PdfPosConv 在 2000×3000 页/2334×3500 frame 返回左上 y=3000.000244140625、左下 y=0.000244140625；据此把顶点判定从固定绝对容差改为页面尺度的浮点精度预算，仍必须唯一匹配已知顶点。全部 3 后端的小数/大页合同 6 项通过，未放宽最终内容 bbox。
+- 设置 `EASYLEARN_ACCEPTANCE_PDF=D:\Papers\2403.18819v1.pdf`，learn Python `-m pytest tests/mineru/test_result.py tests/mineru/test_adapter.py tests/document_ir -q -p no:cacheprovider --tb=short` → 181 passed（Result 50 / Adapter 66 / IR 65），25.82s。用户 27 页论文实际生成并读取 DocumentIR，27 个合成块各自绑定正确页，首块 PDF bbox=(10,752,50,772)，原件 SHA 不变。middle 文本仍为合成，但 page_size 从真实文件获得，不再用未经匹配的 600×800 作为归一化证据；不代表真实推理质量验收。
+- Ruff 全源码/测试/迁移通过，mypy 44 源文件通过；相关格式化与 `git diff --check` 通过。未运行全量测试、未修改数据库或 Python 环境、未新增界面截图。
+
+**下一步**
+- 本批已审查并通过定向验证，可独立中文提交；保留用户未跟踪旧版资料。
+- 下一批直接继续 ParseService 事前 SUBMITTING、SUBMIT_UNKNOWN 恢复与 fenced 发布，使用 MinerUResultValidator.normalize(archive, options, source) 获得 CAS IR 和原始证据。Settings 的 image/preview/mineru archive/table limits 与 validation_timeout 必须显式注入；页面对应证据不是 READY 状态。
+- 继续 SVG、Markdown UTF-8/原始产物完整语义、复杂上游变体及服务依赖契约验收；完整 A–G 目标不变，真实服务地址缺失不阻塞其余代码实现。
+- 已核对 hybrid/cal_real_bbox 和 pipeline/__fix_axis，txt_spans_extract 填写文本但仍沿用原 span bbox，span_block_fix 用 spans 汇总 line bbox；不要重复调查这些事实。仍需真实服务捕获来完成固定版本模型契约验收。
+
 ### 2026-09-05 — 子进程结果验证链路
 
 **目标**
