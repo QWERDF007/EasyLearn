@@ -5,6 +5,7 @@ from easylearn.database import Base
 from easylearn.documents import models as document_models  # noqa: F401
 from easylearn.idempotency import IdempotencyRecord  # noqa: F401
 from easylearn.jobs import models as job_models  # noqa: F401
+from easylearn.parses import models as parse_models  # noqa: F401
 from easylearn.uploads import models as upload_models  # noqa: F401
 
 url = context.config.get_main_option("sqlalchemy.url")

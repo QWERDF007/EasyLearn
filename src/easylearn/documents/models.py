@@ -2,7 +2,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from pydantic import JsonValue
-from sqlalchemy import DateTime, ForeignKey, String, func
+from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -21,6 +21,9 @@ class Document(Base):
 
 class PreviewRun(Base):
     __tablename__ = "preview_runs"
+    __table_args__ = (
+        UniqueConstraint("id", "document_id", "preview_asset_id", name="uq_preview_runs_source"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     document_id: Mapped[UUID] = mapped_column(ForeignKey("documents.id"), index=True)

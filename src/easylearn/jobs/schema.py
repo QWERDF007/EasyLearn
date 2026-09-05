@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 class JobKind(StrEnum):
     PREVIEW = "PREVIEW"
+    PARSE = "PARSE"
 
 
 class JobStatus(StrEnum):

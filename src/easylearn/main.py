@@ -20,6 +20,8 @@ from easylearn.downloads import AssetResponse
 from easylearn.errors import DomainError, ErrorView
 from easylearn.jobs.schema import JobView
 from easylearn.jobs.service import JobService
+from easylearn.parses.schema import ParseAccepted, ParseRequest, ParseView
+from easylearn.parses.service import ParseService
 from easylearn.storage import LocalStorage
 from easylearn.uploads.schema import UploadCreatedView, UploadLimits, UploadRequest, UploadView
 from easylearn.uploads.service import UploadService
@@ -37,6 +39,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.uploads = UploadService(database, storage, settings)
         app.state.documents = DocumentService(database)
         app.state.jobs = JobService(database)
+        app.state.parses = ParseService(database, settings)
         try:
             yield
         finally:
@@ -182,6 +185,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         documents: DocumentService = request.app.state.documents
         storage: LocalStorage = request.app.state.storage
         asset = await documents.asset(document_id, asset_id)
+        return AssetResponse(
+            storage.path(asset.storage_key),
+            media_type=asset.mime,
+            headers={"ETag": f'"{asset.sha256}"'},
+        )
+
+    @app.post("/api/v1/documents/{document_id}/parse-runs", status_code=202)
+    async def create_parse(
+        document_id: UUID,
+        body: ParseRequest,
+        request: Request,
+        response: Response,
+        idempotency_key: Annotated[str, Header(min_length=1, max_length=200)],
+    ) -> ParseAccepted:
+        parses: ParseService = request.app.state.parses
+        accepted = await parses.create(document_id, body, idempotency_key)
+        response.headers["Location"] = accepted.status_url
+        return accepted
+
+    @app.get("/api/v1/documents/{document_id}/parse-runs")
+    async def list_parses(document_id: UUID, request: Request) -> list[ParseView]:
+        parses: ParseService = request.app.state.parses
+        return await parses.list(document_id)
+
+    @app.get("/api/v1/documents/{document_id}/parse-runs/{parse_run_id}/preview")
+    @app.head("/api/v1/documents/{document_id}/parse-runs/{parse_run_id}/preview")
+    async def get_parse_preview(
+        document_id: UUID, parse_run_id: UUID, request: Request
+    ) -> AssetResponse:
+        parses: ParseService = request.app.state.parses
+        storage: LocalStorage = request.app.state.storage
+        asset = await parses.preview(document_id, parse_run_id)
         return AssetResponse(
             storage.path(asset.storage_key),
             media_type=asset.mime,

@@ -50,6 +50,28 @@
 
 ---
 
+### 2026-09-05 — 解析受理与固定配置快照
+
+**目标**
+- 延续完整 A–G，恢复本机测试并将已 READY 的预览接入持久化 ParseRun；从同一 TOML/YAML 配置冻结模型、路径及解析参数。
+
+**当前状态**
+- 上批已提交 `041fb75`。[ParseService](src/easylearn/parses/service.py) 已实现解析受理、版本列表及固定 PDF 下载；[解析类型](src/easylearn/parses/schema.py) 是请求与快照定义源。受理与 Job/Outbox/幂等回执同事务，只有所属文档的 READY 预览可受理；配置快照不包含密钥，页数由真实预检结果提供。配置改变不重写旧运行或幂等回执，运行状态仍由 Job 派生。
+- [迁移 0004](migrations/versions/0004_parse_runs.py) 与 ORM 用复合外键绑定预览所属文档/固定资产和任务所属文档/运行身份；迁移已在隔离数据库执行，未迁移已有业务库。不同文档可共享 PDF 内容，但不能共享解析任务状态。
+- 尚未实现 ParseService 执行、SUBMITTING/SUBMIT_UNKNOWN 与 fenced 结果发布；本批不会调用 MinerU，不将受理的 QUEUED 视为解析完成。SVG、完整上游语义、队列、UI、翻译、导出和 AI 仍未完成；没有新增截图、没有修改论文或安装/启动 MinerU。
+
+**验证证据**
+- 解析受理首条测试由缺失路由 404 red 到 green；固定解析版本 PDF 的 Range/HEAD/ETag 接口独立 red→green。额外覆盖未就绪/不存在/跨文档预览、未配置服务、非法参数、并发同键只投递一次、配置变更与幂等冲突、共享 PDF 的运行隔离和取消重试配置保持。
+- 设置 `EASYLEARN_ACCEPTANCE_PDF=D:\Papers\2403.18819v1.pdf`，learn Python `-m pytest tests/api/test_parses.py tests/api/test_documents.py tests/api/test_job_delivery.py tests/api/test_live_http.py tests/config -q -s -p no:cacheprovider --tb=short` → 75 passed（25.24s）；未运行全量测试。真实 PostgreSQL 与真实 Uvicorn 子进程，分别读取完整 TOML/YAML；27 页 PDF 预览、解析受理、下载分别 0.61s/0.62s，冻结模型目录与页数正确，原件和固定下载 SHA 一致。无真实 MinerU 或 LLM 推理证据。
+- Ruff 全源码/测试/迁移通过，mypy 48 源文件通过；相关格式与 `git diff --check` 通过。
+- PostgreSQL 恢复时首次启动遗漏原端口选项，日志证实监听 5432；随即用 `pg_ctl restart -D D:\Project\EasyLearn\.runtime\postgres-data -l D:\Project\EasyLearn\.runtime\postgres-server.log -o '-h 127.0.0.1 -p 55432' -w -t 20` 恢复原端口。最终 PID 29908、pg_isready 55432 accepting；未重新初始化数据。后续启动必须保留 `-o` 端口参数，日志仍放 data 目录外。
+
+**下一步**
+- 本批可独立中文提交，保留用户未跟踪旧版资料目录，不混入提交。
+- 直接从 ParseRun 固定配置与输入继续执行链路：调用前持久化 request_id/参数摘要/SUBMITTING；取得回执前中断必须进入 SUBMIT_UNKNOWN，不盲目重发。已有 JobService.reconcile/retry 保留 checkpoint，后续执行器需要据此区分恢复与新提交。客户凭据取运行时配置，但不得将旧运行悄悄切换到不同服务/profile。
+- 原始归档下载后复用 MinerUResultValidator.normalize 和所有 Settings 验证限额，JobService.publication 做 fenced 发布。注意 Asset.sha256 全局唯一，而 normalize 目前按 UUID5(parse_run_id, member.path) 生成逻辑图片 ID；先统一物理对象/逻辑资产引用模型，不能插入重复 SHA 或随意改写已冻结 IR 身份。
+- 完整目标不变；真实 MinerU/LLM 地址缺失不阻塞其余可实现代码。不要重复核查上一条中已有的 PDF 坐标证据。
+
 ### 2026-09-05 — 产物归一化与预览坐标登记
 
 **目标**

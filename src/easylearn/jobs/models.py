@@ -2,7 +2,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from pydantic import JsonValue
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -13,6 +13,7 @@ from easylearn.jobs.schema import JobKind, JobStatus, RunRef
 class JobRun(Base):
     __tablename__ = "job_runs"
     __table_args__ = (
+        UniqueConstraint("id", "document_id", "run_id", name="uq_job_runs_identity"),
         CheckConstraint("generation > 0", name="job_generation"),
         CheckConstraint(
             "status IN ('QUEUED','RUNNING','SUCCEEDED','FAILED','CANCEL_REQUESTED','CANCELLED')",

@@ -143,5 +143,25 @@ async def test_user_paper_is_validated_and_served_unchanged_over_real_http(
     partial = client.get(download_path, headers={"Range": "bytes=0-7"})
     assert partial.status_code == 206
     assert partial.content == b"%PDF-1.5"
+    parse_path = document_path + "/parse-runs"
+    parsed = client.post(
+        parse_path,
+        json={"preview_run_id": accepted.json()["preview_run_id"]},
+        headers={"Idempotency-Key": "real-paper-parse"},
+    )
+    assert parsed.status_code == 202
+    (run,) = client.get(parse_path).json()
+    assert run["configuration"]["options"]["page_count"] == 27
+    assert run["configuration"]["options"]["language"] == "en"
+    assert run["configuration"]["profile_revision"] == "mineru-v1"
+    assert Path(run["configuration"]["local_model"]["path"]) == Path(
+        "D:/Models/MinerU2.5-Pro-2605-1.2B"
+    )
+    assert run["status"] == "QUEUED"
+    fixed_preview = client.get(parse_path + f"/{parsed.json()['parse_run_id']}/preview")
+    assert fixed_preview.status_code == 200
+    assert hashlib.sha256(fixed_preview.content).hexdigest() == digest
     assert hashlib.sha256(source.read_bytes()).hexdigest() == digest
-    print(f"27-page PDF preview and HTTP download: {time.perf_counter() - started:.2f}s")
+    print(
+        f"27-page PDF preview, parse acceptance and download: {time.perf_counter() - started:.2f}s"
+    )
