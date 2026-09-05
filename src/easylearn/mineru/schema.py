@@ -99,6 +99,15 @@ class MinerUArchiveLimits(BaseModel):
     max_members: int = Field(default=10000, gt=0)
 
 
+class MinerUTableLimits(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    max_rows: int = Field(default=10000, gt=0)
+    max_columns: int = Field(default=1000, gt=0)
+    max_cells: int = Field(default=100000, gt=0)
+    max_markup_chars: int = Field(default=10 * 1024 * 1024, gt=0)
+
+
 class MinerUArchiveMember(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 

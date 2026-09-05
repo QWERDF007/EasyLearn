@@ -414,3 +414,15 @@ def test_mineru_connections_share_service_url_validation_without_exposing_input(
     with pytest.raises(ValidationError) as error:
         Settings(database_url="postgresql+asyncpg://user@localhost/test", mineru=mineru)
     assert "private-password" not in str(error.value)
+
+
+def test_mineru_table_limits_use_the_shared_file_configuration(tmp_path):
+    (tmp_path / "config.toml").write_text(
+        'database_url = "postgresql+asyncpg://user@localhost/test"\n'
+        '[mineru]\nbase_url = "http://127.0.0.1:8001"\nprofile_revision = "v1"\n'
+        "[mineru.table_limits]\nmax_cells = 2500\nmax_columns = 100\n",
+        encoding="utf-8",
+    )
+    settings = Settings()
+    assert settings.mineru.table_limits.max_cells == 2500
+    assert settings.mineru.table_limits.max_columns == 100

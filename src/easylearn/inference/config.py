@@ -11,7 +11,12 @@ from pydantic import (
 )
 
 from easylearn.document_ir.schema import Identifier
-from easylearn.mineru.schema import MinerUArchiveLimits, MinerULimits, MinerUParseOptions
+from easylearn.mineru.schema import (
+    MinerUArchiveLimits,
+    MinerULimits,
+    MinerUParseOptions,
+    MinerUTableLimits,
+)
 from easylearn.urls import ServiceUrl
 
 
@@ -34,6 +39,7 @@ class MinerUSettings(_Config):
     parse: MinerUParseOptions = Field(default_factory=MinerUParseOptions)
     limits: MinerULimits = Field(default_factory=MinerULimits)
     archive_limits: MinerUArchiveLimits = Field(default_factory=MinerUArchiveLimits)
+    table_limits: MinerUTableLimits = Field(default_factory=MinerUTableLimits)
 
 
 class ProviderCapabilities(_Config):

@@ -261,22 +261,25 @@ class OfficeElementLocator(FrozenModel):
 SourceLocator = Annotated[PageLocator | OfficeElementLocator, Field(discriminator="kind")]
 
 
+BlockType = Literal[
+    "heading",
+    "paragraph",
+    "list",
+    "list_item",
+    "table",
+    "table_cell",
+    "formula",
+    "code",
+    "image",
+    "caption",
+    "reference",
+    "footnote",
+]
+
+
 class Block(FrozenModel):
     block_id: Identifier
-    block_type: Literal[
-        "heading",
-        "paragraph",
-        "list",
-        "list_item",
-        "table",
-        "table_cell",
-        "formula",
-        "code",
-        "image",
-        "caption",
-        "reference",
-        "footnote",
-    ]
+    block_type: BlockType
     order_index: int = Field(ge=0)
     parent_block_id: Identifier | None = None
     section_path: tuple[str, ...] = ()

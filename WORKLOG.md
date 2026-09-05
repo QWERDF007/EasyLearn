@@ -50,6 +50,49 @@
 
 ---
 
+### 2026-09-05 — MinerU 结构归一化内核
+
+**目标**
+- 继续完整 A–G，交付固定 middle 协议到 DocumentIR 的结构归一化内核及表格资源边界，不将其冒充真实推理/完整 ParseService。
+
+**当前状态**
+- [Adapter](src/easylearn/mineru/adapter.py) 已支持固定版本/backend/page 身份校验、标题与文本、公式、图片/图表及题注脚注、代码语言与缩进、VLM 嵌套列表、pipeline 起始行标记的 list/index、页脚注与 discarded 文本；正文/附属文本保留各自身份。图题在主体上方时保持上游阅读序，不一律排到主体后。
+- [HTML 表格归一化](src/easylearn/mineru/tables.py) 使用 learn 中已有 BeautifulSoup 4.15.0（已声明依赖，未安装包）：保留行列、合并、表头、单元格 ID、公式/代码/链接/图片和换行；复用 DocumentIR 的 TableStructure 校验。只跟踪仍在跨行的占用区间，不重复扫描全部历史单元格。行/列/单元格/markup 限额统一在 [MinerUTableLimits](src/easylearn/mineru/schema.py)，可通过 `mineru.table_limits` 文件配置。
+- 单元格仅引用所属表格与有证据的页面，不伪造单元格 bbox；合并后 HTML 缺少匹配 preproc 来源时明确 none + TABLE_SOURCE_UNRESOLVED。块层 cross_page 脚注也核对源行。无 HTML 但有已登记截图时标记 TABLE_STRUCTURE_UNAVAILABLE；HTML 畸形嵌套或当前原子行内类型无法表达的结构（如链接内图片）明确拒绝，不静默丢内容。
+- [内部图片引用](src/easylearn/mineru/assets.py) 共用名称解析与已使用资产登记，拒绝外部/越界/缺失/非图片引用及同 ID 冲突；这是描述符引用检查，不是生产图片字节解码验证。BlockType 从 DocumentIR 原字段提取为唯一类型定义供 Adapter 复用，没有改变 IR 可选类型集合。
+- 未完成：实际 ZIP → 原始 JSON/图片/上游 PDF 语义验证与可信几何登记、完整复杂 HTML/上游变体验收、ParseService/队列、真实 MinerU 与 LLM 联调、阅读器及 A–G 其余功能。不能把合成坐标登记当成实际上游转换契约；本轮未安装/启动 MinerU、未修改用户论文、未新增产品截图。
+
+**验证证据**
+- 表格结构/富文本、跨页证据、限额、资产身份冲突、代码/列表、discarded 内容、缺结构截图、阅读序及嵌套内容保全逐项先 red 后 green。审查时修正了叶块隐藏子内容、单元格段落拼词和上方图题顺序；已知无法表达的原子行内嵌套不再假成功。
+- 设置 `EASYLEARN_ACCEPTANCE_PDF=D:\Papers\2403.18819v1.pdf`，learn Python `-m pytest tests/mineru/test_adapter.py tests/document_ir tests/config -q -p no:cacheprovider --tb=short` → 183 passed（Adapter 66、DocumentIR 65、配置 52）；未运行全量测试。
+- 组合资源用例真实运行 PdfPreflight 子进程，读取 27 页论文，Pillow 编解码 40×20 PNG，生成并检查真实 ZIP，再归一化合成 middle。原件 SHA-256 `9674284d4722ff5596dec155495423b7709d2051fbe8476b09cb9f64f522d5d8` 前后一致。600×800 坐标是用例显式声明的合成坐标，映射到真实预览页；不是实际 MinerU 输出或推理质量验收。
+- Ruff 全源码/测试/迁移与 mypy 40 源文件通过。配置示例 TOML/YAML 等价性通过；未修改数据库或 Python 环境。
+
+**下一步**
+- 将本结构内核独立中文提交，保留用户未跟踪旧版资料；此提交不宣称完整 Adapter/服务验收。
+- 继续产物语义验证：使用归档 manifest 的固定路径、真实图片解码与独立 origin PDF 预检，核对 middle 页数/尺寸及 preview 几何；明确来源证据，不能把 origin 摘要与 preview 摘要强制相等。补齐剩余上游变体/复杂行内结构及失败边界后接入 ParseService。
+- ParseService 继续事前 SUBMITTING 持久化、SUBMIT_UNKNOWN 恢复与租约 fenced 发布；随后原生队列与其余 A–G。真实 MinerU/Provider 服务地址仍未提供，不自行部署 MinerU。
+
+### 2026-09-05 — 图像与公式 Adapter 草稿
+
+**目标**
+- 继续完整 MinerU Adapter，在已确认的 normalize 接口内保留结构、内部资产和定位证据。
+
+**当前状态**
+- 配置批次已独立中文提交：`1f38e16 支持模型路径与 LLM 接入的 TOML 和 YAML 配置`；模型目录、模型/Tokenizer 登记、MinerU、LLM/Embedding/视觉 profile 和路由均有 TOML/YAML 示例及定向验证，详情见下一条。本轮未安装 MinerU 或启动真实推理服务。
+- [Adapter](src/easylearn/mineru/adapter.py) 未提交草稿在原文本/标题/公式基础上增加：公式截图、图片主体/图题/脚注、固定版本关系边与内部图片资产。NormalizationContext.assets 登记上游图片相对名称到 AssetDescriptor；原始 image_path 不变成外部 URL。嵌套遍历同时用于 preproc 行来源核对和规范输出，缺少叶块 lines 不再被当作空成功。
+- 未完成：表格/单元格、列表、代码、discarded 内容、完整上游语义与资产碰撞验证、真实图片内容校验、PDF 几何登记、ParseService。草稿不作为完整 Adapter 交付，不含真实模型捕获或产品界面验收。
+- 后续表格的已确认源码事实：`3rdparty/MinerU/mineru/utils/table_merge.py:perform_table_merge` 会直接修改首表 HTML、清空后表子块并标记 lines_deleted；表体没有 span.cross_page 来源登记，移入脚注则在块层标记 cross_page。不能把合并 HTML 或脚注自动投到首表页面。`vlm_magic_model.py` 的 image/table/chart/code 是带 body/caption/footnote 的 blocks；list 也通过 blocks 包含子项。`pdf_image_tools.py:cut_image` 返回平铺的哈希 JPG 文件名。
+
+**验证证据**
+- 公式资产引用、图片关系、缺失叶块 lines 均先 red 后 green；图片相对路径越界、URL 和未登记引用用例通过。
+- learn Python `-m pytest tests/mineru/test_adapter.py -q -p no:cacheprovider --tb=short` → 21 passed（0.12s）；Adapter Ruff/格式和 mypy 通过。合成 middle + 已登记合成资产描述，没有真实图片解码或真实推理，未运行全量测试。
+- `learn python -m pip show beautifulsoup4 lxml` → learn 环境已有 beautifulsoup4 4.15.0、lxml 6.1.3；只读取版本，尚未用于本项目，也未增加依赖声明。
+
+**下一步**
+- 继续表格归一化纵向测试，采用现有 HTML 解析库保留行列合并、表头和单元格身份；不手写 HTML 解析器。单元格不得伪造 bbox，跨页来源不足时明确降级，依据 preproc 原始证据核对。补齐资产碰撞/嵌套输入约束后再扩展列表、代码和 discarded 内容。
+- 完整结构和资源/PDF 语义验证后接入 ParseService 的事前 SUBMITTING 持久化、SUBMIT_UNKNOWN 恢复、租约 fenced 发布；随后推进 A–G 其余部分。
+
 ### 2026-09-05 — 模型路径与 LLM 文件配置
 
 **目标**
@@ -68,7 +111,7 @@
 - PostgreSQL PID 33064 仍存在，未重新初始化。Ruff 全源码/测试/迁移通过，mypy 38 源文件通过，配置相关格式与 `git diff --check` 通过；本轮未新增截图。
 
 **下一步**
-- 本配置批次全部定向检查通过，独立中文提交；不包含 Adapter 实现/测试草稿和用户未跟踪旧版资料。
+- 本配置批次已独立提交 `1f38e16`；不包含 Adapter 实现/测试草稿和用户未跟踪旧版资料。
 - 再继续完整 Adapter、产物语义/几何验证和 ParseService。真实 MinerU 与 LLM 服务地址未提供，不自行安装或部署 MinerU。
 
 ### 2026-09-05 — MinerU 结果归档检查

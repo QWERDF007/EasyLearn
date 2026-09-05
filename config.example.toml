@@ -22,6 +22,10 @@ local_model = "mineru_vlm"
 backend = "vlm-engine"
 language = "en"
 
+[mineru.table_limits]
+max_columns = 1000
+max_cells = 100000
+
 [providers.chat]
 protocol = "openai_compatible"
 base_url = "http://127.0.0.1:8002/v1"
