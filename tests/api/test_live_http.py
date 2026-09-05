@@ -7,7 +7,6 @@ import time
 from pathlib import Path
 from uuid import UUID
 
-import httpx
 import pytest
 import yaml
 
@@ -17,7 +16,7 @@ from easylearn.storage import LocalStorage
 
 
 @pytest.fixture(params=["toml", "yaml"])
-def live_client(database_url, tmp_path, unused_tcp_port, request):
+def live_client(database_url, tmp_path, request, uvicorn_server):
     env = {key: value for key, value in os.environ.items() if not key.startswith("EASYLEARN_")}
     configuration = tmp_path / f"native.{request.param}"
     config_data = {"database_url": database_url, "storage_root": str(tmp_path)}
@@ -47,44 +46,13 @@ def live_client(database_url, tmp_path, unused_tcp_port, request):
         creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
     )
     assert migrated.returncode == 0, migrated.stderr
-    process = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "uvicorn",
-            "easylearn.main:create_app",
-            "--factory",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(unused_tcp_port),
-        ],
+    with uvicorn_server(
+        "easylearn.main:create_app",
+        health_path="/health/ready",
         env=dict(env, EASYLEARN_CONFIG=str(configuration)),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-    )
-    try:
-        with httpx.Client(base_url=f"http://127.0.0.1:{unused_tcp_port}", timeout=5) as client:
-            deadline = time.monotonic() + 10
-            while time.monotonic() < deadline:
-                assert process.poll() is None, "Web process exited before readiness"
-                try:
-                    if client.get("/health/ready").status_code == 200:
-                        break
-                except httpx.ConnectError:
-                    pass
-                time.sleep(0.1)
-            else:
-                raise AssertionError("Web process did not become ready")
-            yield client
-    finally:
-        process.terminate()
-        try:
-            process.communicate(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.communicate(timeout=5)
+        factory=True,
+    ) as client:
+        yield client
 
 
 def test_real_uvicorn_process_accepts_pdf_upload(live_client, pdf_bytes):

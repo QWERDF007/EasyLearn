@@ -50,6 +50,29 @@
 
 ---
 
+### 2026-09-05 — MinerU 固定协议客户端
+
+**目标**
+- 完成独立 MinerU 客户端及真实 HTTP 传输边界验证，不安装 MinerU，保持完整 A–G 目标。
+
+**当前状态**
+- 配置批次已提交：`cf0da49 支持 TOML 与 YAML 统一配置及实机启动`。
+- 已实现并定向验证健康版本检查、提交/查询/ZIP 流下载、原始回执保留、提交不确定性、远程 backend/server_url 一致性与不可用能力声明，入口见 [协议索引](docs/protocols.md)。固定本地上游源码为 3.4.5/protocol 2，没有取消和按请求 ID 核对路由。
+- 下载只在自身 HTTP I/O 边界分类网络故障，不改写消费方异常；总 deadline、实际字节限额、编码校验、取消/提前退出释放响应均已验证。下载到 staging，不宣称产物已可发布。
+- 真实 Uvicorn 生命周期测试夹具统一到 `tests/conftest.py`，Web 与 MinerU 协议传输测试共用。联合运行曾暴露同名测试模块冲突，按照 [pytest 导入机制](https://docs.pytest.org/en/stable/explanation/pythonpath.html) 采用 importlib 导入；未新增包或改测试文件名规避。
+- 尚未接入配置/ParseService/持久状态机、ZIP 校验与 Adapter；合成协议响应和传输用 ZIP 不是实际推理产物。完整 A–G、真实 MinerU 推理、产品界面截图及终版验收仍未完成。
+
+**验证证据**
+- 恢复时原 33 项通过。新增远程地址、参数发送、消费方异常与编码边界均先观察失败后实现；最后 `-m pytest tests/mineru/test_client.py tests/config -q -p no:cacheprovider --tb=short` → 70 passed（1.48s，其中客户端 51 项）。真实 HTTPX 客户端，仅外部 transport 注入；未运行全量测试。配置夹具曾因沙箱临时目录权限失败，获准沙箱外复跑后通过。
+- 设置 `EASYLEARN_ACCEPTANCE_PDF=D:\Papers\2403.18819v1.pdf`，learn Python `-m pytest tests/api/test_live_http.py tests/mineru/test_live_http.py -q -s -p no:cacheprovider --tb=short` → 6 passed（12.30s）。TOML/YAML 各完成 27 页预览/下载（均 0.55s）；独立合成协议服务完成 1 页及 27 页 PDF 上传/查询/流式 ZIP 下载（0.02s/0.04s），传输前后摘要一致。只读用户原件；短时服务按夹具关闭。
+- Ruff 全源码/测试/迁移通过，mypy 32 源文件通过，`git diff --check` 无错误。
+- `Get-Process -Id 33064` → PostgreSQL 进程存在，未重新初始化；配置与真实 PDF 预览的通过证据见下一条。
+
+**下一步**
+- 本客户端批次已通过定向验证，可独立中文提交；仅暂存本批客户端、测试基础设施、配置工具选项、文档与账本，保留用户旧版资料。
+- 继续 ZIP 结构/资源/摘要校验、固定版本 Adapter、ParseService 的事前 SUBMITTING 持久化与恢复，再接入原生队列及 A–G 其余功能。
+- 真实 MinerU 服务地址未配置；不得自行安装或启动 MinerU 来替代独立服务接入约束。
+
 ### 2026-09-05 — 统一文件配置与实机入口
 
 **目标**
