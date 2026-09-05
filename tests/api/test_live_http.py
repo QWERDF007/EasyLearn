@@ -1,14 +1,21 @@
+import hashlib
 import os
 import subprocess
 import sys
 import time
+from pathlib import Path
+from uuid import UUID
 
 import httpx
+import pytest
+
+from easylearn.config import Settings
+from easylearn.previews.service import PreviewService
+from easylearn.storage import LocalStorage
 
 
-def test_real_uvicorn_process_accepts_pdf_upload(
-    database_url, tmp_path, unused_tcp_port, pdf_bytes
-):
+@pytest.fixture
+def live_client(database_url, tmp_path, unused_tcp_port):
     env = dict(
         os.environ, EASYLEARN_DATABASE_URL=database_url, EASYLEARN_STORAGE_ROOT=str(tmp_path)
     )
@@ -60,37 +67,7 @@ def test_real_uvicorn_process_accepts_pdf_upload(
                 time.sleep(0.1)
             else:
                 raise AssertionError("Web process did not become ready")
-            response = client.post(
-                "/api/v1/uploads",
-                json={
-                    "filename": "test.pdf",
-                    "size": len(pdf_bytes),
-                    "sha256": "ae9e3f14cc3bea88dd0ce4e2715b3b03561378501318df61f0889df207aed25b",
-                },
-            )
-            assert response.status_code == 201
-            path = f"/api/v1/uploads/{response.json()['upload_id']}"
-            assert (
-                client.patch(
-                    path + "/content", headers={"Upload-Offset": "0"}, content=pdf_bytes
-                ).status_code
-                == 204
-            )
-            assert client.post(path + "/complete").json()["status"] == "UPLOADED"
-            document = client.post(
-                "/api/v1/documents",
-                json={"upload_id": response.json()["upload_id"]},
-                headers={"Idempotency-Key": "native-document"},
-            )
-            assert document.status_code == 202
-            status_url = document.headers["Location"]
-            assert client.get(status_url).json()["status"] == "QUEUED"
-            assert client.post(status_url + "/cancel").json()["status"] == "CANCELLED"
-            retried = client.post(
-                status_url + "/retry", headers={"Idempotency-Key": "native-retry"}
-            )
-            assert retried.status_code == 202
-            assert retried.json()["generation"] == 2
+            yield client
     finally:
         process.terminate()
         try:
@@ -98,3 +75,85 @@ def test_real_uvicorn_process_accepts_pdf_upload(
         except subprocess.TimeoutExpired:
             process.kill()
             process.communicate(timeout=5)
+
+
+def test_real_uvicorn_process_accepts_pdf_upload(live_client, pdf_bytes):
+    client = live_client
+    response = client.post(
+        "/api/v1/uploads",
+        json={
+            "filename": "test.pdf",
+            "size": len(pdf_bytes),
+            "sha256": "ae9e3f14cc3bea88dd0ce4e2715b3b03561378501318df61f0889df207aed25b",
+        },
+    )
+    assert response.status_code == 201
+    path = f"/api/v1/uploads/{response.json()['upload_id']}"
+    assert (
+        client.patch(
+            path + "/content", headers={"Upload-Offset": "0"}, content=pdf_bytes
+        ).status_code
+        == 204
+    )
+    assert client.post(path + "/complete").json()["status"] == "UPLOADED"
+    document = client.post(
+        "/api/v1/documents",
+        json={"upload_id": response.json()["upload_id"]},
+        headers={"Idempotency-Key": "native-document"},
+    )
+    assert document.status_code == 202
+    status_url = document.headers["Location"]
+    assert client.get(status_url).json()["status"] == "QUEUED"
+    assert client.post(status_url + "/cancel").json()["status"] == "CANCELLED"
+    retried = client.post(status_url + "/retry", headers={"Idempotency-Key": "native-retry"})
+    assert retried.status_code == 202
+    assert retried.json()["generation"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not os.environ.get("EASYLEARN_ACCEPTANCE_PDF"), reason="Real sample not configured"
+)
+async def test_user_paper_is_validated_and_served_unchanged_over_real_http(
+    live_client, database, database_url, tmp_path
+):
+    source = Path(os.environ["EASYLEARN_ACCEPTANCE_PDF"])
+    content = source.read_bytes()
+    digest = hashlib.sha256(content).hexdigest()
+    assert digest == "9674284d4722ff5596dec155495423b7709d2051fbe8476b09cb9f64f522d5d8"
+    client = live_client
+    upload = client.post(
+        "/api/v1/uploads", json={"filename": source.name, "size": len(content), "sha256": digest}
+    )
+    assert upload.status_code == 201
+    upload_id = upload.json()["upload_id"]
+    upload_path = f"/api/v1/uploads/{upload_id}"
+    assert (
+        client.patch(
+            upload_path + "/content", content=content, headers={"Upload-Offset": "0"}
+        ).status_code
+        == 204
+    )
+    assert client.post(upload_path + "/complete").status_code == 200
+    accepted = client.post(
+        "/api/v1/documents",
+        json={"upload_id": upload_id},
+        headers={"Idempotency-Key": "real-paper-preview"},
+    )
+    assert accepted.status_code == 202
+    started = time.perf_counter()
+    previews = PreviewService(database, LocalStorage(tmp_path), Settings(database_url=database_url))
+    await previews.execute(UUID(accepted.json()["job_id"]), generation=1)
+    document_path = f"/api/v1/documents/{accepted.json()['document_id']}"
+    document = client.get(document_path).json()
+    preview = document["preview_runs"][0]
+    assert preview["status"] == "READY", client.get(accepted.headers["Location"]).json()
+    assert len(preview["pages"]) == 27
+    assert preview["preview_sha256"] == digest
+    download_path = document_path + f"/assets/{preview['preview_asset_id']}"
+    assert hashlib.sha256(client.get(download_path).content).hexdigest() == digest
+    partial = client.get(download_path, headers={"Range": "bytes=0-7"})
+    assert partial.status_code == 206
+    assert partial.content == b"%PDF-1.5"
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == digest
+    print(f"27-page PDF preview and HTTP download: {time.perf_counter() - started:.2f}s")

@@ -21,6 +21,7 @@ dependencies = [
   "dramatiq==2.2.0",
   "python-multipart==0.0.32",
   "pypdfium2==5.10.1",
+  "pypdf==6.16.2",
   "pillow==12.1.1",
 ]
 

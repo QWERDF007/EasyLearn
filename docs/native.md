@@ -21,8 +21,16 @@ API 文档由运行中的 `/docs` 和 `/openapi.json` 提供。存活与就绪�
 
 所有访问资产的进程必须使用同一存储根目录及有效读写权限；禁止为不同进程配置互不相通的私有资产目录。
 
+## MinerU 模型资产
+
+本机 VLM 模型存放在 `D:\Models\MinerU2.5-Pro-2605-1.2B`，下载缓存位于 `D:\Models\.cache\huggingface`。官方仓库为 [opendatalab/MinerU2.5-Pro-2605-1.2B](https://huggingface.co/opendatalab/MinerU2.5-Pro-2605-1.2B)，固定 revision 为 `bff20d4ae2bf202df9f45284b4d43681555a97ed`，对应仓库内 [MinerU 模型声明](../3rdparty/MinerU/mineru/utils/enum_class.py)。
+
+模型是供独立 MinerU 服务使用的资产，不作为应用 Python 依赖。服务使用本地模型的配置契约见[上游模型来源说明](https://opendatalab.github.io/MinerU/usage/model_source/)；服务部署时填写实际路径，不修改用户级全局模型配置。下载与验证证据见 [WORKLOG](../WORKLOG.md)。
+
 ## 针对性测试
 
 接口测试使用真实 PostgreSQL，连接设置及隔离数据库生命周期见 [测试 fixture](../tests/api/conftest.py)。每次运行只提供当前模块的测试路径；测试会创建并删除自己随机命名的数据库，不修改已有业务数据库。
+
+用户论文的 HTTP 预览测试入口见 [test_live_http.py](../tests/api/test_live_http.py)，通过 `EASYLEARN_ACCEPTANCE_PDF` 指定只读样本。测试内冻结样本摘要，未配置时跳过；该用例仅验证预览阶段，不代表全功能验收。
 
 当前实现与未完成项的唯一记录在 [WORKLOG](../WORKLOG.md)；本页不重复维护功能完成状态。

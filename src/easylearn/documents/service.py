@@ -13,9 +13,10 @@ from easylearn.documents.schema import (
 from easylearn.errors import DomainError
 from easylearn.idempotency import IdempotencyRecord
 from easylearn.jobs.models import JobRun
-from easylearn.jobs.schema import JobKind, RunRef
+from easylearn.jobs.schema import JobKind, JobStatus, RunRef
 from easylearn.jobs.service import JobService
-from easylearn.uploads.models import Upload
+from easylearn.previews.schema import PreflightReport
+from easylearn.uploads.models import Asset, Upload
 
 
 class DocumentService:
@@ -68,14 +69,48 @@ class DocumentService:
                 .where(PreviewRun.document_id == document_id)
                 .order_by(JobRun.created_at, JobRun.id)
             )
+            previews = []
+            for run, job in rows:
+                report = PreflightReport.model_validate(run.report) if run.report else None
+                if job.status == JobStatus.SUCCEEDED:
+                    status = "READY"
+                elif job.status == JobStatus.RUNNING:
+                    status = "VALIDATING" if job.stage == "QUEUED" else job.stage
+                else:
+                    status = job.status
+                previews.append(
+                    PreviewView.model_validate(
+                        {
+                            "preview_run_id": run.id,
+                            "job_id": job.id,
+                            "status": status,
+                            "preview_asset_id": run.preview_asset_id,
+                            "preview_sha256": report.sha256 if report else None,
+                            "pages": report.pages if report else (),
+                        }
+                    )
+                )
             return DocumentView(
                 document_id=document.id,
                 original_asset_id=document.original_asset_id,
                 filename=document.filename,
                 client_id=document.client_id,
                 created_at=document.created_at,
-                preview_runs=[
-                    PreviewView(preview_run_id=run.id, job_id=job.id, status=job.status)
-                    for run, job in rows
-                ],
+                preview_runs=previews,
             )
+
+    async def asset(self, document_id: UUID, asset_id: UUID) -> Asset:
+        async with self.database.sessions() as session:
+            belongs = (
+                select(PreviewRun.id)
+                .where(
+                    PreviewRun.document_id == document_id, PreviewRun.preview_asset_id == asset_id
+                )
+                .exists()
+            )
+            asset = await session.scalar(select(Asset).where(Asset.id == asset_id, belongs))
+            if asset is None:
+                raise DomainError(
+                    "ASSET_NOT_FOUND", "Published document asset not found", status=404
+                )
+            return asset

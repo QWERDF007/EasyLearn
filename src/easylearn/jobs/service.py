@@ -1,5 +1,6 @@
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+import asyncio
+from collections.abc import AsyncIterator, Awaitable
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import timedelta
 from uuid import UUID, uuid4
@@ -88,6 +89,22 @@ class JobService:
             )
             if renewed is None:
                 raise DomainError("JOB_LEASE_LOST", "Job lease is no longer owned", status=409)
+
+    async def supervise[T](self, lease: JobLease, operation: Awaitable[T]) -> T:
+        """Renew ownership while awaiting work; join its cleanup before returning."""
+        task = asyncio.ensure_future(operation)
+        interval = min(1.0, self.lease_duration.total_seconds() / 3)
+        try:
+            while True:
+                done, _ = await asyncio.wait((task,), timeout=interval)
+                if done:
+                    return task.result()
+                await self.heartbeat(lease)
+        finally:
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
 
     async def save_checkpoint(
         self, lease: JobLease, *, stage: str, data: dict[str, JsonValue]

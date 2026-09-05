@@ -6,7 +6,6 @@
 
 <!-- 没有待裁决事项时保持本节为空。 -->
 
-- 2026-09-05：PDF 预览真实集成复测被审批工具拒绝（审批服务 429、重试次数耗尽，要求明确批准后方可重试）。请决定是否允许再次运行指定 learn 环境的 `tests/api/test_previews.py`：创建/删除自身隔离测试数据库并启动短时 PDF Python 子进程，不修改业务数据库。证据与恢复入口见下方“PDF 预览预检草稿与验证审批”日志。
 
 
 ---
@@ -49,6 +48,32 @@
 **边界**：不动导出的字段结构；不顺手重构 handler。
 
 ---
+
+### 2026-09-05 — PDF 预览实测与 MinerU 模型准备
+
+**目标**
+- 完成 PDF 预览纵向链路及取消/租约边界；以用户提供的真实 PDF 为只读验收样本，继续原定全功能开发。
+
+**当前状态**
+- 用户已提供 `D:\Papers` 并允许真实 PDF 验收和截图；测试审批已恢复，顶部旧审批阻塞已解除。
+- 已实现并验证 PDF 独立子进程预检、不可变原件复用、页面几何发布、资产归属检查与 GET/HEAD/Range 下载。修正 PDFium 对象生命周期；统一 Range 错误与 HTTP 错误契约，修正上游 416 的 Content-Range 格式。
+- 任务基础设施增加可复用的监督入口：等待耗时操作期间续租，失去租约时取消并等待操作清理；PDF 取消确认在子进程退出后发生。失效/取消竞态不允许发布，超时可重试，损坏/加密/超限无结果资产。
+- 真实论文经原生 Uvicorn、真实 PostgreSQL、磁盘与 PDF 子进程通过上传→预检→发布→完整及 Range 下载；执行仍直接调用 PreviewService，尚未接入真实队列消费者，不宣称自动后台全链路完成。
+- 用户允许的 VLM 模型已下载并逐文件校验；路径及版本唯一部署入口见 [实机运行](docs/native.md)。未安装 MinerU，没有修改用户级模型配置，没有下载 pipeline 的额外模型。
+- PostgreSQL 已使用原数据目录恢复，前台会话 `76786`；恢复后接受连接。原先草稿现在通过定向测试，可独立中文提交。
+- 未完成：图片/Office 预览、Redis/Dramatiq 常驻进程、MinerU 客户端/适配与真实服务联调、三栏阅读器、翻译修订、导出、AI 和 A–G 其余门禁。仅检查了原始论文首页渲染；浏览器产品截图和终版验收未执行。
+
+**验证证据**
+- 初次预览复测 FAILED 的根因为 PdfPage 不支持 context manager，按实际生命周期实现后首条测试通过；续租和取消、下载错误及 HEAD 分别观察红灯后实现。损坏/加密/限额/超时回归通过。
+- learn Python `-m pytest tests/api/test_previews.py tests/api/test_job_leases.py -q -p no:cacheprovider --tb=short` → 16 passed（13.42s）；真实隔离库和子进程，不运行全量测试。
+- 设置 `EASYLEARN_ACCEPTANCE_PDF=D:\Papers\2403.18819v1.pdf` 后执行 `-m pytest tests/api/test_live_http.py -q -s -p no:cacheprovider --tb=short` → 2 passed（5.56s）；27 页样本预检及下载 0.69s。输入 2660025 字节，SHA-256 `9674284d4722ff5596dec155495423b7709d2051fbe8476b09cb9f64f522d5d8`，前后原件与下载摘要一致。
+- Poppler 首页 PNG 已检查，标题/摘要/首段无明显缺字或裁切；渲染器报 Symbol/ArialUnicode display font 警告，未据此声称全 27 页视觉验收通过。截图在忽略的 `tmp/pdfs/acceptance-paper-page-1.png`。
+- 模型官方固定 revision 全部 13 文件、2328028720 字节；逐项核对大小与 LFS SHA-256/Git blob ID，mismatches=[]。权重 SHA-256 `abf8681ca63b8dec7b67de257af47b821f179442f72998d0696ae2ed9232a5f0`，tokenizer SHA-256 `dceac5fc54a795ee7570d17902b47bd05412dc2afa62bdf325c3f97fcb5b87fe`。下载进程 `4402` 已完成。
+- `-m ruff check src tests migrations` → All checks passed；`-m mypy src/easylearn` → 29 文件通过；`git diff --check` 无错误。
+
+**下一步**
+- 将本批预览与运行文档独立中文提交，保留用户未跟踪旧版规格不纳入。
+- 继续 MinerU 固定版本客户端/适配和原生队列，随后剩余 A–G；MinerU 真实服务地址及 Provider 服务仍待落实，模型文件已具备不等于服务可用。
 
 ### 2026-09-05 — 结构化文档与定位证据协议
 

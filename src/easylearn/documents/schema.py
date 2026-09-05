@@ -3,7 +3,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
-from easylearn.jobs.schema import JobStatus
+from easylearn.document_ir.schema import PageGeometry, Sha256
+from easylearn.previews.schema import PreviewStatus
 
 
 class DocumentRequest(BaseModel):
@@ -23,7 +24,10 @@ class DocumentAccepted(BaseModel):
 class PreviewView(BaseModel):
     preview_run_id: UUID
     job_id: UUID
-    status: JobStatus
+    status: PreviewStatus
+    preview_asset_id: UUID | None = None
+    preview_sha256: Sha256 | None = None
+    pages: tuple[PageGeometry, ...] = ()
 
 
 class DocumentView(BaseModel):

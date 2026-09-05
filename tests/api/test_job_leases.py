@@ -11,6 +11,21 @@ from easylearn.jobs.service import JobService
 
 
 @pytest.mark.asyncio
+async def test_supervised_operation_renews_lease_until_result_can_be_published(
+    database, accepted_document
+):
+    jobs = JobService(database, lease_duration=timedelta(seconds=0.6))
+    job_id = UUID(accepted_document["job_id"])
+    lease = await jobs.acquire(job_id, generation=1, owner=uuid4())
+    result = await jobs.supervise(lease, asyncio.sleep(1.2, result="validated"))
+    assert result == "validated"
+    async with jobs.publication(lease):
+        pass
+    assert (await jobs.get(job_id)).status == "SUCCEEDED"
+    assert await jobs.reconcile() == 0
+
+
+@pytest.mark.asyncio
 async def test_only_current_lease_can_checkpoint_and_recovery_fences_old_worker(
     database,
     accepted_document,

@@ -16,6 +16,7 @@ from easylearn.config import Settings
 from easylearn.database import Database
 from easylearn.documents.schema import DocumentAccepted, DocumentRequest, DocumentView
 from easylearn.documents.service import DocumentService
+from easylearn.downloads import AssetResponse
 from easylearn.errors import DomainError, ErrorView
 from easylearn.jobs.schema import JobView
 from easylearn.jobs.service import JobService
@@ -174,6 +175,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def get_document(document_id: UUID, request: Request) -> DocumentView:
         documents: DocumentService = request.app.state.documents
         return await documents.get(document_id)
+
+    @app.get("/api/v1/documents/{document_id}/assets/{asset_id}")
+    @app.head("/api/v1/documents/{document_id}/assets/{asset_id}")
+    async def get_asset(document_id: UUID, asset_id: UUID, request: Request) -> AssetResponse:
+        documents: DocumentService = request.app.state.documents
+        storage: LocalStorage = request.app.state.storage
+        asset = await documents.asset(document_id, asset_id)
+        return AssetResponse(
+            storage.path(asset.storage_key),
+            media_type=asset.mime,
+            headers={"ETag": f'"{asset.sha256}"'},
+        )
 
     @app.get("/api/v1/jobs/{job_id}")
     async def get_job(job_id: UUID, request: Request) -> JobView:

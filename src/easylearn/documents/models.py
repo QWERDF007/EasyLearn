@@ -1,7 +1,9 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
+from pydantic import JsonValue
 from sqlalchemy import DateTime, ForeignKey, String, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from easylearn.database import Base
@@ -23,3 +25,5 @@ class PreviewRun(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     document_id: Mapped[UUID] = mapped_column(ForeignKey("documents.id"), index=True)
     job_id: Mapped[UUID] = mapped_column(ForeignKey("job_runs.id"), unique=True)
+    preview_asset_id: Mapped[UUID | None] = mapped_column(ForeignKey("assets.id"))
+    report: Mapped[dict[str, JsonValue] | None] = mapped_column(JSONB(none_as_null=True))
