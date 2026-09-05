@@ -9,6 +9,7 @@
 实现入口：
 
 - [依赖与开发工具配置](../pyproject.toml)
+- [应用配置与来源](../src/easylearn/config.py)、[TOML 示例](../config.example.toml)、[YAML 示例](../config.example.yaml)、[配置验证](../tests/config/test_settings.py)
 - [DocumentIR 与身份类型](../src/easylearn/document_ir/schema.py)、[坐标映射](../src/easylearn/document_ir/coordinates.py)
 - [HTTP 应用与 OpenAPI](../src/easylearn/main.py)、[上传模块](../src/easylearn/uploads/service.py)
 - [统一错误类型](../src/easylearn/errors.py)、[上传契约验证](../tests/api/test_upload_contract.py)

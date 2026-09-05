@@ -8,6 +8,7 @@
 
 
 
+
 ---
 
 ## 日志
@@ -48,6 +49,51 @@
 **边界**：不动导出的字段结构；不顺手重构 handler。
 
 ---
+
+### 2026-09-05 — 统一文件配置与实机入口
+
+**目标**
+- 完成 TOML/YAML 文件配置和统一实机启动参数，保持配置单一类型源，独立中文提交。
+
+**当前状态**
+- 用户明确要求“恢复测试”，旧审批阻塞已解除。新增数据库 URL 用例真实 red 后修正：SQLAlchemy URL/端口错误转换为不含输入的 Pydantic 配置错误；非 PostgreSQL 驱动仍拒绝。
+- 参数拼写错误测试先证实原脚本会继续启动 Python，再使用 PowerShell CmdletBinding 拒绝未知参数；已有 `-ConfigPath` 与 EASYLEARN_CONFIG 共用配置选择。
+- 支持格式、选择/覆盖规则、错误处理与配置示例均已定向验证，入口见 [实机运行](docs/native.md) 与 [Settings](src/easylearn/config.py)。本批不引入第二套配置字段定义。
+- MinerU 客户端为另一条独立草稿，不纳入本配置提交：`src/easylearn/mineru/` 与 `tests/mineru/` 目前只有健康接口实现；提交/查询测试刚观察到缺 MinerUOptions 的 red，尚未实现。
+- 完整 A–G 仍未完成，真实 MinerU 服务联调、队列、阅读器、翻译修订、导出与 AI 尚待开发。
+
+**验证证据**
+- learn Python `-m pytest tests/config -q -p no:cacheprovider --tb=short` → 19 passed（1.31s），包含真实临时文件和 PowerShell 参数绑定；不运行全量测试。
+- 配置相关 Ruff、mypy 均通过。PostgreSQL 主进程 PID 33064 及其子进程仍存在，未重新初始化。
+- 设置用户论文环境变量后，`-m pytest tests/api/test_live_http.py -q -s -p no:cacheprovider --tb=short` → 4 passed（11.75s），TOML/YAML 分别完成真实迁移、Uvicorn 上传和 27 页预览/下载，预检与下载用时 0.63s/0.59s。`git diff --check` 无错误。
+
+**下一步**
+- 本批已通过定向回归，可中文提交；仅暂存配置相关文件、测试、文档与本账本。
+- 继续下一批 MinerU 客户端：健康协议为 3.4.5/protocol 2；只在外部 HTTP 边界注入响应，真实服务契约验收另做。不把合成 payload 标记为上游真实捕获。
+
+### 2026-09-05 — 文件配置支持与验证审批
+
+**目标**
+- 按用户追加要求支持 TOML/YAML 文件配置，统一应用、迁移与后续 Worker 的配置来源；完整 A–G 目标不变。
+
+**当前状态**
+- PDF 预览批次已中文提交：`22993c2 实现可取消的实机 PDF 预览与资产下载`。
+- 配置改动已实现并有定向证据：自动发现 `config.toml/config.yaml/config.yml`，`EASYLEARN_CONFIG` 显式选择，`run.ps1 -ConfigPath`；环境/构造参数覆盖、嵌套环境变量、文件内相对存储路径、歧义/缺失/格式/未知字段/非法限额拒绝。以 Settings 为字段与优先级唯一源，使用 tomllib、PyYAML 与 Pydantic sources，不手写格式解析器。配置示例和文档索引已更新。
+- YAML 依赖 PyYAML 6.0.3 已在 learn 环境，只新增显式依赖声明，未执行安装；不安装 MinerU。此前 VLM 模型已下载验证，详情见下一条。
+- 最新中断点：新增 `test_database_configuration_errors_are_typed_and_redacted`（错误 URL、错误端口、非 PostgreSQL）后，测试命令尚未执行就被审批拒绝：503 `auth_unavailable`、账号池无可用账号；工具要求明确批准后才能继续，未重试或换路径规避。新增 3 个参数用例未验证；其实现尚未修改，可能需将 SQLAlchemy URL 解析异常转为不含输入的配置校验错误。
+- 本配置批次尚未提交。MinerU 客户端/适配只继续阅读了固定 3.4.5 源码，没有新模块或用例；不要将阅读记录当成功能完成。
+
+**验证证据**
+- learn Python `-m pytest tests/config -q -p no:cacheprovider --tb=short` → 新增数据库错误用例前 15 passed（0.27s）；TOML、YAML、文件选择、嵌套覆盖和错误配置逐条红绿验证。
+- 设置 `EASYLEARN_ACCEPTANCE_PDF=D:\Papers\2403.18819v1.pdf`，`-m pytest tests/api/test_live_http.py -q -s -p no:cacheprovider --tb=short` → 4 passed（10.72s）；分别只靠 TOML/YAML 配置运行迁移与 Uvicorn，没有用数据库环境变量代替文件。27 页预览与 HTTP 下载分别 0.68s、0.58s。
+- 审批拒绝后仅进行格式化和静态检查：Ruff 全源码/测试/迁移通过、mypy 29 文件通过、`git diff --check` 无错误；包含最新未运行测试及文档，不把静态检查代替被拒的运行验证。未运行全量测试。
+- 最后被拒命令：`learn python -m pytest tests/config -k database_configuration -q -p no:cacheprovider --tb=short`；没有测试输出，不能记为 red 或 green。
+
+**下一步**
+- 用户明确允许后，先执行上述新增数据库配置用例，按实际 red 修正 URL 解析错误，再跑配置模块、实机 HTTP 和静态检查；记录结果后独立中文提交。
+- 检查 `run.ps1` 参数绑定：目前非 advanced script 可能静默接受拼错参数，可定向测试后加 CmdletBinding，避免误用默认配置；不要未经验证声称已解决。
+- PostgreSQL 最近前台会话 `76786`；恢复时只验证进程存活，勿重新初始化。原有未跟踪旧版参考资料保持不动。
+- 之后继续 MinerU 客户端/Adapter、原生队列及其余 A–G；产品界面截图与终版验收未执行。
 
 ### 2026-09-05 — PDF 预览实测与 MinerU 模型准备
 

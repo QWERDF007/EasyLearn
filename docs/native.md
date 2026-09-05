@@ -4,7 +4,9 @@
 
 Python 解释器默认值与启动参数以 [run.ps1](../deploy/run.ps1) 为准；配置字段、环境变量前缀和默认限额以 [Settings](../src/easylearn/config.py) 为准。依赖版本见 [pyproject.toml](../pyproject.toml)。
 
-准备 PostgreSQL 数据库后，将 [.env.example](../.env.example) 复制为仓库根目录 `.env` 并填写实际连接；示例连接仅用于隔离的本机开发实例，不是生产认证配置。
+准备 PostgreSQL 数据库后，使用 [TOML 示例](../config.example.toml) 或 [YAML 示例](../config.example.yaml) 创建仓库根目录 `config.toml`、`config.yaml` 或 `config.yml`，填写实际连接；示例连接仅用于隔离的本机开发实例，不是生产认证配置。
+
+文件选择、覆盖顺序和相对路径规则以 [Settings 配置入口](../src/easylearn/config.py) 为准；格式和嵌套字段示例见 [配置行为测试](../tests/config/test_settings.py)。如使用环境变量保存本机连接，可参考 [.env.example](../.env.example)。
 
 在仓库根目录执行：
 
@@ -12,6 +14,15 @@ Python 解释器默认值与启动参数以 [run.ps1](../deploy/run.ps1) 为准�
 .\deploy\run.ps1 -Action migrate
 .\deploy\run.ps1 -Action web
 ```
+
+指定其他位置的配置文件：
+
+```powershell
+.\deploy\run.ps1 -Action migrate -ConfigPath D:\Project\EasyLearn\config.toml
+.\deploy\run.ps1 -Action web -ConfigPath D:\Project\EasyLearn\config.toml
+```
+
+直接运行 Python 入口时，设置进程环境变量 `EASYLEARN_CONFIG` 指向同一文件。应用与迁移读取同一个 Settings，不另建数据库配置入口。
 
 API 文档由运行中的 `/docs` 和 `/openapi.json` 提供。存活与就绪端点见 [HTTP 应用](../src/easylearn/main.py)。前台进程保持运行期间才可访问；结束进程后不保证由外部工具启动的子进程继续存活。
 

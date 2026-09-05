@@ -218,6 +218,9 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Local application resources
+/config.toml
+/config.yaml
+/config.yml
 .runtime/
 tmp/
 node_modules/

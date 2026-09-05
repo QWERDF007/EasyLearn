@@ -1,7 +1,9 @@
+[CmdletBinding()]
 param(
     [ValidateSet('web', 'migrate')]
     [string]$Action = 'web',
     [string]$Python = 'E:\Softwares\Anaconda3\envs\learn\python.exe',
+    [string]$ConfigPath,
     [string]$BindAddress = '127.0.0.1',
     [int]$Port = 8000
 )
@@ -11,8 +13,15 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) {
     throw "Python executable not found: $Python"
 }
+$previousConfig = $env:EASYLEARN_CONFIG
+if ($ConfigPath) {
+    $resolvedConfig = (Resolve-Path -LiteralPath $ConfigPath).ProviderPath
+}
 Push-Location -LiteralPath $projectRoot
 try {
+    if ($ConfigPath) {
+        $env:EASYLEARN_CONFIG = $resolvedConfig
+    }
     if ($Action -eq 'migrate') {
         & $Python -m alembic upgrade head
     } else {
@@ -23,4 +32,7 @@ try {
     }
 } finally {
     Pop-Location
+    if ($ConfigPath) {
+        $env:EASYLEARN_CONFIG = $previousConfig
+    }
 }

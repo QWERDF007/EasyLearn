@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -8,16 +9,23 @@ from uuid import UUID
 
 import httpx
 import pytest
+import yaml
 
 from easylearn.config import Settings
 from easylearn.previews.service import PreviewService
 from easylearn.storage import LocalStorage
 
 
-@pytest.fixture
-def live_client(database_url, tmp_path, unused_tcp_port):
-    env = dict(
-        os.environ, EASYLEARN_DATABASE_URL=database_url, EASYLEARN_STORAGE_ROOT=str(tmp_path)
+@pytest.fixture(params=["toml", "yaml"])
+def live_client(database_url, tmp_path, unused_tcp_port, request):
+    env = {key: value for key, value in os.environ.items() if not key.startswith("EASYLEARN_")}
+    configuration = tmp_path / f"native.{request.param}"
+    config_data = {"database_url": database_url, "storage_root": str(tmp_path)}
+    configuration.write_text(
+        "\n".join(f"{key} = {json.dumps(value)}" for key, value in config_data.items())
+        if request.param == "toml"
+        else yaml.safe_dump(config_data),
+        encoding="utf-8",
     )
     migrated = subprocess.run(
         [
@@ -29,6 +37,8 @@ def live_client(database_url, tmp_path, unused_tcp_port):
             "migrate",
             "-Python",
             sys.executable,
+            "-ConfigPath",
+            str(configuration),
         ],
         env=env,
         capture_output=True,
@@ -49,7 +59,7 @@ def live_client(database_url, tmp_path, unused_tcp_port):
             "--port",
             str(unused_tcp_port),
         ],
-        env=env,
+        env=dict(env, EASYLEARN_CONFIG=str(configuration)),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,

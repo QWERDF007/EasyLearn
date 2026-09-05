@@ -1,0 +1,2 @@
+# 字段与默认值见 src/easylearn/config.py。
+database_url: postgresql+asyncpg://easylearn@127.0.0.1:55432/easylearn
