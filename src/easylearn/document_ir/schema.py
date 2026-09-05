@@ -3,7 +3,7 @@ import json
 from bisect import bisect_left
 from graphlib import CycleError, TopologicalSorter
 from math import isclose
-from pathlib import PurePosixPath, PureWindowsPath
+from pathlib import PurePosixPath
 from typing import Annotated, Literal, Self
 from uuid import UUID
 
@@ -13,9 +13,10 @@ from pydantic import (
     Field,
     StringConstraints,
     computed_field,
-    field_validator,
     model_validator,
 )
+
+from easylearn.paths import PortablePath
 
 Identifier = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")]
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
@@ -190,28 +191,7 @@ class AssetDescriptor(FrozenModel):
     asset_id: UUID
     sha256: Sha256
     mime: str
-    export_path: str
-
-    @field_validator("export_path")
-    @classmethod
-    def validate_export_path(cls, value: str) -> str:
-        path = PurePosixPath(value)
-        if (
-            not value
-            or not path.name
-            or path.is_absolute()
-            or path.as_posix() != value
-            or any(char in value for char in '\\:*?"<>|')
-            or any(ord(char) < 32 for char in value)
-            or any(
-                part in (".", "..")
-                or part.rstrip(" .") != part
-                or PureWindowsPath(part).is_reserved()
-                for part in path.parts
-            )
-        ):
-            raise ValueError("Export path must be canonical, relative and portable")
-        return value
+    export_path: PortablePath
 
 
 class BlockRelation(FrozenModel):

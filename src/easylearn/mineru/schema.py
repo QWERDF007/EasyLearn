@@ -5,6 +5,9 @@ from uuid import UUID
 
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator
 
+from easylearn.document_ir.schema import Sha256
+from easylearn.paths import PortablePath
+
 MinerUBackend = Literal[
     "pipeline", "vlm-engine", "hybrid-engine", "vlm-http-client", "hybrid-http-client"
 ]
@@ -75,3 +78,34 @@ class MinerUHealth(BaseModel):
     version: Literal["3.4.5"]
     protocol_version: Literal[2]
     task_retention_seconds: int = Field(ge=0)
+
+
+MinerUArtifactKind = Literal[
+    "markdown", "middle", "model", "content_list", "content_list_v2", "original", "image"
+]
+
+
+class MinerUArchiveLimits(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    max_archive_bytes: int = Field(default=512 * 1024 * 1024, gt=0)
+    max_expanded_bytes: int = Field(default=2 * 1024 * 1024 * 1024, gt=0)
+    max_member_bytes: int = Field(default=512 * 1024 * 1024, gt=0)
+    max_members: int = Field(default=10000, gt=0)
+
+
+class MinerUArchiveMember(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: PortablePath
+    kind: MinerUArtifactKind
+    sha256: Sha256
+    size: int = Field(ge=0)
+
+
+class MinerUArchiveManifest(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    sha256: Sha256
+    size: int = Field(gt=0)
+    members: tuple[MinerUArchiveMember, ...]

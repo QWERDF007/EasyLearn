@@ -50,6 +50,27 @@
 
 ---
 
+### 2026-09-05 — MinerU 结果归档检查
+
+**目标**
+- 交付解析 ZIP 的固定布局、文件完整性与资源边界检查，为后续 Adapter 和不可变发布提供证据。
+
+**当前状态**
+- 上批已提交：`7ff264d 实现固定版本 MinerU 客户端与实机协议测试`。
+- 已实现并定向验证 [归档检查器](src/easylearn/mineru/archive.py)：五类后端输出目录、必需原始产物、名称与文件类型、大小写冲突、CRC/逐项 SHA-256、压缩与解压限额；不解压、不发布，仅输出类型化 manifest。
+- DocumentIR 导出名称与归档名称共用 [PortablePath](src/easylearn/paths.py)，删除原有局部校验定义，没有第二套路径规则。
+- 阅读固定上游源码确认：`3rdparty/MinerU/mineru/cli/common.py` 的 `_prepare_pdf_bytes` 会通过 PDFium 重写输入，`_process_output` 将处理后的字节保存为 origin.pdf。因此不能假定上游 origin 摘要等于上传/预览摘要；后续须分别保留证据并核对页数及几何，不能静默替换现有预览。
+- 未完成：JSON schema/版本、图片实际格式、页面几何与坐标语义、资源引用验证、Adapter、ParseService 和后台队列。此检查器同步执行，接入时须在受限工作执行单元内调用，不在 Web 事件循环中处理大 ZIP。没有实际 MinerU 推理产物捕获，也没有终版/界面验收。
+
+**验证证据**
+- 布局/路径、必需文件、重复名称/非普通文件、损坏/不支持格式、资源限额逐条先 red 后 green；真实 zipfile 读写，不 mock 内部组件。Windows 写入器会自动将反斜杠规范化，错误路径样例改用真实 ZIP 字节注入并先断言原始名称。
+- 设置 `EASYLEARN_ACCEPTANCE_PDF=D:\Papers\2403.18819v1.pdf`，learn Python `-m pytest tests/mineru/test_archive.py tests/document_ir -q -p no:cacheprovider --tb=short` → 106 passed（0.68s；归档 41、DocumentIR 65）。含真实 27 页论文和 Pillow PNG 的合成 ZIP，论文 2660025 字节、摘要前后一致；不是实际 MinerU 结果或语义验收。未运行全量测试。
+- 共享 schema 改动后客户端定向回归 → 51 passed（0.25s）；Ruff 全源码/测试/迁移通过，mypy 34 源文件通过，`git diff --check` 无错误。
+
+**下一步**
+- 本批检查全部通过，按中文独立提交交付；保留用户未跟踪旧版资料。恢复后从下项开始，不重复调查已验证的结构边界。
+- 继续固定版本原始 JSON Adapter、图片/PDF 几何验证，再实现事前 SUBMITTING 持久化、SUBMIT_UNKNOWN 恢复与 fenced 发布。MinerU 服务地址未配置，不自行安装/部署 MinerU。
+
 ### 2026-09-05 — MinerU 固定协议客户端
 
 **目标**

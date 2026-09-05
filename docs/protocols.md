@@ -8,5 +8,7 @@
 - 定位降级与坐标来源：[定位测试](../tests/document_ir/test_localization.py)；结构摘要：[摘要测试](../tests/document_ir/test_content_hash.py)
 - 独立 MinerU HTTP 协议：[客户端](../src/easylearn/mineru/client.py)、[固定版本与选项](../src/easylearn/mineru/schema.py)、[边界测试](../tests/mineru/test_client.py)
 - MinerU 客户端真实网络传输：[HTTP 测试](../tests/mineru/test_live_http.py)，使用[合成协议服务](../tests/mineru/protocol_server.py)，不代表真实推理契约验收。
+- MinerU ZIP 结构、校验和与资源限额：[归档检查器](../src/easylearn/mineru/archive.py)、[归档测试](../tests/mineru/test_archive.py)；检查不解压、不发布，也不替代 JSON/图片/坐标语义验证。
+- 跨平台资产名称：[共用路径类型](../src/easylearn/paths.py)。
 
 JSON Schema 从 Pydantic 模型生成，不手写第二份字段或约束定义。
