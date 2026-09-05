@@ -9,6 +9,10 @@ class JobKind(StrEnum):
     PREVIEW = "PREVIEW"
     PARSE = "PARSE"
 
+    @property
+    def queue_name(self) -> str:
+        return self.value.lower()
+
 
 class JobStatus(StrEnum):
     QUEUED = "QUEUED"

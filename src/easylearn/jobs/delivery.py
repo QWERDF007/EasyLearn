@@ -6,7 +6,8 @@ from sqlalchemy import func, or_, select, update
 
 from easylearn.database import Database
 from easylearn.errors import DomainError
-from easylearn.jobs.models import OutboxEvent
+from easylearn.jobs.models import JobRun, OutboxEvent
+from easylearn.jobs.schema import JobKind
 
 
 @dataclass(frozen=True)
@@ -15,6 +16,7 @@ class Delivery:
     job_id: UUID
     generation: int
     token: UUID
+    kind: JobKind
 
 
 class Outbox:
@@ -28,8 +30,9 @@ class Outbox:
         if not 1 <= limit <= 1000:
             raise ValueError("Outbox batch limit must be in [1, 1000]")
         async with self.database.sessions.begin() as session:
-            events = await session.scalars(
-                select(OutboxEvent)
+            events = await session.execute(
+                select(OutboxEvent, JobRun.kind)
+                .join(JobRun, OutboxEvent.job_id == JobRun.id)
                 .where(
                     OutboxEvent.delivered_at.is_(None),
                     or_(
@@ -39,15 +42,17 @@ class Outbox:
                 )
                 .order_by(OutboxEvent.created_at, OutboxEvent.id)
                 .limit(limit)
-                .with_for_update(skip_locked=True)
+                .with_for_update(skip_locked=True, of=OutboxEvent)
             )
             now = (await session.execute(select(func.clock_timestamp()))).scalar_one()
             deliveries = []
-            for event in events:
+            for event, kind in events:
                 event.claim_token = uuid4()
                 event.lease_expires_at = now + self.lease_duration
                 deliveries.append(
-                    Delivery(event.id, event.job_id, event.generation, event.claim_token)
+                    Delivery(
+                        event.id, event.job_id, event.generation, event.claim_token, JobKind(kind)
+                    )
                 )
             return deliveries
 

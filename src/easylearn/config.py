@@ -18,6 +18,7 @@ from sqlalchemy.exc import ArgumentError
 from easylearn.document_ir.schema import Identifier
 from easylearn.images import ImageLimits
 from easylearn.inference.config import LocalModel, MinerUSettings, ModelRoutes, ProviderProfile
+from easylearn.jobs.config import QueueSettings
 from easylearn.previews.schema import PreviewLimits
 
 
@@ -52,6 +53,7 @@ class Settings(BaseSettings):
     mineru: MinerUSettings | None = None
     providers: dict[Identifier, ProviderProfile] = Field(default_factory=dict)
     model_routes: ModelRoutes = Field(default_factory=ModelRoutes)
+    queue: QueueSettings | None = None
 
     @classmethod
     def settings_customise_sources(
