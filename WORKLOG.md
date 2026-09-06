@@ -7,6 +7,26 @@
 - 无。
 
 
+### 2026-09-07 — 工作台顶部操作与交互验收
+
+**目标**
+- 将设置、重新解析、下载集中到结果区顶部，保留既有翻译/问答/文档操作，并验证工作台关键交互。
+
+**当前状态**
+- 已完成：结果区顶部提供设置面板、重新解析和下载按钮；解析版本、自动翻译及 Office 选项收纳到设置面板，调用既有配置和任务链路。
+- 已完成：前端解析入口统一为重新解析按钮，下载沿用 ZIP 导出任务；旧的 `parse-button`、`export-button` 页面入口已移除，避免重复操作入口。
+- 已完成：文档条目收藏、删除确认与结果区顶部操作使用稳定 DOM 标识，Ctrl+滚轮会更新阅读器缩放状态。
+
+**验证证据**
+- 红灯：第二阶段静态页面测试 → 缺少 `settings-button`。
+- 绿灯：`learn python -m pytest tests\\v3\\test_app.py::test_page_exposes_full_result_and_question_history_controls -q ...` → `1 passed`。
+- `EASYLEARN_RUN_BROWSER_TESTS=1 learn python -m pytest tests\\browser\\test_upload.py::test_document_workspace_exposes_actions_and_settings tests\\browser\\test_upload.py::test_document_actions_support_favorite_and_delete tests\\browser\\test_upload.py::test_ctrl_wheel_changes_reader_scale -q ...` → `3 passed in 15.76s`；通过 Selenium + ChromeDriver 验证按钮、设置面板、收藏、删除和 Ctrl+滚轮。
+- `node --check src\\easylearn\\static\\app.js`、`git diff --check` → 通过（仅有 Windows 行尾转换提示）。
+
+**下一步**
+- 补充解析进度条的浏览器状态验收与 PDF 翻页/缩放/重置验收，再按 `F:\\tmp`、`F:\\models` 配置进行指定论文真实链路验证。
+
+
 ### 2026-09-07 — 工作台空态与模型选择收口
 
 **目标**

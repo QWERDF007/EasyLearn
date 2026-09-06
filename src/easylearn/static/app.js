@@ -265,10 +265,11 @@ function syncToolbar() {
   const llmConfigured = state.health?.llm?.configured === true;
   const qaEnabled = state.health?.extensions?.qa_enabled === true;
   const officeEnabled = state.health?.extensions?.office_enabled === true;
-  $("#parse-button").disabled = !hasDocument || state.busyButtons.has("parse-button");
+  $("#settings-button").disabled = !hasDocument;
+  $("#reparse-button").disabled = !hasDocument || state.busyButtons.has("reparse-button");
+  $("#download-button").disabled = !hasParse || state.busyButtons.has("download-button");
   $("#translate-button").disabled = !hasParse || !llmConfigured || state.busyButtons.has("translate-button");
   $("#qa-button").disabled = !hasParse || !qaEnabled || state.busyButtons.has("ask-button");
-  $("#export-button").disabled = !hasParse || state.busyButtons.has("export-button");
   $("#favorite-button").disabled = !hasDocument;
   $("#delete-button").disabled = !hasDocument;
   const isXlsx = Boolean(state.document?.name?.toLowerCase().endsWith(".xlsx"));
@@ -276,6 +277,10 @@ function syncToolbar() {
   $("#office-sheet").disabled = !isXlsx || !officeEnabled;
   $("#office-print-range").disabled = !isXlsx || !officeEnabled;
   $("#auto-translate").disabled = !hasDocument || !llmConfigured;
+  if (!hasDocument) {
+    $("#settings-panel").hidden = true;
+    $("#settings-button").setAttribute("aria-expanded", "false");
+  }
   syncWorkspaceLayout();
 }
 
@@ -1369,23 +1374,28 @@ $("#parse-progress-cancel").addEventListener("click", () => {
   if (task) void cancelTask(task.task_id);
 });
 
-$("#parse-button").addEventListener("click", async () => {
-  if (!state.document || $("#parse-button").disabled) return;
-  state.busyButtons.add("parse-button");
-  $("#parse-button").disabled = true;
-  try {
-    await runTask(
-      `/api/documents/${state.document.document_id}/parse`,
-      parseRequestBody(),
-      "解析完成",
-    );
-    await openDocument(state.document.document_id);
-  } catch (error) {
-    notify(error.message);
-  } finally {
-    state.busyButtons.delete("parse-button");
-    syncToolbar();
-  }
+$("#settings-button").addEventListener("click", () => {
+  if ($("#settings-button").disabled) return;
+  const panel = $("#settings-panel");
+  panel.hidden = !panel.hidden;
+  $("#settings-button").setAttribute("aria-expanded", String(!panel.hidden));
+});
+
+$("#reparse-button").addEventListener("click", async () => {
+  if (!state.document || $("#reparse-button").disabled) return;
+  const documentId = state.document.document_id;
+  await withButtonBusy("reparse-button", "解析中…", async () => {
+    try {
+      await runTask(
+        `/api/documents/${documentId}/parse`,
+        parseRequestBody(),
+        "解析完成",
+      );
+      if (state.document?.document_id === documentId) await openDocument(documentId);
+    } catch (error) {
+      notify(error.message);
+    }
+  });
 });
 
 $("#favorite-button").addEventListener("click", async () => {
@@ -1488,11 +1498,11 @@ $("#translate-button").addEventListener("click", async () => {
   });
 });
 
-$("#export-button").addEventListener("click", async () => {
-  if (!state.document || !state.parse || $("#export-button").disabled) return;
+$("#download-button").addEventListener("click", async () => {
+  if (!state.document || !state.parse || $("#download-button").disabled) return;
   const documentId = state.document.document_id;
   const parseId = state.parse.parse_run_id;
-  await withButtonBusy("export-button", "导出中…", async () => {
+  await withButtonBusy("download-button", "导出中…", async () => {
     try {
       const task = await runTask(`/api/documents/${documentId}/exports`, {
         parse_id: parseId,

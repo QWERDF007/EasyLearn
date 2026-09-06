@@ -221,3 +221,75 @@ def test_empty_workspace_exposes_upload_dropzone_without_model_selector(server, 
     assert empty.is_displayed()
     assert "点击上传或者拖入文件开始解析" in empty.text
     assert browser.find_elements(By.ID, "model-select") == []
+
+
+def test_document_workspace_exposes_actions_and_settings(server, browser, image_file):
+    _open_app(browser, server)
+    browser.find_element(By.ID, "file-input").send_keys(str(image_file))
+    _wait_for_document(browser, image_file.name)
+
+    for element_id in ("settings-button", "reparse-button", "download-button"):
+        assert browser.find_element(By.ID, element_id).is_displayed()
+
+    settings = browser.find_element(By.ID, "settings-button")
+    assert settings.get_attribute("aria-expanded") == "false"
+    settings.click()
+    WebDriverWait(browser, 10).until(
+        lambda current: current.find_element(By.ID, "settings-panel").is_displayed()
+    )
+    assert settings.get_attribute("aria-expanded") == "true"
+
+
+def test_document_actions_support_favorite_and_delete(server, browser, image_file):
+    _open_app(browser, server)
+    browser.find_element(By.ID, "file-input").send_keys(str(image_file))
+    _wait_for_document(browser, image_file.name)
+
+    item = browser.find_element(By.CSS_SELECTOR, "#document-list .document-item")
+    document_id = item.get_attribute("data-document-id")
+    favorite = item.find_element(By.CSS_SELECTOR, ".favorite-action")
+    favorite.click()
+    WebDriverWait(browser, 10).until(
+        lambda current: current.find_element(
+            By.CSS_SELECTOR,
+            f'#document-list .document-item[data-document-id="{document_id}"] .favorite-action',
+        ).get_attribute("aria-label") == "取消收藏"
+    )
+
+    delete = browser.find_element(
+        By.CSS_SELECTOR,
+        f'#document-list .document-item[data-document-id="{document_id}"] .delete-action',
+    )
+    delete.click()
+    dialog = browser.find_element(By.ID, "document-delete-dialog")
+    WebDriverWait(browser, 10).until(lambda current: dialog.is_displayed())
+    assert image_file.name in dialog.text
+    browser.find_element(By.ID, "confirm-delete-button").click()
+    WebDriverWait(browser, 10).until(
+        lambda current: not current.find_elements(
+            By.CSS_SELECTOR,
+            f'#document-list .document-item[data-document-id="{document_id}"]',
+        )
+    )
+
+
+def test_ctrl_wheel_changes_reader_scale(server, browser, image_file):
+    _open_app(browser, server)
+    browser.find_element(By.ID, "file-input").send_keys(str(image_file))
+    _wait_for_document(browser, image_file.name)
+
+    before = float(
+        browser.execute_script(
+            "return Number(document.getElementById('pdf-viewer').dataset.scale || '1');"
+        )
+    )
+    browser.execute_script(
+        "document.getElementById('pdf-viewer').dispatchEvent(new WheelEvent('wheel', "
+        "{bubbles: true, cancelable: true, ctrlKey: true, deltaY: -100}));"
+    )
+    after = float(
+        browser.execute_script(
+            "return Number(document.getElementById('pdf-viewer').dataset.scale || '1');"
+        )
+    )
+    assert after > before

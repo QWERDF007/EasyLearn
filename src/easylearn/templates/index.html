@@ -32,29 +32,6 @@
             <h1 id="document-name">选择一个文档</h1>
             <p id="document-status" class="muted">上传后开始解析</p>
           </div>
-          <div class="topbar-version">
-            <label class="select-control version-control">
-              <span class="sr-only">解析版本</span>
-              <select id="version-select" aria-label="解析版本" disabled></select>
-            </label>
-          </div>
-          <div class="topbar-actions">
-            <label id="auto-translate-option" class="switch-control" title="解析完成后自动翻译">
-              <input id="auto-translate" type="checkbox">
-              <span aria-hidden="true"></span>
-            </label>
-            <details id="office-options" class="office-options" hidden>
-              <summary title="Office 预览选项">▦</summary>
-              <label>工作表 <input id="office-sheet" maxlength="255" placeholder="当前工作表"></label>
-              <label>打印范围 <input id="office-print-range" maxlength="100" placeholder="A1:D20"></label>
-            </details>
-            <button id="parse-button" class="icon-button toolbar-icon" type="button" aria-label="开始解析" title="开始解析" disabled><span aria-hidden="true">▶</span></button>
-            <button id="translate-button" class="icon-button toolbar-icon" type="button" aria-label="翻译全文" title="翻译全文" disabled><span aria-hidden="true">文</span></button>
-            <button id="qa-button" class="icon-button toolbar-icon" type="button" aria-label="AI 解读" title="AI 解读" disabled><span aria-hidden="true">✦</span></button>
-            <button id="export-button" class="icon-button toolbar-icon" type="button" aria-label="导出 ZIP" title="导出 ZIP" disabled><span aria-hidden="true">⇩</span></button>
-            <button id="favorite-button" class="icon-button toolbar-icon" type="button" aria-label="收藏" title="收藏" disabled><span aria-hidden="true">☆</span></button>
-            <button id="delete-button" class="icon-button toolbar-icon danger-icon" type="button" aria-label="删除文档" title="删除文档" disabled><span aria-hidden="true">⌫</span></button>
-          </div>
         </header>
         <div id="parse-progress" class="parse-progress" hidden aria-live="polite">
           <div class="progress-heading">
@@ -114,9 +91,35 @@
               <button id="source-markdown-tab" class="tab result-tab" data-view="raw" type="button">源码</button>
             </div>
             <div class="result-actions">
+              <button id="settings-button" class="icon-button toolbar-icon" type="button" title="设置" aria-label="设置" aria-expanded="false" aria-controls="settings-panel" disabled><span aria-hidden="true">⚙</span></button>
+              <button id="reparse-button" class="icon-button toolbar-icon" type="button" title="重新解析" aria-label="重新解析" disabled><span aria-hidden="true">↻</span></button>
+              <button id="download-button" class="icon-button toolbar-icon" type="button" title="下载解析结果" aria-label="下载解析结果" disabled><span aria-hidden="true">⇩</span></button>
+              <span class="result-action-divider" aria-hidden="true"></span>
+              <button id="translate-button" class="icon-button toolbar-icon" type="button" aria-label="翻译全文" title="翻译全文" disabled><span aria-hidden="true">文</span></button>
+              <button id="qa-button" class="icon-button toolbar-icon" type="button" aria-label="AI 解读" title="AI 解读" disabled><span aria-hidden="true">✦</span></button>
+              <button id="favorite-button" class="icon-button toolbar-icon" type="button" aria-label="收藏" title="收藏" disabled><span aria-hidden="true">☆</span></button>
+              <button id="delete-button" class="icon-button toolbar-icon danger-icon" type="button" aria-label="删除文档" title="删除文档" disabled><span aria-hidden="true">⌫</span></button>
               <button id="search-toggle" class="icon-button small-icon" type="button" title="查找" aria-label="查找" aria-expanded="false"><span aria-hidden="true">⌕</span></button>
               <span id="selection-count" class="muted"></span>
             </div>
+          </div>
+          <div id="settings-panel" class="settings-panel" hidden>
+            <label class="select-control version-control">
+              <span>解析版本</span>
+              <select id="version-select" aria-label="解析版本" disabled></select>
+            </label>
+            <label class="settings-switch" title="解析完成后自动翻译">
+              <span>解析后自动翻译</span>
+              <span id="auto-translate-option" class="switch-control">
+                <input id="auto-translate" type="checkbox">
+                <span aria-hidden="true"></span>
+              </span>
+            </label>
+            <details id="office-options" class="office-options" hidden>
+              <summary title="Office 预览选项">Office 预览选项</summary>
+              <label>工作表 <input id="office-sheet" maxlength="255" placeholder="当前工作表"></label>
+              <label>打印范围 <input id="office-print-range" maxlength="100" placeholder="A1:D20"></label>
+            </details>
           </div>
           <div id="result-search" class="result-search" hidden>
             <label for="result-search-input">查找</label>
