@@ -4,7 +4,7 @@ import os
 import tomllib
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from easylearn.images import ImageLimits
 from easylearn.mineru.schema import MinerUArchiveLimits, MinerUParseOptions, MinerUTableLimits
@@ -35,15 +35,38 @@ class CacheSettings(_Config):
     max_documents: int = Field(default=3, ge=1, le=100)
 
 
+class MinerUModelCandidate(_Config):
+    model_id: str = Field(min_length=1, max_length=255)
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    path: Path
+
+
 class MinerUSettings(_Config):
-    model_path: Path = Path("D:/Models/MinerU2.5-Pro-2605-1.2B")
-    model_root: Path | None = None
+    models: tuple[MinerUModelCandidate, ...] = Field(
+        default_factory=lambda: (
+            MinerUModelCandidate(
+                model_id="MinerU2.5-Pro-2605-1.2B",
+                name="MinerU2.5-Pro-2605-1.2B",
+                path=Path("F:/models/MinerU2.5-Pro-2605-1.2B"),
+            ),
+        )
+    )
+    default_model_id: str | None = Field(default=None, min_length=1, max_length=255)
     timeout_seconds: float = Field(default=900, gt=0)
     parse: MinerUParseOptions = Field(default_factory=MinerUParseOptions)
     archive_limits: MinerUArchiveLimits = Field(default_factory=MinerUArchiveLimits)
     table_limits: MinerUTableLimits = Field(default_factory=MinerUTableLimits)
     image_limits: ImageLimits = Field(default_factory=ImageLimits)
     preview_limits: PreviewLimits = Field(default_factory=PreviewLimits)
+
+    @model_validator(mode="after")
+    def validate_model_candidates(self) -> "MinerUSettings":
+        model_ids = [candidate.model_id for candidate in self.models]
+        if not model_ids or len(model_ids) != len(set(model_ids)):
+            raise ValueError("MinerU model IDs must be unique and non-empty")
+        if self.default_model_id is not None and self.default_model_id not in model_ids:
+            raise ValueError("MinerU default_model_id must reference a configured model")
+        return self
 
 class LLMSettings(_Config):
     base_url: str = "http://127.0.0.1:8000/v1"
@@ -58,6 +81,7 @@ class FileSettings(_Config):
     max_upload_mb: int = Field(default=100, gt=0, le=4096)
     keep_parse_versions: int = Field(default=2, ge=1, le=20)
     revision_history_limit: int = Field(default=10, ge=1, le=100)
+    tmp_dir: Path | None = None
     tmp_retention_hours: int = Field(default=24, ge=1, le=168)
     export_retention_days: int = Field(default=30, ge=1, le=3650)
     log_dir: Path = Path("./logs")
@@ -119,18 +143,28 @@ class Settings(BaseModel):
             updates["app"] = result.app.model_copy(
                 update={"data_dir": configured.parent / data_dir}
             )
+        file_updates: dict[str, object] = {}
         log_dir = result.files.log_dir
         if not log_dir.is_absolute():
-            updates["files"] = result.files.model_copy(
-                update={"log_dir": configured.parent / log_dir}
-            )
+            file_updates["log_dir"] = configured.parent / log_dir
+        tmp_dir = result.files.tmp_dir
+        if tmp_dir is not None and not tmp_dir.is_absolute():
+            file_updates["tmp_dir"] = configured.parent / tmp_dir
+        if file_updates:
+            updates["files"] = result.files.model_copy(update=file_updates)
         mineru_updates: dict[str, object] = {}
-        model_path = result.mineru.model_path
-        if not model_path.is_absolute():
-            mineru_updates["model_path"] = configured.parent / model_path
-        model_root = result.mineru.model_root
-        if model_root is not None and not model_root.is_absolute():
-            mineru_updates["model_root"] = configured.parent / model_root
+        if any(not candidate.path.is_absolute() for candidate in result.mineru.models):
+            resolved_models = tuple(
+                candidate.model_copy(
+                    update={
+                        "path": candidate.path
+                        if candidate.path.is_absolute()
+                        else configured.parent / candidate.path
+                    }
+                )
+                for candidate in result.mineru.models
+            )
+            mineru_updates["models"] = resolved_models
         if mineru_updates:
             updates["mineru"] = result.mineru.model_copy(update=mineru_updates)
         if updates:
@@ -148,6 +182,10 @@ class Settings(BaseModel):
     @property
     def log_dir(self) -> Path:
         return self.files.log_dir.resolve()
+
+    @property
+    def tmp_dir(self) -> Path:
+        return (self.files.tmp_dir or (self.data_dir / "tmp")).resolve()
 
     @property
     def max_upload_bytes(self) -> int:

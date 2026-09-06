@@ -33,6 +33,7 @@ class DataPaths:
     """Generated application paths; user filenames never become path segments."""
 
     data_dir: Path
+    temporary_dir: Path | None = None
 
     @property
     def database(self) -> Path:
@@ -44,7 +45,7 @@ class DataPaths:
 
     @property
     def temporary(self) -> Path:
-        return self.data_dir / "tmp"
+        return self.temporary_dir or (self.data_dir / "tmp")
 
     @property
     def lock(self) -> Path:

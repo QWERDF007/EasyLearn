@@ -19,9 +19,12 @@ max_mb = 128
 max_documents = 3
 
 [mineru]
-model_path = "D:/Models/MinerU2.5-Pro-2605-1.2B"
-# 可选：模型下拉列表的目录；不填写时使用 model_path 的父目录。
-# model_root = "D:/Models"
+default_model_id = "MinerU2.5-Pro-2605-1.2B"
+# 模型候选必须显式登记；前端不提供模型选择，解析默认使用 default_model_id。
+[[mineru.models]]
+model_id = "MinerU2.5-Pro-2605-1.2B"
+name = "MinerU2.5-Pro-2605-1.2B"
+path = "F:/models/MinerU2.5-Pro-2605-1.2B"
 timeout_seconds = 900
 
 [mineru.parse]
@@ -71,6 +74,7 @@ json_mode = false
 max_upload_mb = 100
 keep_parse_versions = 2
 revision_history_limit = 10
+tmp_dir = "F:/tmp"
 tmp_retention_hours = 24
 export_retention_days = 30
 log_dir = "./logs"

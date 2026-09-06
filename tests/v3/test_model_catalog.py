@@ -1,63 +1,77 @@
-import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from easylearn.config import MinerUSettings
+from easylearn.config import MinerUModelCandidate, MinerUSettings
 from easylearn.errors import DomainError
 from easylearn.mineru.models import MinerUModelCatalog
 
 
-def test_model_catalog_lists_only_directories_and_resolves_a_model(tmp_path: Path):
+def test_model_catalog_uses_only_explicit_candidates(tmp_path: Path):
     first = tmp_path / "MinerU-first"
     second = tmp_path / "MinerU-second"
-    first.mkdir()
-    second.mkdir()
-    for directory in (first, second):
-        (directory / "config.json").write_text(
-            json.dumps({
-                "model_type": "qwen2_vl",
-                "architectures": ["Qwen2VLForConditionalGeneration"],
-            }),
-            encoding="utf-8",
-        )
-        (directory / "preprocessor_config.json").write_text("{}", encoding="utf-8")
-        (directory / "model.safetensors").write_bytes(b"test")
-    (tmp_path / "not-a-model.txt").write_text("ignored", encoding="utf-8")
-    (tmp_path / "not-a-vlm").mkdir()
-    settings = MinerUSettings(model_path=first, model_root=tmp_path)
+    unconfigured = tmp_path / "unconfigured"
+    for directory in (first, second, unconfigured):
+        directory.mkdir()
+    settings = MinerUSettings(
+        models=(
+            MinerUModelCandidate(model_id="first", name="MinerU first", path=first),
+            MinerUModelCandidate(model_id="second", path=second),
+        ),
+        default_model_id="second",
+    )
 
     catalog = MinerUModelCatalog(settings)
 
-    assert [item.model_id for item in catalog.list()] == ["MinerU-first", "MinerU-second"]
-    assert catalog.resolve("MinerU-second") == second.resolve()
-    assert catalog.list()[0].selected is True
+    assert [item.model_id for item in catalog.list()] == ["first", "second"]
+    assert catalog.list()[0].name == "MinerU first"
+    assert catalog.list()[1].selected is True
+    assert catalog.default_model_id == "second"
+    assert catalog.resolve(None) == second.resolve()
+    assert catalog.resolve("first") == first.resolve()
+    assert catalog.model_id_for(second) == "second"
 
 
-def test_model_catalog_ignores_unrelated_model_directories(tmp_path: Path):
-    unrelated = tmp_path / "dinov2"
-    unrelated.mkdir()
-    (unrelated / "weights.pth").write_bytes(b"test")
+def test_model_catalog_does_not_discover_unconfigured_directories(tmp_path: Path):
     selected = tmp_path / "MinerU"
+    unrelated = tmp_path / "dinov2"
     selected.mkdir()
-    (selected / "config.json").write_text(
-        json.dumps({"model_type": "qwen2_vl"}), encoding="utf-8"
+    unrelated.mkdir()
+    settings = MinerUSettings(
+        models=(MinerUModelCandidate(model_id="MinerU", path=selected),),
     )
-    (selected / "preprocessor_config.json").write_text("{}", encoding="utf-8")
-    (selected / "model.safetensors").write_bytes(b"test")
 
-    catalog = MinerUModelCatalog(MinerUSettings(model_path=selected, model_root=tmp_path))
+    catalog = MinerUModelCatalog(settings)
 
     assert [item.model_id for item in catalog.list()] == ["MinerU"]
+    assert catalog.resolve("MinerU") == selected.resolve()
 
 
-def test_model_catalog_rejects_paths_outside_model_root(tmp_path: Path):
+def test_model_catalog_rejects_unknown_model_id(tmp_path: Path):
     selected = tmp_path / "selected"
     selected.mkdir()
-    catalog = MinerUModelCatalog(MinerUSettings(model_path=selected, model_root=tmp_path))
+    catalog = MinerUModelCatalog(
+        MinerUSettings(models=(MinerUModelCandidate(model_id="selected", path=selected),))
+    )
 
     with pytest.raises(DomainError, match="MinerU model"):
         catalog.resolve("..")
+
+
+def test_model_settings_reject_duplicate_ids_and_unknown_default(tmp_path: Path):
+    with pytest.raises(ValidationError):
+        MinerUSettings(
+            models=(
+                MinerUModelCandidate(model_id="same", path=tmp_path / "one"),
+                MinerUModelCandidate(model_id="same", path=tmp_path / "two"),
+            )
+        )
+    with pytest.raises(ValidationError):
+        MinerUSettings(
+            models=(MinerUModelCandidate(model_id="one", path=tmp_path / "one"),),
+            default_model_id="missing",
+        )
 
 
 def test_parse_request_keeps_a_model_id_for_task_scope():

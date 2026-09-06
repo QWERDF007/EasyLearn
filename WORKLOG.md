@@ -7,6 +7,29 @@
 - 无。
 
 
+### 2026-09-07 — MinerU 模型与任务临时目录配置
+
+**目标**
+- 将 MinerU 模型候选和默认模型改为 `config.toml` 显式配置，将任务临时目录接入配置，并准备指定论文的真实运行环境。
+
+**当前状态**
+- 已完成：`MinerUModelCandidate`、默认模型 ID、候选路径及唯一性校验进入统一 TOML 配置；模型目录不再自动发现，任务 scope 固定配置解析出的模型 ID。
+- 已完成：`files.tmp_dir` 接入 `DataPaths` 和应用生命周期；本机 `config.toml` 使用 `F:\tmp\easylearn`，避免启动清理触碰 `F:\tmp` 中的其他目录。
+- 已完成：从 ModelScope 下载 `OpenDataLab/MinerU2.5-Pro-2605-1.2B` 到 `F:\models\MinerU2.5-Pro-2605-1.2B`，包含 `config.json`、`preprocessor_config.json` 和 `model.safetensors`（2,312,126,640 字节）。
+- 已完成：本机忽略配置 `config.toml` 已指向 `F:\models\MinerU2.5-Pro-2605-1.2B`、`F:\tmp\easylearn` 和隔离数据目录；未修改仓库 `data/`。
+
+**验证证据**
+- 红灯：`learn python -m pytest tests\\v3\\test_model_catalog.py tests\\v3\\test_config.py -q ...` → 收集阶段缺少 `MinerUModelCandidate`。
+- 绿灯：`learn python -m pytest tests\\v3\\test_config.py tests\\v3\\test_model_catalog.py -q ...` → `7 passed`；含应用生命周期实际使用外置任务临时目录。
+- `learn python -m pytest tests\\v3\\test_parser.py::test_parse_does_not_depend_on_an_external_mineru_command -q ...` → 通过；配置模型 ID 可固定到任务 scope。
+- `learn python -m ruff check ...` → `All checks passed`；`learn python -m mypy ...` → `Success: no issues found in 5 source files`。
+- `learn python -c ... Settings.load('config.toml')` → 默认模型 ID、模型路径和任务临时目录分别解析为 `F:\models\MinerU2.5-Pro-2605-1.2B`、`F:\tmp\easylearn`；指定论文文件大小 `1,485,642` 字节。
+- ModelScope 下载 → `14 files` 完成，模型权重约 `2.31G`；未安装或启动外部 LLM。
+
+**下一步**
+- 启动隔离配置的 EasyLearn，使用指定论文完成真实 GPU 解析、进度条和 PDF 阅读器 Selenium 验收；结束后关闭服务并记录结果。
+
+
 ### 2026-09-07 — 工作台顶部操作与交互验收
 
 **目标**

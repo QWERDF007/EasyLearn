@@ -76,7 +76,7 @@ class ParseService:
         self.settings = settings
         self.model_catalog = MinerUModelCatalog(settings.mineru)
         self.mineru = EmbeddedMinerU(
-            settings.mineru.model_path,
+            self.model_catalog.default_model_path,
             timeout=settings.mineru.timeout_seconds,
         )
 
@@ -96,7 +96,7 @@ class ParseService:
         if requested_model_id is not None:
             self.model_catalog.resolve(requested_model_id)
         model_id = (
-            self.model_catalog.model_id_for(self.settings.mineru.model_path)
+            self.model_catalog.default_model_id
             if requested_model_id is None
             else requested_model_id
         )

@@ -9,7 +9,13 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from PIL import Image
 
-from easylearn.config import AppSettings, FileSettings, MinerUSettings, Settings
+from easylearn.config import (
+    AppSettings,
+    FileSettings,
+    MinerUModelCandidate,
+    MinerUSettings,
+    Settings,
+)
 from easylearn.errors import DomainError
 from easylearn.jobs.schema import JobKind
 from easylearn.main import create_app
@@ -198,7 +204,13 @@ async def test_parse_does_not_depend_on_an_external_mineru_command(tmp_path, mon
     app = create_app(
         Settings(
             app=AppSettings(data_dir=tmp_path),
-            mineru=MinerUSettings(model_path=tmp_path / "model"),
+            mineru=MinerUSettings(
+                models=(
+                    MinerUModelCandidate(
+                        model_id="test-model", path=tmp_path / "model"
+                    ),
+                )
+            ),
         )
     )
     async with (

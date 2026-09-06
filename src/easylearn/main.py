@@ -86,7 +86,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        paths = DataPaths(settings.data_dir).ensure()
+        paths = DataPaths(settings.data_dir, settings.tmp_dir).ensure()
         instance_lock = InstanceLock(paths.lock)
         instance_lock.acquire()
         logging_controller: LoggingController = configure_logging(
