@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title }}</title>
+    <link rel="stylesheet" href="/static/app.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="sidebar" aria-label="文档导航">
+        <div class="brand">EasyLearn</div>
+        <form id="upload-form" class="upload-form">
+          <label class="upload-button">
+            <span>上传文档</span>
+            <input id="file-input" type="file" accept=".pdf,.png,.jpg,.jpeg,.jp2,.webp,.gif,.bmp,.tif,.tiff,.docx,.pptx,.xlsx" required>
+          </label>
+        </form>
+        <div class="sidebar-heading">文档</div>
+        <nav id="document-list" class="document-list" aria-live="polite"></nav>
+        <div class="sidebar-heading">任务</div>
+        <div id="task-list" class="task-list" aria-live="polite"></div>
+      </aside>
+
+      <section class="reader-column">
+        <header class="topbar">
+          <div>
+            <h1 id="document-name">选择一个文档</h1>
+            <p id="document-status" class="muted">上传后开始解析</p>
+          </div>
+          <div class="topbar-actions">
+            <label class="version-control">版本
+            <select id="version-select" aria-label="解析版本" disabled></select>
+            </label>
+            <label id="auto-translate-option" class="check-control">
+              <input id="auto-translate" type="checkbox">
+              解析完成后自动翻译
+            </label>
+            <details id="office-options" class="office-options" hidden>
+              <summary>Office 预览选项</summary>
+              <label>工作表 <input id="office-sheet" maxlength="255" placeholder="当前工作表"></label>
+              <label>打印范围 <input id="office-print-range" maxlength="100" placeholder="A1:D20"></label>
+            </details>
+            <button id="parse-button" type="button" disabled>解析</button>
+            <button id="translate-button" type="button" disabled>翻译全文</button>
+            <button id="qa-button" type="button" disabled>AI 解读</button>
+            <button id="export-button" type="button" disabled>导出 ZIP</button>
+            <button id="favorite-button" type="button" disabled>收藏</button>
+            <button id="delete-button" type="button" disabled>删除</button>
+          </div>
+        </header>
+        <div class="reader-toolbar">
+          <div class="reader-controls" aria-label="PDF 阅读控制">
+            <button id="prev-page" type="button" aria-label="上一页" disabled>上一页</button>
+            <span id="page-count" class="muted">0 / 0</span>
+            <button id="next-page" type="button" aria-label="下一页" disabled>下一页</button>
+            <label class="zoom-control">缩放
+              <select id="zoom-select" aria-label="缩放比例" disabled>
+                <option value="0.5">50%</option>
+                <option value="0.75">75%</option>
+                <option value="1" selected>100%</option>
+                <option value="1.5">150%</option>
+                <option value="2">200%</option>
+              </select>
+            </label>
+            <button id="fit-width" type="button" disabled>适应宽度</button>
+            <button id="rotate-page" type="button" aria-label="旋转页面" disabled>旋转</button>
+          </div>
+          <span class="hint">悬浮或点击右侧块可联动定位</span>
+        </div>
+        <div id="pdf-viewer" class="pdf-viewer" aria-label="PDF 原文" tabindex="0">
+          <div id="pdf-pages" class="pdf-pages"></div>
+        </div>
+      </section>
+
+      <section class="result-column">
+        <header class="result-header">
+          <div class="result-header-main">
+            <div class="tabs" role="tablist" aria-label="结果视图">
+              <button class="tab result-tab is-active" data-view="zh" type="button">中文 Markdown</button>
+              <button class="tab result-tab" data-view="source" type="button">原文 Markdown</button>
+              <button id="bilingual-tab" class="tab result-tab" data-view="bilingual" type="button">中英对照</button>
+              <button class="tab result-tab" data-view="json" type="button">JSON</button>
+              <button id="source-markdown-tab" class="tab result-tab" data-view="raw" type="button">源码</button>
+            </div>
+            <div class="result-actions">
+              <button id="search-toggle" class="small-button" type="button" aria-expanded="false">查找</button>
+              <span id="selection-count" class="muted"></span>
+            </div>
+          </div>
+          <div id="result-search" class="result-search" hidden>
+            <label for="result-search-input">查找</label>
+            <input id="result-search-input" type="search" maxlength="200" placeholder="查找原文或译文">
+            <span id="result-search-count" class="muted"></span>
+            <button id="clear-selection" class="small-button" type="button">清除选择</button>
+          </div>
+        </header>
+        <div id="result-content" class="result-content" aria-live="polite">
+          <p class="empty-state">解析完成后，结果会显示在这里。</p>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="qa-dialog" class="qa-dialog">
+      <form id="qa-form">
+        <div class="dialog-heading">
+          <h2>AI 解读</h2>
+          <button id="close-qa-button" type="button" class="icon-button" aria-label="关闭">×</button>
+        </div>
+        <p id="qa-anchor" class="muted">当前未选择块，将根据问题查找相关内容。</p>
+        <div class="qa-history-row">
+          <label for="qa-history-select">历史提问</label>
+          <select id="qa-history-select" disabled>
+            <option value="">暂无历史提问</option>
+          </select>
+          <button id="delete-qa-button" type="button" hidden>删除记录</button>
+        </div>
+        <div class="qa-options">
+          <label class="check-control"><input id="qa-auto-related" type="checkbox" checked> 自动关联相关块</label>
+          <label class="field-control">手动加入块 ID
+            <input id="qa-related-blocks" maxlength="2000" placeholder="可用逗号分隔"></label>
+          <label class="field-control">排除块 ID
+            <input id="qa-exclude-blocks" maxlength="2000" placeholder="可用逗号分隔"></label>
+        </div>
+        <textarea id="question-input" rows="4" maxlength="4000" placeholder="针对当前文档提问"></textarea>
+        <div class="dialog-actions">
+          <button id="ask-button" type="submit">提问</button>
+          <button id="stop-answer-button" type="button" hidden>停止</button>
+        </div>
+        <article id="answer-content" class="answer-content"></article>
+        <div id="citation-list" class="citation-list"></div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/static/app.js"></script>
+  </body>
+</html>

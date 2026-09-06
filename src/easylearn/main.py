@@ -1,51 +1,171 @@
+from __future__ import annotations
+
 import asyncio
+import json
+import logging
+import mimetypes
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Annotated
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Annotated, Literal, cast
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, Header, Request, Response
+import httpx
+from fastapi import FastAPI, File, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    StreamingResponse,
+)
+from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException
 from starlette.middleware.base import RequestResponseEndpoint
+from starlette.responses import Response
+from starlette.staticfiles import StaticFiles
 
+from easylearn.cache import DocumentCache
 from easylearn.config import Settings
 from easylearn.database import Database
-from easylearn.documents.schema import DocumentAccepted, DocumentRequest, DocumentView
+from easylearn.documents.schema import DocumentView, FavoriteRequest
 from easylearn.documents.service import DocumentService
-from easylearn.downloads import AssetResponse
 from easylearn.errors import DomainError, ErrorView
-from easylearn.jobs.schema import JobView
-from easylearn.jobs.service import JobService
-from easylearn.parses.schema import ParseAccepted, ParseRequest, ParseView
-from easylearn.parses.service import ParseService
-from easylearn.storage import LocalStorage
-from easylearn.uploads.schema import UploadCreatedView, UploadLimits, UploadRequest, UploadView
-from easylearn.uploads.service import UploadService
+from easylearn.exports import ExportRequest, ExportService
+from easylearn.files import DocumentFiles, InstanceLock
+from easylearn.jobs.schema import JobKind, TaskView
+from easylearn.logging_setup import LoggingController, configure_logging
+from easylearn.maintenance import MaintenanceService
+from easylearn.parser import ParseRequest, ParseService
+from easylearn.paths import DataPaths
+from easylearn.qa import QARecordView, QARequest, QAService
+from easylearn.tasks import TaskManager
+from easylearn.translation import (
+    EditTranslationRequest,
+    LLMClient,
+    RestoreTranslationRequest,
+    TranslateRequest,
+    TranslationHistoryView,
+    TranslationService,
+    TranslationUnitView,
+)
+
+
+@dataclass(frozen=True)
+class ApplicationState:
+    settings: Settings
+    paths: DataPaths
+    database: Database
+    files: DocumentFiles
+    documents: DocumentService
+    parser: ParseService
+    translation: TranslationService
+    exporter: ExportService
+    qa: QAService
+    http: httpx.AsyncClient
+    tasks: TaskManager
+    cache: DocumentCache
+    maintenance: MaintenanceService
+
+
+def _state(request: Request) -> ApplicationState:
+    return cast(ApplicationState, request.app.state.services)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
-    settings = settings or Settings()
+    settings = settings or Settings.load()
+    logger = logging.getLogger(__name__)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        database = Database(settings.database_url.get_secret_value())
-        storage = LocalStorage(settings.storage_root)
-        app.state.database = database
-        app.state.storage = storage
-        app.state.uploads = UploadService(database, storage, settings)
-        app.state.documents = DocumentService(database)
-        app.state.jobs = JobService(database)
-        app.state.parses = ParseService(database, settings)
+        paths = DataPaths(settings.data_dir).ensure()
+        instance_lock = InstanceLock(paths.lock)
+        instance_lock.acquire()
+        logging_controller: LoggingController = configure_logging(
+            paths.logs,
+            max_bytes=settings.files.log_max_mb * 1024 * 1024,
+            backup_count=settings.files.log_backup_count,
+        )
+        database = Database(paths.database)
+        manager = TaskManager(
+            queue_limit=settings.tasks.queue_limit,
+            concurrency={
+                JobKind.PARSE: settings.tasks.parse_concurrency,
+                JobKind.TRANSLATE: settings.tasks.translation_requests,
+                JobKind.QA: settings.tasks.qa_requests,
+                JobKind.EXPORT: 1,
+            },
+            retention_seconds=settings.tasks.finished_task_retention_minutes * 60,
+        )
+        http: httpx.AsyncClient | None = None
         try:
+            await database.open()
+            maintenance = MaintenanceService(
+                database,
+                paths,
+                tmp_retention_seconds=settings.files.tmp_retention_hours * 60 * 60,
+                export_retention_seconds=settings.files.export_retention_days * 24 * 60 * 60,
+                parse_keep=settings.files.keep_parse_versions,
+            )
+            await maintenance.cleanup()
+            cache = DocumentCache(
+                max_documents=settings.cache.max_documents,
+                max_bytes=settings.cache.max_mb * 1024 * 1024,
+            )
+            files = DocumentFiles(paths)
+            documents = DocumentService(
+                database,
+                files,
+                max_upload_bytes=settings.max_upload_bytes,
+                cache=cache,
+            )
+            http = httpx.AsyncClient(trust_env=False, follow_redirects=False)
+            parser = ParseService(database, files, documents, manager, settings)
+            translation = TranslationService(
+                database, documents, manager, settings, llm=LLMClient(settings, http)
+            )
+            exporter = ExportService(database, documents, manager)
+            qa = QAService(database, documents, manager, settings, llm=LLMClient(settings, http))
+            manager.register(JobKind.PARSE, parser.execute)
+            manager.register(JobKind.TRANSLATE, translation.execute)
+            manager.register(JobKind.EXPORT, exporter.execute)
+            manager.register(JobKind.QA, qa.execute)
+            await manager.start()
+            app.state.services = ApplicationState(
+                settings=settings,
+                paths=paths,
+                database=database,
+                files=files,
+                documents=documents,
+                parser=parser,
+                translation=translation,
+                exporter=exporter,
+                qa=qa,
+                http=http,
+                tasks=manager,
+                cache=cache,
+                maintenance=maintenance,
+            )
+            logger.info("EasyLearn started at %s:%s", settings.app.host, settings.app.port)
             yield
         finally:
+            await manager.close()
+            if http is not None:
+                await http.aclose()
             await database.close()
+            logger.info("EasyLearn stopped")
+            logging_controller.close()
+            instance_lock.release()
 
     app = FastAPI(title="EasyLearn", version="0.1.0", lifespan=lifespan)
+    templates = Jinja2Templates(directory=str(Path(__file__).with_name("templates")))
+    app.mount(
+        "/static",
+        StaticFiles(directory=str(Path(__file__).with_name("static"))),
+        name="static",
+    )
 
     @app.middleware("http")
     async def request_identity(request: Request, call_next: RequestResponseEndpoint) -> Response:
@@ -53,36 +173,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response = await call_next(request)
         response.headers["X-Request-ID"] = request.state.request_id
         return response
-
-    @app.get("/health/live")
-    async def live() -> dict[str, str]:
-        return {"status": "alive"}
-
-    @app.get("/health/ready")
-    async def ready(request: Request) -> JSONResponse:
-        database: Database = request.app.state.database
-        storage: LocalStorage = request.app.state.storage
-        db_ok = storage_ok = False
-        try:
-            async with database.engine.connect() as connection:
-                await connection.execute(text("SELECT 1"))
-            db_ok = True
-        except (SQLAlchemyError, OSError, TimeoutError):
-            pass
-        try:
-            await asyncio.to_thread(storage.check)
-            storage_ok = True
-        except OSError:
-            pass
-        ok = db_ok and storage_ok
-        return JSONResponse(
-            status_code=200 if ok else 503,
-            content={
-                "status": "ready" if ok else "unavailable",
-                "database": db_ok,
-                "storage": storage_ok,
-            },
-        )
 
     @app.exception_handler(DomainError)
     async def domain_error(request: Request, exc: DomainError) -> JSONResponse:
@@ -92,7 +182,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 code=exc.code,
                 message=exc.message,
                 retryable=exc.retryable,
-                request_id=request.state.request_id,
+                request_id=getattr(request.state, "request_id", ""),
             ).model_dump(mode="json"),
         )
 
@@ -103,7 +193,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             content=ErrorView(
                 code="REQUEST_INVALID",
                 message="Request does not satisfy the contract",
-                request_id=request.state.request_id,
+                request_id=getattr(request.state, "request_id", ""),
                 details={
                     "issues": [
                         {"location": list(issue["loc"]), "type": issue["type"]}
@@ -121,141 +211,277 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             content=ErrorView(
                 code=f"HTTP_{exc.status_code}",
                 message="HTTP request could not be served",
-                request_id=request.state.request_id,
+                request_id=getattr(request.state, "request_id", ""),
             ).model_dump(mode="json"),
         )
 
-    @app.post("/api/v1/uploads", status_code=201, response_model=UploadCreatedView)
-    async def create_upload(body: UploadRequest, request: Request) -> UploadCreatedView:
-        uploads: UploadService = request.app.state.uploads
-        upload = await uploads.create(body)
-        return UploadCreatedView.model_validate(
-            {
-                **upload.model_dump(),
-                "limits": UploadLimits(
-                    max_file_bytes=settings.upload_max_bytes,
-                    max_chunk_bytes=settings.upload_chunk_bytes,
+    @app.get("/api/health")
+    async def health(request: Request) -> dict[str, object]:
+        state = _state(request)
+        database = state.database
+        async with database.read() as connection:
+            cursor = await connection.execute("SELECT 1")
+            await cursor.fetchone()
+            await cursor.close()
+        settings = state.settings
+        manager = state.tasks
+        return {
+            "status": "ready",
+            "server_boot_id": str(manager.server_boot_id),
+            "mineru": {
+                "mode": settings.mineru.mode,
+                "configured": bool(
+                    (settings.mineru.mode == "api" and settings.mineru.base_url)
+                    or (
+                        settings.mineru.mode == "cli"
+                        and _command_available(settings.mineru.command[0])
+                    )
                 ),
-            }
-        )
+            },
+            "llm": {"configured": bool(settings.llm.model and settings.llm.base_url)},
+            "extensions": settings.extensions.model_dump(mode="json"),
+        }
 
-    @app.get("/api/v1/uploads/{upload_id}", response_model=UploadView)
-    async def get_upload(upload_id: UUID, request: Request) -> UploadView:
-        uploads: UploadService = request.app.state.uploads
-        return await uploads.get(upload_id)
+    @app.get("/", response_class=HTMLResponse)
+    async def index(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(request, "index.html", {"title": "EasyLearn"})
 
-    @app.patch("/api/v1/uploads/{upload_id}/content", status_code=204)
-    async def append_upload(
-        upload_id: UUID, request: Request, upload_offset: Annotated[int, Header(ge=0)]
-    ) -> Response:
-        content = bytearray()
-        async for part in request.stream():
-            content.extend(part)
-            if len(content) > settings.upload_chunk_bytes:
-                raise DomainError("UPLOAD_CHUNK_INVALID", "Chunk exceeds limit", status=413)
-        uploads: UploadService = request.app.state.uploads
-        offset = await uploads.append(upload_id, upload_offset, bytes(content))
-        return Response(status_code=204, headers={"Upload-Offset": str(offset)})
+    @app.get("/api/documents", response_model=tuple[DocumentView, ...])
+    async def list_documents(
+        request: Request, favorite: bool | None = Query(default=None)
+    ) -> tuple[DocumentView, ...]:
+        return await _state(request).documents.list(favorite=favorite)
 
-    @app.post("/api/v1/uploads/{upload_id}/complete", response_model=UploadView)
-    async def complete_upload(upload_id: UUID, request: Request) -> UploadView:
-        uploads: UploadService = request.app.state.uploads
-        return await uploads.complete(upload_id)
-
-    @app.post("/api/v1/documents", status_code=202)
+    @app.post("/api/documents", response_model=DocumentView, status_code=201)
     async def create_document(
-        body: DocumentRequest,
-        request: Request,
-        response: Response,
-        idempotency_key: Annotated[str, Header(min_length=1, max_length=200)],
-    ) -> DocumentAccepted:
-        documents: DocumentService = request.app.state.documents
-        accepted = await documents.create(body, idempotency_key)
-        response.headers["Location"] = accepted.status_url
-        return accepted
+        request: Request, file: Annotated[UploadFile, File()]
+    ) -> DocumentView:
+        return await _state(request).documents.create(file)
 
-    @app.get("/api/v1/documents/{document_id}")
+    @app.get("/api/documents/{document_id}", response_model=DocumentView)
     async def get_document(document_id: UUID, request: Request) -> DocumentView:
-        documents: DocumentService = request.app.state.documents
-        return await documents.get(document_id)
+        state = _state(request)
+        document = await state.documents.get(document_id)
+        tasks = await state.tasks.active_for(document_id)
+        return document.model_copy(update={"tasks": tasks})
 
-    @app.get("/api/v1/documents/{document_id}/assets/{asset_id}")
-    @app.head("/api/v1/documents/{document_id}/assets/{asset_id}")
-    async def get_asset(document_id: UUID, asset_id: UUID, request: Request) -> AssetResponse:
-        documents: DocumentService = request.app.state.documents
-        storage: LocalStorage = request.app.state.storage
-        asset = await documents.asset(document_id, asset_id)
-        return AssetResponse(
-            storage.path(asset.storage_key),
-            media_type=asset.mime,
-            headers={"ETag": f'"{asset.sha256}"'},
-        )
+    @app.patch("/api/documents/{document_id}/favorite", response_model=DocumentView)
+    async def favorite_document(
+        document_id: UUID, body: FavoriteRequest, request: Request
+    ) -> DocumentView:
+        return await _state(request).documents.set_favorite(document_id, body.favorite)
 
-    @app.post("/api/v1/documents/{document_id}/parse-runs", status_code=202)
-    async def create_parse(
+    @app.delete("/api/documents/{document_id}", status_code=204)
+    async def delete_document(document_id: UUID, request: Request) -> Response:
+        state = _state(request)
+        await state.tasks.begin_document_deletion(document_id)
+        try:
+            await state.documents.delete(document_id)
+            return Response(status_code=204)
+        finally:
+            await state.tasks.end_document_deletion(document_id)
+
+    @app.post("/api/documents/{document_id}/parse", response_model=TaskView, status_code=202)
+    async def parse_document(
+        document_id: UUID, request: Request, body: ParseRequest | None = None
+    ) -> TaskView:
+        return await _state(request).parser.submit(document_id, body)
+
+    @app.get("/api/documents/{document_id}/parses/{parse_id}")
+    async def get_parse(
         document_id: UUID,
-        body: ParseRequest,
+        parse_id: UUID,
         request: Request,
-        response: Response,
-        idempotency_key: Annotated[str, Header(min_length=1, max_length=200)],
-    ) -> ParseAccepted:
-        parses: ParseService = request.app.state.parses
-        accepted = await parses.create(document_id, body, idempotency_key)
-        response.headers["Location"] = accepted.status_url
-        return accepted
+        page: int | None = Query(default=None, ge=0),
+        block_id: str | None = Query(default=None),
+    ) -> dict[str, object]:
+        ir = await _state(request).documents.load_ir(document_id, parse_id)
+        payload = ir.model_dump(mode="json", exclude_computed_fields=True)
+        if page is not None:
+            payload["blocks"] = [
+                block
+                for block in payload["blocks"]
+                if any(region["page_index"] == page for region in block["source_regions"])
+                or page in (block.get("source_locator") or {}).get("page_indices", [])
+            ]
+        if block_id is not None:
+            selected = {block_id}
+            changed = True
+            while changed:
+                changed = False
+                for block in payload["blocks"]:
+                    if (
+                        block.get("parent_block_id") in selected
+                        and block["block_id"] not in selected
+                    ):
+                        selected.add(block["block_id"])
+                        changed = True
+            payload["blocks"] = [
+                block for block in payload["blocks"] if block["block_id"] in selected
+            ]
+        return payload
 
-    @app.get("/api/v1/documents/{document_id}/parse-runs")
-    async def list_parses(document_id: UUID, request: Request) -> list[ParseView]:
-        parses: ParseService = request.app.state.parses
-        return await parses.list(document_id)
+    @app.get(
+        "/api/documents/{document_id}/parses/{parse_id}/markdown",
+        response_class=PlainTextResponse,
+    )
+    async def get_markdown(
+        document_id: UUID,
+        parse_id: UUID,
+        request: Request,
+        language: Literal["source", "zh", "bilingual", "raw"] = Query(default="source"),
+    ) -> PlainTextResponse:
+        from easylearn.rendering import render_markdown
 
-    @app.get("/api/v1/documents/{document_id}/parse-runs/{parse_run_id}/preview")
-    @app.head("/api/v1/documents/{document_id}/parse-runs/{parse_run_id}/preview")
-    async def get_parse_preview(
-        document_id: UUID, parse_run_id: UUID, request: Request
-    ) -> AssetResponse:
-        parses: ParseService = request.app.state.parses
-        storage: LocalStorage = request.app.state.storage
-        asset = await parses.preview(document_id, parse_run_id)
-        return AssetResponse(
-            storage.path(asset.storage_key),
-            media_type=asset.mime,
-            headers={"ETag": f'"{asset.sha256}"'},
+        state = _state(request)
+        if language == "raw":
+            return PlainTextResponse(
+                await state.documents.load_raw_markdown(document_id, parse_id),
+                media_type="text/markdown; charset=utf-8",
+            )
+        ir = await state.documents.load_ir(document_id, parse_id)
+        translations = await state.translation.effective_map(document_id, parse_id)
+        asset_links = {
+            str(asset.asset_id): (
+                f"/api/documents/{document_id}/files/asset:{parse_id}:{asset.asset_id}"
+            )
+            for asset in ir.assets
+        }
+        if language == "source":
+            content = render_markdown(ir, language="source", asset_links=asset_links)
+        elif language == "zh":
+            content = render_markdown(
+                ir, translations, language="chinese", asset_links=asset_links
+            )
+        else:
+            content = render_markdown(ir, translations, bilingual=True, asset_links=asset_links)
+        return PlainTextResponse(content, media_type="text/markdown; charset=utf-8")
+
+    @app.post("/api/documents/{document_id}/translate", response_model=TaskView, status_code=202)
+    async def translate_document(
+        document_id: UUID, body: TranslateRequest, request: Request
+    ) -> TaskView:
+        return await _state(request).translation.submit(document_id, body)
+
+    @app.get(
+        "/api/documents/{document_id}/translations",
+        response_model=tuple[TranslationUnitView, ...],
+    )
+    async def list_translations(
+        document_id: UUID,
+        request: Request,
+        parse_id: Annotated[UUID, Query(...)],
+    ) -> tuple[TranslationUnitView, ...]:
+        return await _state(request).translation.list(document_id, parse_id)
+
+    @app.patch(
+        "/api/documents/{document_id}/translations/{unit_id}",
+        response_model=TranslationUnitView,
+    )
+    async def edit_translation(
+        document_id: UUID,
+        unit_id: str,
+        body: EditTranslationRequest,
+        request: Request,
+    ) -> TranslationUnitView:
+        return await _state(request).translation.edit(document_id, unit_id, body)
+
+    @app.get(
+        "/api/documents/{document_id}/translations/{unit_id}/history",
+        response_model=tuple[TranslationHistoryView, ...],
+    )
+    async def translation_history(
+        document_id: UUID,
+        unit_id: str,
+        request: Request,
+        parse_id: Annotated[UUID, Query(...)],
+    ) -> tuple[TranslationHistoryView, ...]:
+        return await _state(request).translation.history(document_id, parse_id, unit_id)
+
+    @app.post(
+        "/api/documents/{document_id}/translations/{unit_id}/history/{history_id}/restore",
+        response_model=TranslationUnitView,
+    )
+    async def restore_translation(
+        document_id: UUID,
+        unit_id: str,
+        history_id: UUID,
+        body: RestoreTranslationRequest,
+        request: Request,
+    ) -> TranslationUnitView:
+        return await _state(request).translation.restore(document_id, unit_id, history_id, body)
+
+    @app.post("/api/documents/{document_id}/exports", response_model=TaskView, status_code=202)
+    async def export_document(document_id: UUID, body: ExportRequest, request: Request) -> TaskView:
+        return await _state(request).exporter.submit(document_id, body)
+
+    @app.post("/api/documents/{document_id}/qa", response_model=TaskView, status_code=202)
+    async def ask_question(document_id: UUID, body: QARequest, request: Request) -> TaskView:
+        return await _state(request).qa.submit(document_id, body)
+
+    @app.get("/api/documents/{document_id}/qa", response_model=tuple[QARecordView, ...])
+    async def list_questions(document_id: UUID, request: Request) -> tuple[QARecordView, ...]:
+        return await _state(request).qa.list(document_id)
+
+    @app.delete("/api/documents/{document_id}/qa/{qa_id}", status_code=204)
+    async def delete_question(document_id: UUID, qa_id: UUID, request: Request) -> Response:
+        await _state(request).qa.delete(document_id, qa_id)
+        return Response(status_code=204)
+
+    @app.get("/api/tasks/{task_id}", response_model=TaskView)
+    async def get_task(task_id: UUID, request: Request) -> TaskView:
+        return await _state(request).tasks.get(task_id)
+
+    @app.post("/api/tasks/{task_id}/cancel", response_model=TaskView)
+    async def cancel_task(task_id: UUID, request: Request) -> TaskView:
+        return await _state(request).tasks.cancel(task_id)
+
+    @app.get("/api/tasks/{task_id}/answer-stream")
+    async def answer_stream(task_id: UUID, request: Request) -> StreamingResponse:
+        manager = _state(request).tasks
+
+        async def events() -> AsyncIterator[str]:
+            async def cancel_if_active() -> None:
+                try:
+                    view = await manager.get(task_id)
+                    if not view.status.terminal:
+                        await manager.cancel(task_id)
+                except DomainError:
+                    return
+
+            try:
+                async for chunk, view in manager.answer_stream(task_id):
+                    if chunk:
+                        yield "data: " + json.dumps({"delta": chunk}, ensure_ascii=False) + "\n\n"
+                    if view.status.terminal:
+                        yield "event: done\n"
+                        done = json.dumps(view.model_dump(mode="json"), ensure_ascii=False)
+                        yield ("data: " + done + "\n\n")
+            finally:
+                cleanup = asyncio.create_task(cancel_if_active())
+                while not cleanup.done():
+                    try:
+                        await asyncio.shield(cleanup)
+                    except asyncio.CancelledError:
+                        continue
+                await cleanup
+
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    @app.get("/api/v1/documents/{document_id}/parse-runs/{parse_run_id}/document-ir")
-    async def get_document_ir(
-        document_id: UUID, parse_run_id: UUID, request: Request
-    ) -> AssetResponse:
-        parses: ParseService = request.app.state.parses
-        storage: LocalStorage = request.app.state.storage
-        asset = await parses.document_ir(document_id, parse_run_id)
-        return AssetResponse(
-            storage.path(asset.storage_key),
-            media_type="application/json",
-            headers={"ETag": f'"{asset.sha256}"'},
-        )
-
-    @app.get("/api/v1/jobs/{job_id}")
-    async def get_job(job_id: UUID, request: Request) -> JobView:
-        jobs: JobService = request.app.state.jobs
-        return await jobs.get(job_id)
-
-    @app.post("/api/v1/jobs/{job_id}/cancel")
-    async def cancel_job(job_id: UUID, request: Request) -> JobView:
-        jobs: JobService = request.app.state.jobs
-        return await jobs.cancel(job_id)
-
-    @app.post("/api/v1/jobs/{job_id}/retry", status_code=202)
-    async def retry_job(
-        job_id: UUID,
-        request: Request,
-        response: Response,
-        idempotency_key: Annotated[str, Header(min_length=1, max_length=200)],
-    ) -> JobView:
-        jobs: JobService = request.app.state.jobs
-        view = await jobs.retry(job_id, idempotency_key)
-        response.headers["Location"] = f"/api/v1/jobs/{job_id}"
-        return view
+    @app.get("/api/documents/{document_id}/files/{file_id:path}")
+    async def get_file(document_id: UUID, file_id: str, request: Request) -> FileResponse:
+        path = await _state(request).documents.file_path(document_id, file_id)
+        media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        return FileResponse(path, media_type=media_type)
 
     return app
+
+
+def _command_available(command: str) -> bool:
+    from shutil import which
+
+    return Path(command).is_file() or which(command) is not None
