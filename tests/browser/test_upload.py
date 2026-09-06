@@ -212,3 +212,12 @@ def test_uploading_two_images_keeps_both_documents_in_sidebar(server, browser, t
 
     items = browser.find_elements(By.CSS_SELECTOR, "#document-list .document-item")
     assert {item.text.splitlines()[0] for item in items} == {first.name, second.name}
+
+
+def test_empty_workspace_exposes_upload_dropzone_without_model_selector(server, browser):
+    _open_app(browser, server)
+
+    empty = browser.find_element(By.ID, "empty-upload-state")
+    assert empty.is_displayed()
+    assert "点击上传或者拖入文件开始解析" in empty.text
+    assert browser.find_elements(By.ID, "model-select") == []

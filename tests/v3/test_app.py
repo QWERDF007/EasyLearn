@@ -263,13 +263,19 @@ async def test_page_exposes_full_result_and_question_history_controls(client):
         "qa-history-select",
         "source-markdown-tab",
         "bilingual-tab",
-        "model-select",
+        "empty-upload-state",
+        "empty-upload-dropzone",
         "parse-progress",
         "parse-progress-cancel",
         "pdf-toolbar",
+        "prev-page",
+        "next-page",
+        "zoom-select",
         "reset-zoom",
     ):
         assert f'id="{element_id}"' in response.text
+    assert 'id="model-select"' not in response.text
+    assert "点击上传或者拖入文件开始解析" in response.text
 
 
 @pytest.mark.asyncio

@@ -2,8 +2,6 @@ import { PdfReader } from "./pdf-viewer.js";
 
 const state = {
   documents: [],
-  models: [],
-  selectedModelId: null,
   document: null,
   parse: null,
   translations: new Map(),
@@ -27,6 +25,7 @@ const state = {
   busyButtons: new Set(),
   editingSourceBlockId: null,
   pendingDeleteDocumentId: null,
+  uploading: false,
   parseProgressTimer: null,
   documentLoadGeneration: 0,
   parseLoadGeneration: 0,
@@ -51,6 +50,7 @@ const pdfReader = new PdfReader($("#pdf-viewer"), {
     const select = $("#zoom-select");
     const value = String(Number(scale));
     select.value = [...select.options].some((option) => option.value === value) ? value : "";
+    $("#pdf-viewer").dataset.scale = String(scale);
   },
   onError(error) {
     notify(`PDF 加载失败：${error?.message || "未知错误"}`);
@@ -89,16 +89,6 @@ async function refreshHealth() {
   }
 }
 
-async function refreshModels() {
-  try {
-    state.models = await api("/api/mineru/models");
-    renderModelSelect();
-    syncToolbar();
-  } catch (error) {
-    notify(error.message);
-  }
-}
-
 function selectedParseId() {
   return state.document?.active_parse_id || state.document?.parse_results?.[0]?.parse_id || null;
 }
@@ -112,6 +102,7 @@ async function refreshDocuments() {
     entry.className = "document-item" + (
       state.document?.document_id === item.document_id ? " is-active" : ""
     );
+    entry.dataset.documentId = item.document_id;
     const open = document.createElement("button");
     open.type = "button";
     open.className = "document-open";
@@ -258,34 +249,6 @@ function renderVersionSelect(activeId = selectedParseId()) {
   select.disabled = !state.document?.parse_results?.length;
 }
 
-function renderModelSelect() {
-  const select = $("#model-select");
-  const previous = state.selectedModelId || select.value;
-  select.replaceChildren();
-  if (!state.models.length) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = "未找到 MinerU 模型";
-    select.append(option);
-    select.disabled = true;
-    state.selectedModelId = null;
-    return;
-  }
-  const selected = state.models.find((item) => item.model_id === previous)
-    || state.models.find((item) => item.selected)
-    || state.models[0];
-  for (const model of state.models) {
-    const option = document.createElement("option");
-    option.value = model.model_id;
-    option.textContent = model.name;
-    option.title = "本地 MinerU VLM 模型";
-    option.selected = model.model_id === selected.model_id;
-    select.append(option);
-  }
-  state.selectedModelId = selected.model_id;
-  select.disabled = false;
-}
-
 function syncFavoriteButton() {
   const button = $("#favorite-button");
   const favorite = state.document?.favorite === true;
@@ -308,12 +271,21 @@ function syncToolbar() {
   $("#export-button").disabled = !hasParse || state.busyButtons.has("export-button");
   $("#favorite-button").disabled = !hasDocument;
   $("#delete-button").disabled = !hasDocument;
-  $("#model-select").disabled = !state.models.length;
   const isXlsx = Boolean(state.document?.name?.toLowerCase().endsWith(".xlsx"));
   $("#office-options").hidden = !isXlsx || !officeEnabled;
   $("#office-sheet").disabled = !isXlsx || !officeEnabled;
   $("#office-print-range").disabled = !isXlsx || !officeEnabled;
   $("#auto-translate").disabled = !hasDocument || !llmConfigured;
+  syncWorkspaceLayout();
+}
+
+function syncWorkspaceLayout() {
+  const hasDocument = Boolean(state.document);
+  const shell = document.querySelector(".app-shell");
+  shell.classList.toggle("has-document", hasDocument);
+  shell.classList.toggle("no-document", !hasDocument);
+  $("#empty-upload-state").hidden = hasDocument;
+  $("#pdf-viewer").hidden = !hasDocument;
 }
 
 async function withButtonBusy(buttonId, busyLabel, work) {
@@ -340,10 +312,6 @@ async function withButtonBusy(buttonId, busyLabel, work) {
 function parseRequestBody(scope = null) {
   const source = scope || {};
   const body = {};
-  const modelId = typeof source.model_id === "string"
-    ? source.model_id
-    : (!scope ? $("#model-select").value : "");
-  if (modelId) body.model_id = modelId;
   if (source.options && typeof source.options === "object") {
     body.options = source.options;
   }
@@ -1329,10 +1297,10 @@ async function retryTask(task) {
   }
 }
 
-$("#upload-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const file = $("#file-input").files[0];
-  if (!file) return;
+async function uploadDocument(file) {
+  if (!file || state.uploading) return;
+  state.uploading = true;
+  syncToolbar();
   try {
     const form = new FormData();
     form.append("file", file);
@@ -1347,11 +1315,35 @@ $("#upload-form").addEventListener("submit", async (event) => {
     await openDocument(item.document_id);
   } catch (error) {
     notify(error.message);
+  } finally {
+    $("#file-input").value = "";
+    state.uploading = false;
+    syncToolbar();
   }
+}
+
+$("#upload-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  void uploadDocument($("#file-input").files[0]);
 });
 
 $("#file-input").addEventListener("change", () => {
   if ($("#file-input").files.length) $("#upload-form").requestSubmit();
+});
+
+const emptyUploadState = $("#empty-upload-state");
+emptyUploadState.addEventListener("dragover", (event) => {
+  event.preventDefault();
+  $("#empty-upload-dropzone").classList.add("is-dragover");
+});
+emptyUploadState.addEventListener("dragleave", (event) => {
+  if (event.relatedTarget instanceof Node && emptyUploadState.contains(event.relatedTarget)) return;
+  $("#empty-upload-dropzone").classList.remove("is-dragover");
+});
+emptyUploadState.addEventListener("drop", (event) => {
+  event.preventDefault();
+  $("#empty-upload-dropzone").classList.remove("is-dragover");
+  void uploadDocument(event.dataTransfer?.files?.[0]);
 });
 
 $("#version-select").addEventListener("change", (event) => {
@@ -1372,9 +1364,6 @@ $("#zoom-select").addEventListener("change", (event) => pdfReader.setScale(event
 $("#reset-zoom").addEventListener("click", () => pdfReader.resetScale());
 $("#fit-width").addEventListener("click", () => pdfReader.fitWidth());
 $("#rotate-page").addEventListener("click", () => pdfReader.rotate());
-$("#model-select").addEventListener("change", (event) => {
-  state.selectedModelId = event.target.value || null;
-});
 $("#parse-progress-cancel").addEventListener("click", () => {
   const task = parseTaskForCurrentDocument();
   if (task) void cancelTask(task.task_id);
@@ -1634,4 +1623,5 @@ for (const tab of document.querySelectorAll(".result-tab")) {
   tab.addEventListener("click", () => setResultView(tab.dataset.view));
 }
 
-void Promise.all([refreshHealth(), refreshModels(), refreshDocuments()]).catch((error) => notify(error.message));
+syncWorkspaceLayout();
+void Promise.all([refreshHealth(), refreshDocuments()]).catch((error) => notify(error.message));

@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="/static/app.css">
   </head>
   <body>
-    <main class="app-shell">
+    <main class="app-shell no-document">
       <aside class="sidebar" aria-label="文档导航">
         <div class="brand-row">
           <div class="brand">EasyLearn</div>
@@ -32,13 +32,7 @@
             <h1 id="document-name">选择一个文档</h1>
             <p id="document-status" class="muted">上传后开始解析</p>
           </div>
-          <div class="topbar-models">
-            <label class="select-control">
-              <span class="sr-only">MinerU 模型</span>
-              <select id="model-select" aria-label="MinerU 模型" disabled>
-                <option value="">加载模型…</option>
-              </select>
-            </label>
+          <div class="topbar-version">
             <label class="select-control version-control">
               <span class="sr-only">解析版本</span>
               <select id="version-select" aria-label="解析版本" disabled></select>
@@ -76,7 +70,15 @@
             <button id="parse-progress-cancel" class="text-icon-button" type="button" title="取消解析" aria-label="取消解析"><span aria-hidden="true">×</span> 取消</button>
           </div>
         </div>
-        <div id="pdf-viewer" class="pdf-viewer" aria-label="PDF 原文" tabindex="0">
+        <div id="empty-upload-state" class="empty-upload-state" role="status">
+          <label id="empty-upload-dropzone" class="empty-upload-dropzone" for="file-input">
+            <span class="empty-upload-icon" aria-hidden="true">↑</span>
+            <strong>点击上传或者拖入文件开始解析</strong>
+            <span>支持 PDF/PNG/JPG/BMP/TIFF 等各种图片格式</span>
+            <span>单文件 ≤ 200MB · 单张图片 ≤ 10MB</span>
+          </label>
+        </div>
+        <div id="pdf-viewer" class="pdf-viewer" aria-label="PDF 原文" tabindex="0" hidden>
           <div id="pdf-pages" class="pdf-pages"></div>
           <div id="pdf-toolbar" class="pdf-toolbar" aria-label="PDF 阅读控制">
             <button id="prev-page" class="icon-button reader-icon" type="button" aria-label="上一页" title="上一页" disabled><span aria-hidden="true">‹</span></button>
@@ -123,9 +125,7 @@
             <button id="clear-selection" class="icon-button small-icon" type="button" title="清除选择" aria-label="清除选择"><span aria-hidden="true">⊘</span></button>
           </div>
         </header>
-        <div id="result-content" class="result-content" aria-live="polite">
-          <p class="empty-state">解析完成后，结果会显示在这里。</p>
-        </div>
+        <div id="result-content" class="result-content" aria-live="polite"></div>
       </section>
     </main>
 

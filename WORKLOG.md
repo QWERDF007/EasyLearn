@@ -7,6 +7,27 @@
 - 无。
 
 
+### 2026-09-07 — 工作台空态与模型选择收口
+
+**目标**
+- 将无文档工作台改为上传/拖拽空态，移除前端 MinerU 模型选择入口，并为后续三栏交互验收保留稳定 DOM 标识。
+
+**当前状态**
+- 已完成：无文档时结果栏隐藏、阅读区显示“点击上传或者拖入文件开始解析”上传区域；文件选择与拖拽共用同一上传链路。
+- 已完成：前端移除模型状态、模型请求、模型下拉及模型变更监听；解析请求不再从页面读取模型 ID，后端继续从配置快照确定模型。
+- 已完成：文档条目增加文档 ID 数据标识，已有侧栏收藏/删除逻辑可被浏览器验收稳定定位。
+
+**验证证据**
+- 红灯：`learn python -m pytest tests\\v3\\test_app.py::test_page_exposes_full_result_and_question_history_controls -q ...` → 缺少 `empty-upload-state`。
+- 绿灯：同一测试 → `1 passed`。
+- `learn python -m pytest tests\\browser\\test_upload.py::test_empty_workspace_exposes_upload_dropzone_without_model_selector -q ...` → `1 passed in 34.28s`；真实 Selenium + ChromeDriver 验证空态可见且不存在 `model-select`。
+- `learn python -m pip install -e ".[browser]"` → 在指定环境安装项目声明的 Selenium 4.48.0 及其依赖。
+- `node --check src\\easylearn\\static\\app.js`、`git diff --check` → 通过（Git 仅提示 Windows 行尾转换）。
+
+**下一步**
+- 增加右侧设置/重新解析/下载按钮及其真实行为，再用 Selenium 验证侧栏收藏、删除确认、PDF 控件和 Ctrl+滚轮缩放。
+
+
 ### 2026-09-06 — 解析反馈与工作台顶部重规划诊断
 
 **目标**
