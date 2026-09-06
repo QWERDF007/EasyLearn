@@ -1,7 +1,7 @@
 import json
 import math
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from uuid import UUID
 from zipfile import ZipFile
 
@@ -15,7 +15,7 @@ from easylearn.execution import run_validation
 from easylearn.images import ImageLimits
 from easylearn.jobs.schema import JobFailure
 from easylearn.mineru.adapter import MinerUAdapter, NormalizationContext
-from easylearn.mineru.archive import JSON_ARTIFACT_KINDS, MinerUArchive
+from easylearn.mineru.archive import JSON_ARTIFACT_KINDS, MinerUArchive, result_root
 from easylearn.mineru.registration import PdfRegistration, register_pdf
 from easylearn.mineru.schema import (
     MINERU_VALIDATION_TIMEOUT_SECONDS,
@@ -148,6 +148,13 @@ def validate_result(request: ResultRequest) -> ResultEvidence:
                     raise DomainError(
                         "MINERU_RESULT_JSON_INVALID", "Invalid or ambiguous result JSON"
                     ) from None
+            elif member.kind == "markdown":
+                try:
+                    storage.path(stored.key).read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    raise DomainError(
+                        "MINERU_RESULT_MARKDOWN_INVALID", "Result Markdown is not valid UTF-8"
+                    ) from None
     original = next(member for member in manifest.members if member.kind == "original")
     origin = inspect_pdf(
         PreflightRequest(
@@ -187,16 +194,7 @@ def normalize_result(
         origin=evidence.origin,
         backend=request.options.backend,
     )
-    assets = {}
-    for member in evidence.manifest.members:
-        if member.image is not None:
-            name = Path(member.path).name
-            assets[name] = AssetDescriptor(
-                asset_id=member.asset_id(source.parse_run_id),
-                sha256=member.sha256,
-                mime=member.image.mime,
-                export_path=f"images/{name}",
-            )
+    assets = _image_assets(evidence.manifest, source.parse_run_id, request.options)
     raw = b"".join(storage.read(evidence.objects[by_kind["middle"].path].key))
     ir = MinerUAdapter().normalize(
         raw,
@@ -219,6 +217,37 @@ def normalize_result(
         registration=registration,
         document_ir=stored_ir,
     )
+
+
+def _image_assets(
+    manifest: MinerUArchiveManifest, parse_run_id: UUID, options: MinerUOptions
+) -> dict[str, AssetDescriptor]:
+    """Register spellings emitted by different MinerU result versions."""
+
+    root = result_root(options)
+    assets: dict[str, AssetDescriptor] = {}
+    for member in manifest.members:
+        if member.image is None:
+            continue
+        member_path = PurePosixPath(member.path)
+        try:
+            relative = member_path.relative_to(root)
+        except ValueError:
+            raise DomainError(
+                "MINERU_ASSET_INVALID", "Image asset is outside the result root"
+            ) from None
+        descriptor = AssetDescriptor(
+            asset_id=member.asset_id(parse_run_id),
+            sha256=member.sha256,
+            mime=member.image.mime,
+            export_path=f"images/{member_path.name}",
+        )
+        for alias in (str(member_path), str(relative), member_path.name):
+            previous = assets.get(alias)
+            if previous is not None and previous != descriptor:
+                raise DomainError("MINERU_ASSET_INVALID", "Image asset path is ambiguous")
+            assets[alias] = descriptor
+    return assets
 
 
 def main() -> None:

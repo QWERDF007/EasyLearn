@@ -28,6 +28,17 @@ IMAGE_SUFFIXES: Final = {".png", ".jpeg", ".jp2", ".webp", ".gif", ".bmp", ".jpg
 JSON_ARTIFACT_KINDS: Final = {"middle", "model", "content_list", "content_list_v2"}
 
 
+def result_root(options: MinerUOptions) -> PurePosixPath:
+    directory = (
+        options.parse_method
+        if options.backend == "pipeline"
+        else f"hybrid_{options.parse_method}"
+        if options.backend.startswith("hybrid-")
+        else "vlm"
+    )
+    return PurePosixPath("input") / directory
+
+
 class MinerUArchive:
     """Inspect fixed-profile artifacts without extracting or publishing any files."""
 
@@ -38,14 +49,7 @@ class MinerUArchive:
         self.image_limits = image_limits or ImageLimits()
 
     def inspect(self, path: Path, *, options: MinerUOptions) -> MinerUArchiveManifest:
-        directory = (
-            options.parse_method
-            if options.backend == "pipeline"
-            else f"hybrid_{options.parse_method}"
-            if options.backend.startswith("hybrid-")
-            else "vlm"
-        )
-        root = f"input/{directory}/"
+        root = f"{result_root(options)}/"
         members = []
         with path.open("rb") as source:
             source.seek(0, 2)

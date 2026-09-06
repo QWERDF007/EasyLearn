@@ -104,6 +104,21 @@ async def test_result_rejects_invalid_or_ambiguous_json_artifacts(result_input, 
 
 
 @pytest.mark.asyncio
+async def test_result_rejects_non_utf8_markdown(result_input):
+    from easylearn.mineru.result import MinerUResultValidator
+
+    storage, archive, _ = result_input({"input/vlm/input.md": b"\xff"})
+    validator = MinerUResultValidator(
+        storage,
+        archive_limits=MinerUArchiveLimits(),
+        image_limits=ImageLimits(),
+        preview_limits=PreviewLimits(),
+    )
+    with pytest.raises(DomainError, match="MINERU_RESULT_MARKDOWN_INVALID"):
+        await validator.inspect(archive, options=MinerUOptions(page_count=1))
+
+
+@pytest.mark.asyncio
 async def test_result_rejects_origin_page_count_different_from_submitted_input(result_input):
     from easylearn.mineru.result import MinerUResultValidator
 
@@ -326,8 +341,12 @@ async def test_real_paper_result_evidence_is_replayable_without_mutating_origina
         ("table_limit", "MINERU_TABLE_LIMIT"),
     ],
 )
+@pytest.mark.parametrize(
+    "image_path",
+    ["figure.png", "images/figure.png", "input/vlm/images/figure.png"],
+)
 async def test_normalized_result_binds_actual_preview_geometry_and_decoded_assets(
-    result_input, case, code
+    result_input, case, code, image_path
 ):
     from easylearn.document_ir.schema import DocumentIR
     from easylearn.mineru.result import MinerUResultValidator, ParseSource
@@ -351,7 +370,7 @@ async def test_normalized_result_binds_actual_preview_geometry_and_decoded_asset
                                     {
                                         "type": "interline_equation",
                                         "content": "x^2",
-                                        "image_path": "figure.png",
+                                        "image_path": image_path,
                                     }
                                 ],
                             }

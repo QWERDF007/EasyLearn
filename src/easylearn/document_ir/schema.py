@@ -353,7 +353,7 @@ class Block(FrozenModel):
 
 
 class DocumentIR(FrozenModel):
-    schema_version: Literal["2.0"] = "2.0"
+    schema_version: Literal["3.0"] = "3.0"
     document_id: UUID
     parse_run_id: UUID
     preview_asset_id: UUID

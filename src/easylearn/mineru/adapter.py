@@ -487,7 +487,7 @@ class MinerUAdapter:
             preview_asset_id=context.preview_asset_id,
             preview_sha256=context.preview.sha256,
             mineru_version=middle.version,
-            adapter_version="2.0.0",
+            adapter_version="3.0.0",
             pages=context.preview.pages,
             blocks=tuple(blocks),
             assets=images.used,
