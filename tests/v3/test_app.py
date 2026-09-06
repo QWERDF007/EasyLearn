@@ -263,8 +263,24 @@ async def test_page_exposes_full_result_and_question_history_controls(client):
         "qa-history-select",
         "source-markdown-tab",
         "bilingual-tab",
+        "model-select",
+        "parse-progress",
+        "parse-progress-cancel",
+        "pdf-toolbar",
+        "reset-zoom",
     ):
         assert f'id="{element_id}"' in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asset", ["app.js", "pdfjs/pdf.min.mjs"])
+async def test_browser_module_is_served_with_a_javascript_mime_type(client, asset):
+    response = await client.get(f"/static/{asset}")
+    assert response.status_code == 200
+    assert response.headers["content-type"].split(";", 1)[0] in {
+        "text/javascript",
+        "application/javascript",
+    }
 
 
 @pytest.mark.asyncio
