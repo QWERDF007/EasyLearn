@@ -7,6 +7,25 @@
 - 无。
 
 
+### 2026-09-07 — MinerU 真实论文与阅读器验收
+
+**目标**
+- 用指定真实论文完成上传、内置 MinerU GPU 解析、结果发布和 PDF 阅读器控件验收，并提交可复用的浏览器回归测试。
+
+**当前状态**
+- 已完成：真实论文 `F:\Papers\HOW DO VISION TRANSFORMERS WORK.pdf` 完成 26 页 GPU 解析，结果发布成功；服务已关闭。
+- 已完成：修正阅读器网格项的最小高度约束，PDF 内容在内部滚动容器中展示，底部工具栏保持在视口内。
+- 已完成：新增真实论文 Selenium 验收，锁定本次上传的文档和解析任务，覆盖解析进度、成功结果、PDF 翻页、150% 缩放和 1:1 重置。
+
+**验证证据**
+- `D:\Software\anaconda3\envs\learn\python.exe -m pytest tests\\browser\\test_real_acceptance.py -q -p no:cacheprovider --basetemp .tmp-real-paper-final3` → `1 passed in 477.63s`；真实任务 `ba14cc67-d413-4a3f-a33e-90df28f9c40f` 为 `succeeded / 1.0 / Completed`。
+- `D:\Software\anaconda3\envs\learn\python.exe -m ruff check src\\easylearn\\static tests\\browser\\test_real_acceptance.py`、`node --check src\\easylearn\\static\\app.js`、`node --check src\\easylearn\\static\\pdf-viewer.js` → 通过。
+- `/api/health` → `ready`，MinerU `embedded / transformers / configured=true / models=1`；服务停止后访问 `8765` 被拒绝。
+
+**下一步**
+- 当前阶段无必需后续；如继续 LLM 联调，补充外部服务凭据和文本模型名后按 [Pinaic 资料](docs/research/pinaic-openai-compatible-api.md) 进行真实验证。
+
+
 ### 2026-09-07 — MinerU 模型与任务临时目录配置
 
 **目标**
