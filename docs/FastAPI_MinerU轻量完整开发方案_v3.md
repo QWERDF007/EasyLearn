@@ -109,11 +109,11 @@ flowchart TD
 
 ## 4. 安装、配置与启动
 
-以下命令是待实现程序的交付接口，不表示当前已经提供可运行的完整服务源码：
+以下命令是本项目的安装与启动接口；依赖与配置字段的唯一实现来源分别是 `pyproject.toml` 和 `src/easylearn/config.py`：
 
 ```bash
-python -m pip install -r requirements.txt
-python -m documind --config config.toml
+python -m pip install -e ".[dev]"
+python -m easylearn --config config.toml
 ```
 
 启动过程：
@@ -121,7 +121,7 @@ python -m documind --config config.toml
 1. 读取配置并锁定 data_dir，阻止第二个实例同时使用同一目录。
 2. 创建数据库和文件目录；首次运行自动建表，旧数据库按已支持的版本顺序升级。
 3. 在 FastAPI lifespan 中建立数据库连接、HTTP 客户端、内存队列和后台协程。
-4. 检查配置的 MinerU 命令或服务地址；检查可选组件的可用性。
+4. 暴露配置的 MinerU、LLM 和可选组件状态；外部能力在对应任务执行时按配置调用。
 5. 以单个 Uvicorn Worker 启动，输出本地页面地址。
 
 生产启动固定 workers=1。开发模式的 reload 会结束当前进程内任务，页面应按服务重启处理。FastAPI 官方提供 lifespan 管理共享资源的初始化与关闭。[FastAPI 生命周期](https://fastapi.tiangolo.com/advanced/events/)
@@ -599,13 +599,13 @@ L03 测坐标转换，不把模型识别框本身的误差算成前端变换错�
 
 | 模块 | 内容 |
 |---|---|
-| documind/__main__.py、app.py | 启动、lifespan、路由装配 |
-| config.py、db.py | 配置、SQL、短事务、升级 |
+| easylearn/__main__.py、main.py | 启动、lifespan、路由装配 |
+| config.py、database.py | 配置、SQL、短事务、初始化 |
 | tasks.py | 内存任务队列、并发、取消、状态 |
-| parser.py、document_ir.py | MinerU 接入、规范预览、块结构与坐标 |
-| llm.py、translate.py | HTTP 客户端、翻译与结构保护 |
-| documents.py、exports.py | 文件目录、成果发布、导出与清理 |
-| qa.py、search.py | 后续问答、证据、文档内检索 |
+| parser.py、document_ir/ | MinerU 接入、规范预览、块结构与坐标 |
+| translation.py | HTTP 客户端、翻译与结构保护 |
+| documents/、exports.py | 文件目录、成果发布、导出与清理 |
+| qa.py | 后续问答、证据与引用 |
 | templates/、static/ | 页面模板、CSS、JavaScript、已打包浏览器依赖 |
 
 不按每个名词创建独立服务或多层抽象。模块内部先使用明确函数和小型数据对象，只有实际出现不同实现时再提取接口。

@@ -1,23 +1,21 @@
-# 文档索引
+# 文档与实现索引
 
-- [产品规格与验收](FastAPI_MinerU方案与交互示例_v2/FastAPI_MinerU完整开发方案_v2.md)
-- [交互参考与示例范围](FastAPI_MinerU方案与交互示例_v2/FastAPI_MinerU交互示例_v2_说明.md)
-- [实机运行](native.md)
-- [协议实现索引](protocols.md)
-- [任务账本](../WORKLOG.md)
+- [轻量完整开发方案 v3](FastAPI_MinerU轻量完整开发方案_v3.md)：产品边界、接口和验收标准。
+- [本机启动](native.md)：`learn` 环境、配置和 Python 入口。
+- [协议实现索引](protocols.md)：DocumentIR、MinerU 归档和坐标相关实现。
+- [任务账本](../WORKLOG.md)：当前工作的唯一进度记录。
 
-实现入口：
+实现的唯一入口：
 
-- [依赖与开发工具配置](../pyproject.toml)
-- [应用配置与来源](../src/easylearn/config.py)、[TOML 示例](../config.example.toml)、[YAML 示例](../config.example.yaml)、[配置验证](../tests/config/test_settings.py)
-- [DocumentIR 与身份类型](../src/easylearn/document_ir/schema.py)、[坐标映射](../src/easylearn/document_ir/coordinates.py)
-- [HTTP 应用与 OpenAPI](../src/easylearn/main.py)、[上传模块](../src/easylearn/uploads/service.py)
-- [统一错误类型](../src/easylearn/errors.py)、[上传契约验证](../tests/api/test_upload_contract.py)
-- [文档与预览受理](../src/easylearn/documents/service.py)、[请求幂等](../src/easylearn/idempotency.py)
-- [解析受理与固定预览](../src/easylearn/parses/service.py)、[解析请求与配置快照](../src/easylearn/parses/schema.py)、[解析 API 边界测试](../tests/api/test_parses.py)
-- [解析执行与连接生命周期](../src/easylearn/parses/worker.py)、[解析产物与版本关系](../src/easylearn/parses/models.py)、[内容寻址资产登记](../src/easylearn/assets.py)
-- [任务执行与发布](../src/easylearn/jobs/service.py)、[Outbox 领取与确认](../src/easylearn/jobs/delivery.py)、[任务协议类型](../src/easylearn/jobs/schema.py)
-- [PDF 子进程预检](../src/easylearn/previews/pdf.py)、[预览执行](../src/easylearn/previews/service.py)、[预览协议与限额](../src/easylearn/previews/schema.py)
-- [流式资产下载](../src/easylearn/downloads.py)、[预览边界测试](../tests/api/test_previews.py)、[实机 HTTP 测试](../tests/api/test_live_http.py)
-- [数据库迁移](../migrations/versions)、[资产存储](../src/easylearn/storage.py)
-- [协议测试](../tests/document_ir)、[真实 PostgreSQL 接口测试](../tests/api)
+- [项目依赖](../pyproject.toml)、[配置类型与加载](../src/easylearn/config.py)、[配置示例](../config.example.toml)
+- [应用生命周期与 HTTP 路由](../src/easylearn/main.py)、[Python 启动入口](../src/easylearn/__main__.py)
+- [SQLite 访问与初始化](../src/easylearn/database.py)、[路径与文件操作](../src/easylearn/paths.py)、[实例锁](../src/easylearn/files.py)
+- [内存任务队列](../src/easylearn/tasks.py)、[任务类型](../src/easylearn/jobs/schema.py)
+- [文档上传、目录和下载](../src/easylearn/documents/service.py)、[输入格式边界](../src/easylearn/filetypes.py)
+- [解析执行](../src/easylearn/parser.py)、[MinerU 客户端](../src/easylearn/mineru/client.py)、[结果归一化](../src/easylearn/mineru/result.py)
+- [DocumentIR](../src/easylearn/document_ir/schema.py)、[坐标转换](../src/easylearn/document_ir/coordinates.py)
+- [翻译、人工修订与 LLM 客户端](../src/easylearn/translation.py)、[Markdown 渲染](../src/easylearn/rendering.py)
+- [导出快照](../src/easylearn/exports.py)、[问答与引用](../src/easylearn/qa.py)
+- [页面模板](../src/easylearn/templates/index.html)、[样式](../src/easylearn/static/app.css)、[交互脚本](../src/easylearn/static/app.js)
+
+定向行为测试位于 [tests/v3](../tests/v3)。字段和约束均从 Python 类型派生，不在文档中维护第二套接口定义。

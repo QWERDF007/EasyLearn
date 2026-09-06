@@ -1,20 +1,12 @@
 # 协议实现索引
 
-- 版本身份、文档结构、定位证据、表格与资产类型：[schema.py](../src/easylearn/document_ir/schema.py)
-- 声明坐标到 PDF 空间的投影：[coordinates.py](../src/easylearn/document_ir/coordinates.py)
-- 可观察错误：[errors.py](../src/easylearn/errors.py)
-- 协议行为与固定几何样例：[协议测试](../tests/document_ir)
-- 表格结构与单元格归属：[表格测试](../tests/document_ir/test_tables.py)；图片、公式截图、关系及导出路径：[资产引用测试](../tests/document_ir/test_assets_relations.py)
-- 定位降级与坐标来源：[定位测试](../tests/document_ir/test_localization.py)；结构摘要：[摘要测试](../tests/document_ir/test_content_hash.py)
-- 独立 MinerU HTTP 协议：[客户端](../src/easylearn/mineru/client.py)、[固定版本与选项](../src/easylearn/mineru/schema.py)、[边界测试](../tests/mineru/test_client.py)
-- MinerU 客户端真实网络传输：[HTTP 测试](../tests/mineru/test_live_http.py)，使用[合成协议服务](../tests/mineru/protocol_server.py)，不代表真实推理契约验收。
-- MinerU ZIP 结构、校验和与资源限额：[归档检查器](../src/easylearn/mineru/archive.py)、[归档测试](../tests/mineru/test_archive.py)；检查不解压、不发布，也不替代 JSON/PDF 坐标语义验证。
-- 图片字节解码、MIME/尺寸/帧数与像素预算：[共用图片校验](../src/easylearn/images.py)，由 [Settings](../src/easylearn/config.py) 的 `image_limits` 统一配置；解码行为参见 [Pillow Image](https://pillow.readthedocs.io/en/stable/reference/Image.html)。
-- MinerU 原始产物验证证据与不可变对象登记：[结果验证器](../src/easylearn/mineru/result.py)、[真实子进程/资产测试](../tests/mineru/test_result.py)。该证据不等同于 DocumentIR 归一化、预览对应关系或任务发布。
-- 固定预览与 origin PDF 对应证据、后端坐标登记：[registration.py](../src/easylearn/mineru/registration.py)；组合归一化入口为[结果验证器的 normalize](../src/easylearn/mineru/result.py)。坐标转换使用 [PDFium PdfPosConv](https://pypdfium2.readthedocs.io/en/stable/python_api.html#pypdfium2.PdfPosConv)，上游缩放来源见仓库内 [pdf_reader](../3rdparty/MinerU/mineru/utils/pdf_reader.py)、[pipeline MagicModel](../3rdparty/MinerU/mineru/backend/pipeline/pipeline_magic_model.py) 与 [hybrid MagicModel](../3rdparty/MinerU/mineru/backend/hybrid/hybrid_magic_model.py)。
-- PDF 与结果验证共用的取消、超时和子进程回收：[执行模块](../src/easylearn/execution.py)。
-- MinerU middle 结构归一化：[Adapter](../src/easylearn/mineru/adapter.py)、[HTML 表格](../src/easylearn/mineru/tables.py)、[内部图片引用](../src/easylearn/mineru/assets.py)、[结构与真实资源组合测试](../tests/mineru/test_adapter.py)。输入样例来源及验收范围见测试标注，运行与真实推理验收证据见 [WORKLOG](../WORKLOG.md)。
-- 跨平台资产名称：[共用路径类型](../src/easylearn/paths.py)。
-- 模型路径登记、MinerU/LLM 连接、能力与用途路由：[配置类型](../src/easylearn/inference/config.py)、[统一加载](../src/easylearn/config.py)、[文件/覆盖/约束测试](../tests/config/test_settings.py)；服务地址复用 [ServiceUrl](../src/easylearn/urls.py)。
+- DocumentIR、块身份、表格、资产和定位等级：[schema.py](../src/easylearn/document_ir/schema.py)
+- 声明坐标到 PDF 用户空间的投影：[coordinates.py](../src/easylearn/document_ir/coordinates.py)
+- 文档输入格式与路径边界：[filetypes.py](../src/easylearn/filetypes.py)、[paths.py](../src/easylearn/paths.py)
+- MinerU HTTP 协议与固定版本选项：[client.py](../src/easylearn/mineru/client.py)、[schema.py](../src/easylearn/mineru/schema.py)
+- MinerU ZIP、图片和 JSON 结果验证：[archive.py](../src/easylearn/mineru/archive.py)、[images.py](../src/easylearn/images.py)、[result.py](../src/easylearn/mineru/result.py)
+- MinerU middle 到 DocumentIR 的归一化：[adapter.py](../src/easylearn/mineru/adapter.py)、[tables.py](../src/easylearn/mineru/tables.py)
+- PDF 预检与解析发布：[previews/pdf.py](../src/easylearn/previews/pdf.py)、[parser.py](../src/easylearn/parser.py)
+- 翻译结构保护、人工修订和问答引用：[translation.py](../src/easylearn/translation.py)、[qa.py](../src/easylearn/qa.py)
 
-JSON Schema 从 Pydantic 模型生成，不手写第二份字段或约束定义。
+对应行为测试分别位于 [tests/document_ir](../tests/document_ir)、[tests/mineru](../tests/mineru) 和 [tests/v3](../tests/v3)。Pydantic 模型是字段和约束的唯一来源，文档只维护索引。

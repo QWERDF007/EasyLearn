@@ -1,11 +1,7 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('web', 'migrate')]
-    [string]$Action = 'web',
-    [string]$Python = 'E:\Softwares\Anaconda3\envs\learn\python.exe',
-    [string]$ConfigPath,
-    [string]$BindAddress = '127.0.0.1',
-    [int]$Port = 8000
+    [string]$Python = 'D:\Software\anaconda3\envs\learn\python.exe',
+    [string]$ConfigPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,13 +18,13 @@ try {
     if ($ConfigPath) {
         $env:EASYLEARN_CONFIG = $resolvedConfig
     }
-    if ($Action -eq 'migrate') {
-        & $Python -m alembic upgrade head
-    } else {
-        & $Python -m uvicorn easylearn.main:create_app --factory --host $BindAddress --port $Port
+    $arguments = @('-m', 'easylearn')
+    if ($ConfigPath) {
+        $arguments += @('--config', $resolvedConfig)
     }
+    & $Python @arguments
     if ($LASTEXITCODE -ne 0) {
-        throw "EasyLearn $Action failed with exit code $LASTEXITCODE"
+        throw "EasyLearn failed with exit code $LASTEXITCODE"
     }
 } finally {
     Pop-Location

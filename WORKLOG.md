@@ -50,6 +50,28 @@
 
 ---
 
+### 2026-09-06 — 轻量版最终校验
+
+**目标**
+- 在 `D:\Software\anaconda3\envs\learn` 环境完成 EasyLearn v3 轻量版的最终可运行性校验，保持不安装 MinerU、使用已有 MinerU CLI/API 的边界。
+
+**当前状态**
+- 单进程 FastAPI、SQLite、本地文件、进程内任务队列、PDF/图片/Office 预览、MinerU 结果校验与 DocumentIR、翻译/人工修订、导出和问答链路已落在当前 v3 入口；索引见 [文档与实现索引](docs/README.md)。
+- 数据库版本已升至 2，移除文档原件路径的全局唯一约束，并提供 v1→v2 迁移，使不同文档可以使用相同扩展名上传；新旧表结构共用列定义。
+- 首次人工编辑会把编辑前有效文本写入修订历史；QA 请求会裁剪并拒绝空白问题；关键词候选保留相关性排序，同时维持必需块和关系块优先。
+- 已用本地合成 MinerU HTTP peer 完成一次真实 Uvicorn 上传、解析、结果发布和任务查询；未安装或调用真实 MinerU/LLM。`data/` 用户数据目录未触碰。
+- 浏览器控制端返回 `No browser is available`，因此浏览器截图和交互验收未完成；静态资源与 JavaScript 语法已校验。
+
+**验证证据**
+- `D:\Software\anaconda3\envs\learn\python.exe -m pytest tests\v3 tests\document_ir tests\mineru -q -p no:cacheprovider --tb=short --basetemp .tmp-final-pytest`（提权执行）→ `368 passed, 5 skipped`，66.77 秒；同扩展名上传、带子表的 v1→v2 迁移、首次人工修订历史、空白 QA 问题和关键词候选排序均通过。
+- `D:\Software\anaconda3\envs\learn\python.exe -m pytest tests\v3\test_database.py::test_database_migration_preserves_children_and_foreign_key_cascade -q -p no:cacheprovider --tb=short --basetemp .tmp-fk-migration`（提权执行）→ `1 passed`。
+- `D:\Software\anaconda3\envs\learn\python.exe -m ruff check src tests migrations`（提权执行）→ `All checks passed`；`D:\Software\anaconda3\envs\learn\python.exe -m mypy src\easylearn`（提权执行）→ 41 个源文件无问题；`node --check src\easylearn\static\app.js` → 通过；`git diff --check` → 无差异空白错误。
+- 临时合成 MinerU `127.0.0.1:8767` 与 EasyLearn `127.0.0.1:8766` 均已关闭，8765/8766/8767 端口均空闲；`.tmp-pdfjs`、`.tmp-pdfjs-extract`、`.tmp-red-db`、`.tmp-green-db`、`.tmp-red-multiple-docs`、`.tmp-fk-migration`、`.tmp-first-edit`、`.tmp-blank-qa`、`.tmp-qa-ranking` 和本轮 pytest 临时目录已清理。
+
+**下一步**
+- 按 [本机启动](docs/native.md) 使用正式配置启动；将 `[mineru]` 指向已有 MinerU CLI/API 后，再用真实服务做推理质量与完整产物验收。
+- 若需要完成界面验收，提供可用浏览器实例后检查三栏联动、PDF 预览、表格/公式/图片/链接及源码视图。
+
 ### 2026-09-05 — 解析执行恢复与产物发布
 
 **目标**
