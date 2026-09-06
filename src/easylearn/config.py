@@ -3,9 +3,8 @@
 import os
 import tomllib
 from pathlib import Path
-from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from easylearn.images import ImageLimits
 from easylearn.mineru.schema import MinerUArchiveLimits, MinerUParseOptions, MinerUTableLimits
@@ -37,31 +36,14 @@ class CacheSettings(_Config):
 
 
 class MinerUSettings(_Config):
-    mode: Literal["cli", "api"] = "cli"
-    command: tuple[str, ...] = ("mineru",)
-    base_url: str | None = None
-    api_key_env: str | None = None
+    model_path: Path = Path("D:/Models/MinerU2.5-Pro-2605-1.2B")
+    model_root: Path | None = None
     timeout_seconds: float = Field(default=900, gt=0)
-    poll_interval_seconds: float = Field(default=1, gt=0)
     parse: MinerUParseOptions = Field(default_factory=MinerUParseOptions)
     archive_limits: MinerUArchiveLimits = Field(default_factory=MinerUArchiveLimits)
     table_limits: MinerUTableLimits = Field(default_factory=MinerUTableLimits)
     image_limits: ImageLimits = Field(default_factory=ImageLimits)
     preview_limits: PreviewLimits = Field(default_factory=PreviewLimits)
-
-    @field_validator("command")
-    @classmethod
-    def validate_command(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if not value or any(not item.strip() for item in value):
-            raise ValueError("MinerU command must contain at least one non-empty argument")
-        return value
-
-    @model_validator(mode="after")
-    def validate_mode(self) -> Self:
-        if self.mode == "api" and not self.base_url:
-            raise ValueError("MinerU API mode requires base_url")
-        return self
-
 
 class LLMSettings(_Config):
     base_url: str = "http://127.0.0.1:8000/v1"
@@ -78,8 +60,7 @@ class FileSettings(_Config):
     revision_history_limit: int = Field(default=10, ge=1, le=100)
     tmp_retention_hours: int = Field(default=24, ge=1, le=168)
     export_retention_days: int = Field(default=30, ge=1, le=3650)
-    log_max_mb: int = Field(default=10, ge=1, le=1024)
-    log_backup_count: int = Field(default=3, ge=0, le=20)
+    log_dir: Path = Path("./logs")
 
 
 class ExtensionSettings(_Config):
@@ -132,13 +113,28 @@ class Settings(BaseModel):
         if not isinstance(data, dict):
             raise ValueError("Configuration must be a TOML table")
         result = cls.model_validate(data)
+        updates: dict[str, object] = {}
         data_dir = result.app.data_dir
         if not data_dir.is_absolute():
-            result = result.model_copy(
-                update={
-                    "app": result.app.model_copy(update={"data_dir": configured.parent / data_dir})
-                }
+            updates["app"] = result.app.model_copy(
+                update={"data_dir": configured.parent / data_dir}
             )
+        log_dir = result.files.log_dir
+        if not log_dir.is_absolute():
+            updates["files"] = result.files.model_copy(
+                update={"log_dir": configured.parent / log_dir}
+            )
+        mineru_updates: dict[str, object] = {}
+        model_path = result.mineru.model_path
+        if not model_path.is_absolute():
+            mineru_updates["model_path"] = configured.parent / model_path
+        model_root = result.mineru.model_root
+        if model_root is not None and not model_root.is_absolute():
+            mineru_updates["model_root"] = configured.parent / model_root
+        if mineru_updates:
+            updates["mineru"] = result.mineru.model_copy(update=mineru_updates)
+        if updates:
+            result = result.model_copy(update=updates)
         return result
 
     @property
@@ -150,12 +146,12 @@ class Settings(BaseModel):
         return self.data_dir / "app.db"
 
     @property
-    def max_upload_bytes(self) -> int:
-        return self.files.max_upload_mb * 1024 * 1024
+    def log_dir(self) -> Path:
+        return self.files.log_dir.resolve()
 
     @property
-    def mineru_api_key(self) -> str | None:
-        return os.environ.get(self.mineru.api_key_env) if self.mineru.api_key_env else None
+    def max_upload_bytes(self) -> int:
+        return self.files.max_upload_mb * 1024 * 1024
 
     @property
     def llm_api_key(self) -> str | None:

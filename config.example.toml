@@ -1,5 +1,5 @@
 # EasyLearn v3 配置。字段定义与默认值的唯一来源是 src/easylearn/config.py。
-# MinerU、LLM 和 Office 是外部能力；本配置不会安装或启动它们。
+# MinerU 使用仓库内置源码与本地模型；LLM 和 Office 是可选外部能力。
 
 [app]
 host = "127.0.0.1"
@@ -19,13 +19,10 @@ max_mb = 128
 max_documents = 3
 
 [mineru]
-mode = "cli"
-command = ["mineru"]
+model_path = "D:/Models/MinerU2.5-Pro-2605-1.2B"
+# 可选：模型下拉列表的目录；不填写时使用 model_path 的父目录。
+# model_root = "D:/Models"
 timeout_seconds = 900
-poll_interval_seconds = 1
-# API 模式示例：mode = "api"，并填写 base_url；密钥使用 api_key_env 指向环境变量。
-# base_url = "http://127.0.0.1:8001"
-# api_key_env = "EASYLEARN_MINERU_API_KEY"
 
 [mineru.parse]
 backend = "vlm-engine"
@@ -76,8 +73,7 @@ keep_parse_versions = 2
 revision_history_limit = 10
 tmp_retention_hours = 24
 export_retention_days = 30
-log_max_mb = 10
-log_backup_count = 3
+log_dir = "./logs"
 
 [extensions]
 office_enabled = false

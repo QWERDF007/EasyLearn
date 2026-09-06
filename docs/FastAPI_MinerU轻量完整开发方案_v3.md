@@ -22,7 +22,7 @@
 | 后续扩展 | 选中块提问、相关块关联、引用定位；从右上角按钮展开浮层 |
 | 使用方式 | 无登录认证；安装 Python 依赖后，通过统一入口启动 |
 
-应用不要求 PostgreSQL、Redis、Dramatiq、对象存储、向量数据库、Nginx 或 Docker。已有 MinerU 和 LLM 服务可以直接接入；模型权重、GPU 运行环境仍由相应解析/推理环境提供。
+应用不要求 PostgreSQL、Redis、Dramatiq、对象存储、向量数据库、Nginx 或 Docker。MinerU 使用仓库内固定版本和本地模型；LLM 可接入本地或外部兼容 API。模型权重、GPU 运行环境仍由本机提供。
 
 ## 2. 上一版设计过重的点
 
@@ -46,7 +46,7 @@
 | HTMX + TypeScript 构建链 + 模板共同管理交互 | 小工作台可用普通 JS 模块完成，混用增加维护成本 | Jinja2 + 原生 JavaScript ES Modules | 大型前端团队协作能力不作为目标 |
 | Compose、Nginx、多进程 Uvicorn | 与直接 Python 启动的要求不一致 | 单进程 Uvicorn，Python 入口自动初始化 | 不提供多节点高可用 |
 | 独立 Office 转换服务 | 转换不需要额外常驻服务 | 按需启动受限转换子进程 | 启用 Office 时仍需安装转换器和字体 |
-| Prometheus 及全面监控部署 | 为小工具增加运维服务 | 轮转日志、任务页、简单健康检查 | 不提供集中监控平台 |
+| Prometheus 及全面监控部署 | 为小工具增加运维服务 | 按本地日期写日志、任务页、简单健康检查 | 不提供集中监控平台 |
 | 完整迁移框架和通用 Repository 平台 | 初始表少，可直接维护 SQL | 小型 db.py，按 PRAGMA user_version 执行顺序迁移 | 迁移支持范围由实际已发布版本决定 |
 
 ### 2.2 保留的必要设计
@@ -81,14 +81,14 @@ flowchart TD
         IR --> DB
         GEN --> DB
     end
-    PARSE --> MINER[MinerU 子进程或已有 API]
+    PARSE --> MINER[仓库内 MinerU Python API + 本地模型]
     GEN --> LLM[本地模型或外部 API]
     DB --> SQLITE[(本地 app.db)]
     IR --> FILES[本地文档与结果目录]
     WEB --> FILES
 ```
 
-一个 Web 服务进程负责应用状态。MinerU、Office 转换属于耗时外部程序，按需作为子进程运行；已有解析服务可以替代本机子进程。LLM 通过 HTTP 调用，不把大模型加载进 Web 进程。
+一个 Web 服务进程负责应用状态。MinerU 在该进程内调用仓库内固定版本的 Python API，并复用本地模型；Office 转换是唯一按需启动的外部转换子进程。LLM 通过 HTTP 调用，不把 LLM 加载进 Web 进程。
 
 ### 3.1 技术选型
 
@@ -121,7 +121,7 @@ python -m easylearn --config config.toml
 1. 读取配置并锁定 data_dir，阻止第二个实例同时使用同一目录。
 2. 创建数据库和文件目录；首次运行自动建表，旧数据库按已支持的版本顺序升级。
 3. 在 FastAPI lifespan 中建立数据库连接、HTTP 客户端、内存队列和后台协程。
-4. 暴露配置的 MinerU、LLM 和可选组件状态；外部能力在对应任务执行时按配置调用。
+4. 暴露配置的 MinerU、LLM 和可选组件状态；LLM 和可选组件在对应任务执行时按配置调用。
 5. 以单个 Uvicorn Worker 启动，输出本地页面地址。
 
 生产启动固定 workers=1。开发模式的 reload 会结束当前进程内任务，页面应按服务重启处理。FastAPI 官方提供 lifespan 管理共享资源的初始化与关闭。[FastAPI 生命周期](https://fastapi.tiangolo.com/advanced/events/)
@@ -147,8 +147,7 @@ max_mb = 128
 max_documents = 3
 
 [mineru]
-mode = "cli"
-command = ["mineru"]
+model_path = "D:/Models/MinerU2.5-Pro-2605-1.2B"
 timeout_seconds = 900
 
 [llm]
@@ -173,18 +172,13 @@ semantic_search_enabled = false
 
 核心功能安装完成即可使用 PDF/图片解析与翻译。Office、问答和语义检索是独立能力开关；对应能力按第 14 节实现后启用，不影响应用基础启动。
 
-### 4.2 MinerU 的两种接入方式
+### 4.2 MinerU 的进程内接入
 
 | 模式 | 使用方式 | 取舍 |
 |---|---|---|
-| 本机 CLI | 应用启动任务时调用配置好的 mineru 命令，传入输入和独立输出目录 | 无需用户单独管理 MinerU 常驻服务；可能有每次启动/模型加载成本 |
-| 已有 API | 调用本机或远端已有 MinerU 服务 | 复用已加载模型；服务地址和实际协议需要配置 |
+| 内置 Python API | 应用任务调用仓库内固定版本 MinerU 的 `aio_doc_analyze()`，使用本地模型路径和独立输出目录 | 不需要外部 CLI/API；首次任务会加载模型并占用本机 GPU |
 
-CLI 使用参数数组调用 `asyncio.create_subprocess_exec`，不拼接 shell 命令；支持配置 Windows 的 mineru.exe 路径，或其他 Python 环境中的可执行文件。
-
-MinerU 官方提供 `mineru -p <input> -o <output>` 入口。当前官方文档说明 CLI 可管理临时本地 API，也可连接已有服务，因此适配器需要按固定版本处理进程树和输出，不假定所有版本的内部启动过程相同。[MinerU 使用说明](https://opendatalab.github.io/MinerU/usage/quick_usage/)
-
-任务完成后把所需产物复制进本应用文档目录。应用不能长期依赖 MinerU API 自身的临时结果目录。已有 API 模式只负责当前进程存活期间的请求、状态查询和结果获取，不在应用重启后追踪旧任务。
+`src/easylearn/mineru/embedded.py` 负责第三方源码路径、模型生命周期、MinerU 输出树和关闭清理；`src/easylearn/mineru/result.py` 继续负责归档校验和 DocumentIR 归一化。MinerU 固定版本及依赖以仓库内 `3rdparty/MinerU/pyproject.toml` 和应用 `pyproject.toml` 为准。任务完成后把校验过的产物复制进本应用文档目录，应用不依赖 MinerU 外部 CLI、HTTP 服务或临时结果目录。
 
 ## 5. 数据放在哪里
 
@@ -208,7 +202,7 @@ MinerU 官方提供 `mineru -p <input> -o <output>` 入口。当前官方文档�
 | data/documents/{document_id}/exports/{export_id}/ | 已完成导出包及导出清单 |
 | data/documents/{document_id}/search/{parse_id}/ | 可选向量与块映射文件 |
 | data/tmp/{task_id}/ | 当前任务的临时转换、解析或导出结果 |
-| data/logs/ | 有大小和数量上限的轮转日志 |
+| logs/YYYY-MM-DD.log | 按本地日期切分的应用、Uvicorn 和 MinerU 日志 |
 
 每个文档独立保存，避免跨文档去重后的引用计数。tmp 不属于已完成结果，失败后不用于续跑。已结束任务立即清理自己的临时目录；启动时可删除超过宽限期的遗留目录，但不能在可能仍有外部子进程写入时直接复用或删除。
 

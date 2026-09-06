@@ -47,15 +47,11 @@ class DataPaths:
         return self.data_dir / "tmp"
 
     @property
-    def logs(self) -> Path:
-        return self.data_dir / "logs"
-
-    @property
     def lock(self) -> Path:
         return self.data_dir / "instance.lock"
 
     def ensure(self) -> "DataPaths":
-        for path in (self.data_dir, self.documents, self.temporary, self.logs):
+        for path in (self.data_dir, self.documents, self.temporary):
             path.mkdir(parents=True, exist_ok=True)
         return self
 

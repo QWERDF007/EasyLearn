@@ -477,6 +477,24 @@ def test_table_preserves_merged_headers_and_cell_identity_without_inventing_cell
     assert [block.order_index for block in document.blocks] == list(range(9))
 
 
+def test_table_formula_markup_becomes_a_math_node(context, table_middle):
+    span = table_middle["pdf_info"][0]["para_blocks"][2]["blocks"][0]["lines"][0]["spans"][0]
+    span["html"] = span["html"].replace("2 kg", "<eq>AP_{50}</eq>")
+
+    document = MinerUAdapter().normalize(json.dumps(table_middle).encode(), context=context)
+    formula_cells = [
+        block
+        for block in document.blocks
+        if block.block_type == "table_cell"
+        and any(node.type == "math" for node in block.source_nodes)
+    ]
+
+    assert len(formula_cells) == 1
+    assert formula_cells[0].source_text == "AP_{50}"
+    assert [node.type for node in formula_cells[0].source_nodes] == ["math"]
+    assert formula_cells[0].source_nodes[0].latex == "AP_{50}"
+
+
 @pytest.mark.parametrize("evidence", ["missing_preproc", "merged_html"])
 def test_table_without_matching_original_evidence_does_not_claim_the_first_page_region(
     context, table_middle, evidence

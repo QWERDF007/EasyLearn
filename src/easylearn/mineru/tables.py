@@ -59,6 +59,12 @@ def cell_nodes(cell: Tag, images: ImageReferences) -> tuple[InlineNode, ...]:
             nodes.append(TextNode(node_id=f"n{len(nodes)}", text="\n"))
         elif element.name == "code":
             nodes.append(CodeNode(node_id=f"n{len(nodes)}", code=element.get_text()))
+        elif element.name == "eq":
+            if element.find(True) is not None:
+                raise DomainError(
+                    "MINERU_TABLE_INVALID", "Unsupported nesting inside table formula content"
+                )
+            nodes.append(MathNode(node_id=f"n{len(nodes)}", latex=element.get_text()))
         elif element.name == "a":
             target = element.get("href")
             if not isinstance(target, str):

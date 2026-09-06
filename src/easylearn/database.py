@@ -13,7 +13,7 @@ from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _DOCUMENTS_COLUMNS = """
 (
@@ -73,6 +73,16 @@ CREATE TABLE IF NOT EXISTS translation_history (
 CREATE INDEX IF NOT EXISTS ix_translation_history_unit
     ON translation_history(parse_id, block_id, unit_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS source_edits (
+    parse_id TEXT NOT NULL REFERENCES parse_results(id) ON DELETE CASCADE,
+    block_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (parse_id, block_id, node_id)
+);
+
 CREATE TABLE IF NOT EXISTS qa_records (
     id TEXT PRIMARY KEY,
     document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
@@ -121,6 +131,9 @@ class Database:
                 await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             elif version == 1:
                 await _migrate_v1_to_v2(connection)
+                await _migrate_v2_to_v3(connection)
+            elif version == 2:
+                await _migrate_v2_to_v3(connection)
             await connection.commit()
             self.connection = connection
 
@@ -181,3 +194,14 @@ async def _migrate_v1_to_v2(connection: aiosqlite.Connection) -> None:
         raise
     finally:
         await connection.execute("PRAGMA foreign_keys = ON")
+
+
+async def _migrate_v2_to_v3(connection: aiosqlite.Connection) -> None:
+    await connection.execute(
+        "CREATE TABLE IF NOT EXISTS source_edits ("
+        "parse_id TEXT NOT NULL REFERENCES parse_results(id) ON DELETE CASCADE,"
+        "block_id TEXT NOT NULL, node_id TEXT NOT NULL, text TEXT NOT NULL,"
+        "revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),"
+        "updated_at TEXT NOT NULL, PRIMARY KEY (parse_id, block_id, node_id))"
+    )
+    await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

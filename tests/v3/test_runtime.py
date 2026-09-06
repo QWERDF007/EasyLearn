@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import date
 from pathlib import Path
 from uuid import uuid4
 
@@ -91,14 +92,23 @@ async def test_maintenance_removes_stale_tmp_and_unreferenced_parse(tmp_path: Pa
     assert report.removed_orphan_parses >= 1
 
 
-def test_logging_uses_size_rotation(tmp_path: Path):
-    controller = configure_logging(tmp_path / "logs", max_bytes=32, backup_count=1)
+def test_logging_splits_by_local_date_without_size_rotation(tmp_path: Path):
+    current_date = date(2026, 9, 6)
+    controller = configure_logging(
+        tmp_path / "logs", date_provider=lambda: current_date
+    )
     logger = logging.getLogger("easylearn.runtime-test")
     try:
-        for _ in range(10):
-            logger.warning("0123456789abcdef")
-        assert (tmp_path / "logs" / "easylearn.log").is_file()
-        assert (tmp_path / "logs" / "easylearn.log.1").is_file()
+        logger.warning("first day")
+        current_date = date(2026, 9, 7)
+        logger.warning("second day")
+        assert (tmp_path / "logs" / "2026-09-06.log").read_text(encoding="utf-8").count(
+            "first day"
+        ) == 1
+        assert (tmp_path / "logs" / "2026-09-07.log").read_text(encoding="utf-8").count(
+            "second day"
+        ) == 1
+        assert not (tmp_path / "logs" / "easylearn.log.1").exists()
     finally:
         controller.close()
 

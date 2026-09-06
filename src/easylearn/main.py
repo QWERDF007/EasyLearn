@@ -38,9 +38,11 @@ from easylearn.files import DocumentFiles, InstanceLock
 from easylearn.jobs.schema import JobKind, TaskView
 from easylearn.logging_setup import LoggingController, configure_logging
 from easylearn.maintenance import MaintenanceService
+from easylearn.mineru.models import MinerUModelView
 from easylearn.parser import ParseRequest, ParseService
 from easylearn.paths import DataPaths
 from easylearn.qa import QARecordView, QARequest, QAService
+from easylearn.source_edits import SourceEditRequest, SourceEditService, SourceEditView
 from easylearn.tasks import TaskManager
 from easylearn.translation import (
     EditTranslationRequest,
@@ -51,6 +53,9 @@ from easylearn.translation import (
     TranslationService,
     TranslationUnitView,
 )
+
+mimetypes.add_type("text/javascript", ".js")
+mimetypes.add_type("text/javascript", ".mjs")
 
 
 @dataclass(frozen=True)
@@ -64,6 +69,7 @@ class ApplicationState:
     translation: TranslationService
     exporter: ExportService
     qa: QAService
+    source_edits: SourceEditService
     http: httpx.AsyncClient
     tasks: TaskManager
     cache: DocumentCache
@@ -84,9 +90,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         instance_lock = InstanceLock(paths.lock)
         instance_lock.acquire()
         logging_controller: LoggingController = configure_logging(
-            paths.logs,
-            max_bytes=settings.files.log_max_mb * 1024 * 1024,
-            backup_count=settings.files.log_backup_count,
+            settings.log_dir,
         )
         database = Database(paths.database)
         manager = TaskManager(
@@ -100,6 +104,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             retention_seconds=settings.tasks.finished_task_retention_minutes * 60,
         )
         http: httpx.AsyncClient | None = None
+        parser: ParseService | None = None
         try:
             await database.open()
             maintenance = MaintenanceService(
@@ -123,6 +128,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             http = httpx.AsyncClient(trust_env=False, follow_redirects=False)
             parser = ParseService(database, files, documents, manager, settings)
+            source_edits = SourceEditService(database, documents)
             translation = TranslationService(
                 database, documents, manager, settings, llm=LLMClient(settings, http)
             )
@@ -143,6 +149,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 translation=translation,
                 exporter=exporter,
                 qa=qa,
+                source_edits=source_edits,
                 http=http,
                 tasks=manager,
                 cache=cache,
@@ -152,6 +159,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             yield
         finally:
             await manager.close()
+            if parser is not None:
+                await parser.close()
             if http is not None:
                 await http.aclose()
             await database.close()
@@ -229,14 +238,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "status": "ready",
             "server_boot_id": str(manager.server_boot_id),
             "mineru": {
-                "mode": settings.mineru.mode,
-                "configured": bool(
-                    (settings.mineru.mode == "api" and settings.mineru.base_url)
-                    or (
-                        settings.mineru.mode == "cli"
-                        and _command_available(settings.mineru.command[0])
-                    )
-                ),
+                "mode": "embedded",
+                "backend": "transformers",
+                "configured": _state(request).parser.mineru.configured,
+                "models": len(_state(request).parser.model_catalog.list()),
             },
             "llm": {"configured": bool(settings.llm.model and settings.llm.base_url)},
             "extensions": settings.extensions.model_dump(mode="json"),
@@ -251,6 +256,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request: Request, favorite: bool | None = Query(default=None)
     ) -> tuple[DocumentView, ...]:
         return await _state(request).documents.list(favorite=favorite)
+
+    @app.get("/api/mineru/models", response_model=tuple[MinerUModelView, ...])
+    async def list_mineru_models(request: Request) -> tuple[MinerUModelView, ...]:
+        return _state(request).parser.model_catalog.list()
 
     @app.post("/api/documents", response_model=DocumentView, status_code=201)
     async def create_document(
@@ -295,7 +304,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         page: int | None = Query(default=None, ge=0),
         block_id: str | None = Query(default=None),
     ) -> dict[str, object]:
-        ir = await _state(request).documents.load_ir(document_id, parse_id)
+        ir = await _state(request).source_edits.effective_ir(document_id, parse_id)
         payload = ir.model_dump(mode="json", exclude_computed_fields=True)
         if page is not None:
             payload["blocks"] = [
@@ -339,7 +348,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await state.documents.load_raw_markdown(document_id, parse_id),
                 media_type="text/markdown; charset=utf-8",
             )
-        ir = await state.documents.load_ir(document_id, parse_id)
+        ir = await state.source_edits.effective_ir(document_id, parse_id)
         translations = await state.translation.effective_map(document_id, parse_id)
         asset_links = {
             str(asset.asset_id): (
@@ -356,6 +365,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         else:
             content = render_markdown(ir, translations, bilingual=True, asset_links=asset_links)
         return PlainTextResponse(content, media_type="text/markdown; charset=utf-8")
+
+    @app.get(
+        "/api/documents/{document_id}/source-edits",
+        response_model=tuple[SourceEditView, ...],
+    )
+    async def list_source_edits(
+        document_id: UUID,
+        request: Request,
+        parse_id: Annotated[UUID, Query(...)],
+    ) -> tuple[SourceEditView, ...]:
+        return await _state(request).source_edits.list(document_id, parse_id)
+
+    @app.patch(
+        "/api/documents/{document_id}/source-edits",
+        response_model=SourceEditView,
+    )
+    async def edit_source(
+        document_id: UUID,
+        body: SourceEditRequest,
+        request: Request,
+    ) -> SourceEditView:
+        return await _state(request).source_edits.edit(document_id, body)
 
     @app.post("/api/documents/{document_id}/translate", response_model=TaskView, status_code=202)
     async def translate_document(
@@ -479,9 +510,3 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return FileResponse(path, media_type=media_type)
 
     return app
-
-
-def _command_available(command: str) -> bool:
-    from shutil import which
-
-    return Path(command).is_file() or which(command) is not None

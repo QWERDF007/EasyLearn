@@ -16,7 +16,6 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from xml.etree import ElementTree
 from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
 
-import httpx
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
 from easylearn.config import Settings
@@ -29,7 +28,8 @@ from easylearn.files import DocumentFiles
 from easylearn.images import inspect_image
 from easylearn.jobs.schema import JobKind, TaskView
 from easylearn.mineru.archive import result_root
-from easylearn.mineru.client import MinerUClient
+from easylearn.mineru.embedded import EmbeddedMinerU
+from easylearn.mineru.models import MinerUModelCatalog
 from easylearn.mineru.result import MinerUResultValidator, NormalizedEvidence, ParseSource
 from easylearn.mineru.schema import MinerUOptions
 from easylearn.previews.pdf import PdfPreflight
@@ -54,6 +54,7 @@ class OfficeSelection(BaseModel):
 class ParseRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    model_id: str | None = Field(default=None, min_length=1, max_length=255)
     options: dict[str, Any] | None = None
     office: OfficeSelection | None = None
     auto_translate: bool = False
@@ -73,6 +74,14 @@ class ParseService:
         self.documents = documents
         self.manager = manager
         self.settings = settings
+        self.model_catalog = MinerUModelCatalog(settings.mineru)
+        self.mineru = EmbeddedMinerU(
+            settings.mineru.model_path,
+            timeout=settings.mineru.timeout_seconds,
+        )
+
+    async def close(self) -> None:
+        await self.mineru.close()
 
     async def submit(self, document_id: UUID, request: ParseRequest | None = None) -> TaskView:
         await self.documents.get(document_id)
@@ -83,6 +92,14 @@ class ParseService:
             except ValueError as exc:
                 raise DomainError("PARSE_OPTIONS_INVALID", "Invalid MinerU parse options") from exc
         office = request.office if request is not None else None
+        requested_model_id = request.model_id if request is not None else None
+        if requested_model_id is not None:
+            self.model_catalog.resolve(requested_model_id)
+        model_id = (
+            self.model_catalog.model_id_for(self.settings.mineru.model_path)
+            if requested_model_id is None
+            else requested_model_id
+        )
 
         async def admit() -> None:
             await self.documents.get(document_id)
@@ -92,6 +109,7 @@ class ParseService:
             JobKind.PARSE,
             {
                 "parse_id": str(uuid4()),
+                "model_id": model_id,
                 "options": options.model_dump(mode="json"),
                 "office": office.model_dump(mode="json") if office is not None else None,
                 "auto_translate": request.auto_translate if request is not None else False,
@@ -231,128 +249,21 @@ class ParseService:
         options: MinerUOptions,
         context: TaskContext,
     ) -> StoredObject:
-        if self.settings.mineru.mode == "api":
-            return await self._run_api(input_pdf, cas, options, context)
         output = task_directory / "mineru-output"
         output.mkdir()
-        await self._run_cli(input_pdf, output, options, context)
-        archive_path = task_directory / "mineru.zip"
-        self._package_cli_output(output, archive_path, options, input_pdf)
-        return await run_blocking(cas.write, _file_chunks(archive_path))
-
-    async def _run_api(
-        self, input_pdf: Path, cas: LocalStorage, options: MinerUOptions, context: TaskContext
-    ) -> StoredObject:
-        profile = self.settings.mineru
-        assert profile.base_url is not None
-        headers = (
-            {"Authorization": f"Bearer {self.settings.mineru_api_key}"}
-            if self.settings.mineru_api_key
-            else {}
+        model_id = context.record.scope.get("model_id")
+        model_path = self.model_catalog.resolve(model_id if isinstance(model_id, str) else None)
+        await context.progress(0.15, "MinerU 正在推理")
+        await self.mineru.parse(
+            input_pdf,
+            output,
+            options,
+            check=context.check,
+            model_path=model_path,
         )
-        async with httpx.AsyncClient(
-            base_url=profile.base_url,
-            headers=headers,
-            trust_env=False,
-            follow_redirects=False,
-        ) as http:
-            client = MinerUClient(http)
-            try:
-                async with asyncio.timeout(profile.timeout_seconds):
-                    await client.health()
-                    with input_pdf.open("rb") as source:
-                        submitted = await client.submit(source, request_id=uuid4(), options=options)
-                    task = submitted.value
-                    while task.status not in ("completed", "failed"):
-                        await context.check()
-                        await asyncio.sleep(profile.poll_interval_seconds)
-                        task = (await client.query(task.task_id)).value
-                    if task.status == "failed":
-                        raise DomainError("MINERU_TASK_FAILED", "MinerU reported parsing failure")
-                    async with client.download(task.task_id) as chunks:
-                        return await cas.write_stream(chunks)
-            except TimeoutError:
-                raise DomainError(
-                    "MINERU_TIMEOUT",
-                    "MinerU exceeded the task time limit",
-                    retryable=True,
-                ) from None
-            except httpx.HTTPError:
-                raise DomainError(
-                    "MINERU_UNAVAILABLE",
-                    "MinerU could not be reached",
-                    retryable=True,
-                ) from None
-
-    async def _run_cli(
-        self, input_pdf: Path, output: Path, options: MinerUOptions, context: TaskContext
-    ) -> None:
-        profile = self.settings.mineru
-        command = [
-            *profile.command,
-            "-p",
-            str(input_pdf),
-            "-o",
-            str(output),
-            "-b",
-            options.backend,
-            "-m",
-            options.parse_method,
-            "-l",
-            options.language,
-            "-s",
-            "0",
-            "-e",
-            str(options.page_count - 1),
-            "--effort",
-            options.effort,
-            "--formula",
-            str(options.formula_enable).lower(),
-            "--table",
-            str(options.table_enable).lower(),
-            "--image-analysis",
-            str(options.image_analysis).lower(),
-        ]
-        if options.server_url is not None:
-            command.extend(["-u", str(options.server_url)])
-        if profile.mode != "cli":
-            raise DomainError("MINERU_CONFIGURATION_INVALID", "CLI execution requires CLI mode")
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *command,
-                stdin=subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-            )
-        except OSError:
-            raise DomainError(
-                "MINERU_UNAVAILABLE",
-                "MinerU command could not be started",
-                retryable=True,
-            ) from None
-        try:
-            async with asyncio.timeout(profile.timeout_seconds):
-                stdout, stderr = await process.communicate()
-        except TimeoutError:
-            await _terminate_process_tree(process)
-            raise DomainError(
-                "MINERU_TIMEOUT",
-                "MinerU exceeded the task time limit",
-                retryable=True,
-            ) from None
-        except asyncio.CancelledError:
-            await _terminate_process_tree(process)
-            raise
-        await context.check()
-        if process.returncode != 0:
-            detail = stderr.decode(errors="replace")[-1000:] if stderr else ""
-            del stdout
-            raise DomainError(
-                "MINERU_FAILED",
-                f"MinerU command failed{': ' + detail if detail else ''}",
-                retryable=True,
-            )
+        archive_path = task_directory / "mineru.zip"
+        self._package_output(output, archive_path, options, input_pdf)
+        return await run_blocking(cas.write, _file_chunks(archive_path))
 
     async def _prepare_pdf(
         self,
@@ -467,7 +378,7 @@ class ParseService:
             raise DomainError("OFFICE_CONVERSION_FAILED", detail or "Office conversion failed")
         await run_blocking(shutil.copyfile, converted, destination)
 
-    def _package_cli_output(
+    def _package_output(
         self, output: Path, archive_path: Path, options: MinerUOptions, input_pdf: Path
     ) -> None:
         middle = next(output.rglob("input_middle.json"), None)

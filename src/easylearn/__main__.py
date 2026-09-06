@@ -25,6 +25,7 @@ def main() -> None:
         port=settings.app.port,
         workers=1,
         reload=False,
+        access_log=False,
     )
 
 

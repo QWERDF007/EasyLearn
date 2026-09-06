@@ -20,10 +20,15 @@ dependencies = [
   "pypdf==6.16.2",
   "pillow==12.1.1",
   "beautifulsoup4==4.15.0",
+  "mineru-vl-utils[transformers]==1.2.1",
+  "loguru==0.7.3",
+  "opencv-python==4.13.0.92",
+  "packaging==26.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest==9.0.3", "pytest-asyncio==1.4.0", "ruff==0.16.5", "mypy==1.20.2"]
+browser = ["selenium==4.48.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -32,6 +37,7 @@ where = ["src"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "--strict-markers --import-mode=importlib"
+markers = ["browser: end-to-end tests driven by Selenium and ChromeDriver"]
 
 [tool.ruff]
 target-version = "py312"

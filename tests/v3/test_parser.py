@@ -194,11 +194,11 @@ async def test_invalid_image_parse_reports_a_specific_error(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_parse_without_a_mineru_command_fails_with_a_clear_error(tmp_path):
+async def test_parse_does_not_depend_on_an_external_mineru_command(tmp_path, monkeypatch):
     app = create_app(
         Settings(
             app=AppSettings(data_dir=tmp_path),
-            mineru=MinerUSettings(command=("__missing_easylearn_mineru__",)),
+            mineru=MinerUSettings(model_path=tmp_path / "model"),
         )
     )
     async with (
@@ -208,17 +208,44 @@ async def test_parse_without_a_mineru_command_fails_with_a_clear_error(tmp_path)
         health = await client.get("/api/health")
         assert health.status_code == 200
         assert health.json()["mineru"]["configured"] is False
+        assert health.json()["mineru"]["mode"] == "embedded"
         source = Path("3rdparty/MinerU/tests/unittest/pdfs/test.pdf").read_bytes()
         created = await client.post(
             "/api/documents", files={"file": ("paper.pdf", source, "application/pdf")}
         )
         document_id = created.json()["document_id"]
+
+        async def fake_mineru(input_pdf, task_directory, cas, options: MinerUOptions, context):
+            del task_directory, options, context
+            contents = {
+                "input/vlm/input.md": b"# Embedded",
+                "input/vlm/input_middle.json": json.dumps(
+                    {
+                        "_version_name": "3.4.5",
+                        "_backend": "vlm",
+                        "pdf_info": [
+                            {"page_idx": 0, "page_size": [612, 792], "para_blocks": []}
+                        ],
+                    }
+                ).encode(),
+                "input/vlm/input_model.json": b"[]",
+                "input/vlm/input_content_list.json": b"[]",
+                "input/vlm/input_content_list_v2.json": b"[]",
+                "input/vlm/input_origin.pdf": input_pdf.read_bytes(),
+            }
+            buffer = io.BytesIO()
+            with ZipFile(buffer, "w", ZIP_DEFLATED) as archive:
+                for name, data in contents.items():
+                    archive.writestr(name, data)
+            return await asyncio.to_thread(cas.write, [buffer.getvalue()])
+
+        monkeypatch.setattr(app.state.services.parser, "_run_mineru", fake_mineru)
         accepted = await client.post(f"/api/documents/{document_id}/parse", json={})
         assert accepted.status_code == 202, accepted.text
-        task = await wait_for_task(client, accepted.json()["task_id"])
-        assert task["status"] == "failed", task
-        assert task["failure"]["code"] == "MINERU_UNAVAILABLE"
-        assert (await client.get(f"/api/documents/{document_id}")).json()["parse_results"] == []
+        task = await wait_for_task(
+            client, accepted.json()["task_id"]
+        )
+        assert task["status"] == "succeeded", task
 
 
 @pytest.mark.asyncio
