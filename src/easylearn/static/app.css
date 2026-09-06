@@ -54,7 +54,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .cancel-action::before { content: "×"; font-size: 20px; font-weight: 300; }
 .retry-action::before { content: "↻"; }
 
-.reader-column, .result-column { min-width: 0; background: #fbfcfe; }
+.reader-column, .result-column { min-width: 0; min-height: 0; background: #fbfcfe; }
 .reader-column { display: flex; flex-direction: column; border-right: 1px solid var(--line); }
 .topbar, .result-header { min-height: 78px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: #fff; }
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
