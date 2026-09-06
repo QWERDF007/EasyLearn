@@ -4,13 +4,116 @@
 
 ## ⏳ 待你裁决
 
-<!-- 没有待裁决事项时保持本节为空。 -->
+- 无。
 
 
+### 2026-09-06 — 解析反馈与工作台顶部重规划诊断
+
+**目标**
+- 为解析中的 Web 页面补充可见进度，减少无意义的任务轮询日志，并按参考页面重规划顶部操作区。
+
+**当前状态**
+- 已定位：解析任务在 `parser.py` 中进入内置 MinerU 前只发布 `0.15 / Preview is ready`；内置 MinerU 的 analyzer 在完整 VLM 分析返回前没有进度回调，因此截图中的 `15%` 是真实的阶段值，不是当前推理页数。
+- 已定位：`app.js` 的 `waitTask` 每 500ms 请求一次 `/api/tasks/{task_id}`，直到任务终态；日志中的 `200 OK` 是前端轮询成功，不是重复启动解析。当前轮询状态不是集中共享的长期结构，页面任务区也没有主内容区进度视图。
+- 已定位：模板把版本、自动翻译、解析、翻译、问答、导出、收藏、删除全部放进同一个 `topbar-actions`，阅读工具栏仍使用多组文字按钮。
+- 本轮尚未修改代码，等待进度展示粒度确认。
+
+**验证证据**
+- `src/easylearn/parser.py`：`0.15` 后调用 `_run_mineru`，完成后才进入 `0.55` 验证阶段。
+- `src/easylearn/mineru/embedded.py`：`_run_analyzer` 等待 `aio_doc_analyze` 完整返回，未向 `TaskContext` 转发 MinerU 内部 `tqdm`。
+- `src/easylearn/static/app.js`：`waitTask` 固定 `500ms` 延迟；`renderTasks` 只更新左侧任务列表；模板和 CSS 的顶部控件未分组。
+
+**下一步**
+- 用户确认推荐的阶段/不确定进度方案后，先补红灯测试，再实现任务状态共享轮询、主区进度条与取消入口、阶段文案和顶部图标化分组，最后用 Selenium 与真实论文任务验收。
+
+
+
+
+### 2026-09-06 — 内置 MinerU 论文验收与表格公式归一化
+
+**目标**
+- 修复真实论文解析在 `15%`/MinerU 启动错误之后的完整链路，并使表格公式标记可发布；确认 MinerU 进程内运行，日志按本地日期写入 `logs/YYYY-MM-DD.log`。
+
+**当前状态**
+- 已通过 `src/easylearn/mineru/embedded.py` 在 EasyLearn 进程内加载仓库内 MinerU 3.4.5 与 `D:\Models\MinerU2.5-Pro-2605-1.2B`；解析路径不再调用 MinerU CLI 或 MinerU HTTP 服务。
+- 已修复 MinerU 表格单元 `<eq>...</eq>` 未知标记：转换为 `MathNode`，嵌套公式标记仍按协议错误拒绝。
+- `D:\Papers\2403.18819v1.pdf` 已通过真实 HTTP 上传、GPU 推理、结果校验、DocumentIR 发布和 Markdown 读取；正式服务当前运行在 `127.0.0.1:8765`。
+- 日志当前写入 `logs\2026-09-06.log`，按本地日期切换，不按大小轮转。
+
+**验证证据**
+- 红灯：`pytest tests/mineru/test_adapter.py -q -k table_formula_markup` → `1 failed`，复现 `Unsupported table cell markup`。
+- 绿灯：同一命令 → `1 passed`；`pytest tests/mineru/test_adapter.py tests/mineru/test_result.py tests/mineru/test_embedded.py -q` → `127 passed, 3 skipped`。
+- 真实原始 MinerU 结果归一化 → `27` 页、`53` 个归档成员、`791667` 字节 DocumentIR；`3` 张表、`768` 个表格单元、`63` 个数学节点成功生成。
+- 真实服务任务 `8ef74011-7e13-4d43-a744-d920c5f7de3c` → `succeeded / 1.0 / Completed`；解析结果 `cd45f96a-b721-4910-a350-b1ff1b0038fa` 与 Markdown 接口均 HTTP `200`，Markdown `80540` 字符且包含表格。
+- `logs\2026-09-06.log` 已记录 Uvicorn 请求和内置 MinerU GPU 推理日志；旧的 `MinerU command could not be started` 仅存在于历史日志，不再是当前执行路径。
+
+**下一步**
+- 无必需后续；用户提供 Pinaic API Key 和模型名后，另行完成 LLM 外部接口联调。
+
+
+### 2026-09-06 — 修复浏览器上传无响应并补充 Selenium 验收
+
+**目标**
+- 定位“上传图片后界面没有变化”，修复真实浏览器阻止上传监听器的问题，并补充 Python Selenium + ChromeDriver 测试。
+
+**当前状态**
+- 已修复 Windows 静态资源 MIME：`.js` 与 `.mjs` 统一返回 `text/javascript`；上传事件可执行。
+- 已新增可选 `browser` 测试依赖、独立临时服务 fixture 和 3 个浏览器场景；默认测试集不启动浏览器，设置 `EASYLEARN_RUN_BROWSER_TESTS=1` 才运行。
+- 当前正式服务已停止，8765 无残留 EasyLearn 监听；本轮测试临时目录已清理。
+
+**验证证据**
+- Selenium + ChromeDriver 真实浏览器：`EASYLEARN_RUN_BROWSER_TESTS=1 ... -m pytest tests\\browser -q -p no:cacheprovider --basetemp .tmp-browser-final` → `3 passed in 14.72s`；验证模块加载、图片 `POST /api/documents` 返回 201、侧栏展示及连续上传两张图片。
+- MIME 回归：`... -m pytest tests\\v3\\test_app.py -q -p no:cacheprovider --tb=short --basetemp .tmp-final-app` → `16 passed`，覆盖 `app.js` 和 `pdf.min.mjs`。
+- `... -m ruff check src tests\\v3\\test_app.py tests\\browser\\test_upload.py` → `All checks passed`；`node --check` 两个前端脚本通过；`git diff --check` 无差异空白错误。
+- 红灯证据：Chrome Console 原报 `app.js`/`pdf.min.mjs` MIME 为 `text/plain`，无 `POST /api/documents`；修复后真实浏览器出现 `POST /api/documents` → `201 Created`。
+
+**下一步**
+- 用户再次启动时从仓库根目录执行 `E:\\Softwares\\Anaconda3\\envs\\learn\\python.exe -m easylearn`；若继续全量论文验收，重新提交被中断的 27 页任务。
 
 
 ---
 
+### 2026-09-06 — 本地权重与论文真实验证
+
+**目标**
+- 拉取 `origin/dev` 最新代码，使用 `learn` 环境与 `D:\Models` 启动 EasyLearn，并用 `D:\Papers\2403.18819v1.pdf` 做真实验证。
+
+**当前状态**
+- 已快进到 `d3a823a`；按 v3 本机入口使用 SQLite、单进程 FastAPI 和仓库内 MinerU 3.4.5 源码，未安装 MinerU 包。
+- 已安装项目声明依赖，服务曾在 `127.0.0.1:8765` 就绪；`D:\Models\MinerU2.5-Pro-2605-1.2B` 在 RTX 4090 上成功加载。
+- 指定论文已完成真实上传、PDF 预检和单页真实 MinerU 推理；整篇 27 页任务已进入真实推理但在发布前被用户中断，不能记为整篇解析通过。相关临时进程已清理，当前服务未运行。
+- Pinaic 仅完成官方资料调研与索引，运行配置尚未切换；API Key 和文本模型名待补。
+
+**验证证据**
+- `git pull --ff-only` → `7d36a55..d3a823a` 快进；`learn python -m pip install -e ".[dev]"` → 成功安装 `aiosqlite` 等依赖。
+- `D:\Papers\2403.18819v1.pdf` → 27 页、未加密、2,660,025 字节；单页 MinerU 输出 middle/content-list/Markdown 等产物，模型加载到 `cuda:0`。
+- EasyLearn `/api/health` → `200`、`status=ready`、CLI MinerU `configured=true`；整篇任务 `b9a944ba-04d9-45c0-b894-000f75a291de` → `running / 0.15 / Preview is ready` 后被中断，未得到 parse result。
+- `nvidia-smi` → RTX 4090 显存约 13 GiB 被 MinerU 计算进程占用；没有留下 EasyLearn/MinerU 服务进程。
+
+**下一步**
+- 提供 Pinaic API Key 和实际文本模型名后，将 `[llm]` 配置为 `https://api.pinaic.com/v1`、`api_key_env` 和 `local_only=false`，再做真实 `/chat/completions` 联调。
+- 如继续论文全量验收，重新启动服务并重新提交 27 页任务；不能复用被中断的内存任务。
+
+### 2026-09-06 — Pinaic OpenAI 兼容 API 官方资料
+### 2026-09-06 — Pinaic OpenAI 兼容 API 官方资料
+
+**目标**
+- 按 research skill 核查 Pinaic 官方首页指南第 5 节，保存 OpenAI 兼容 API 的外部事实，不修改代码。
+
+**当前状态**
+- 已完成 [Pinaic OpenAI 兼容 API 外部事实](docs/research/pinaic-openai-compatible-api.md)，并加入 [文档与实现索引](docs/README.md)。
+- 已明确记录 Base URL、`/v1/usage`、Bearer 认证、禁止 query 传密钥和密钥注入注意事项。
+- 官方页面未明确文本生成请求路径、文本 `model` 约束、SDK 包名或方法；文档保留为未确认，不以项目现有实现补齐。
+- 未修改代码、配置或实际密钥。
+
+**验证证据**
+- 只读请求 `https://app.pinaic.com/docs/home-guide` → HTTP 200；页面官方正文接口 `https://app.pinaic.com/api/v1/docs/home-guide?limit=8` → `code=0`、发布版本 15。
+- 从第 5 节原文核对 `https://api.pinaic.com/v1`、`Authorization: Bearer ...`、`/v1/usage` 及 query `key`/`api_key` 拒绝说明；`git diff --check` → 无空白错误。
+
+**下一步**
+- 等 API Key 提供后，再按该外部事实配置并进行真实接口联调；在获得 Pinaic 官方文本 API 路径和模型契约前，不假设 `chat/completions` 或 `responses`。
+
+### 2026-09-06 — 轻量版最终校验
 ## 日志
 
 <!--
@@ -47,6 +150,26 @@
 - [x] 开关两态验证：`export_v2=off` 时回退旧路径正常
 
 **边界**：不动导出的字段结构；不顺手重构 handler。
+
+---
+
+### 2026-09-07 — 内置 MinerU 与工作台交互阶段提交
+
+**目标**
+- 将已完成的内置 MinerU、源文本修订、解析反馈、顶部布局、PDF 控件和 Selenium 测试按阶段提交，并建立当前状态与后续计划入口。
+
+**当前状态**
+- 后端阶段已提交为 `b71d15e`：进程内 MinerU/GPU 运行时、模型目录、日志、表格公式归一化和源文本 revision overlay。
+- Web 阶段已完成：解析阶段/耗时/取消反馈、共享任务轮询、图标化顶部、PDF 底部工具栏、`Ctrl + 滚轮` 缩放、块联动、收藏/删除确认和源文本编辑界面。
+- [当前状态、目标与计划](docs/CURRENT.md) 已建立；显式模型候选配置、`D:\tmp` 临时目录、扩展 Selenium 用例和 Pinaic 联调列为后续阶段，本轮没有继续实现。
+
+**验证证据**
+- `pytest tests\v3\test_model_catalog.py tests\v3\test_source_edits.py ... tests\v3\test_parser.py` → `15 passed`。
+- 固定 ChromeDriver 152.0.7977.82 运行 `pytest tests\browser` → `3 passed in 18.79s`。
+- `ruff check src tests\browser tests\v3\test_app.py`、`node --check` 两个前端模块和 `git diff --check` 均通过；UI/MIME 定向测试 `3 passed`。
+
+**下一步**
+- 按 [CURRENT](docs/CURRENT.md) 先实现 config 显式模型候选和 `D:\tmp`，再补齐新增工作台交互的 Selenium 验收；用户提供凭据和文本模型名后联调 Pinaic。
 
 ---
 

@@ -13,6 +13,7 @@ export class PdfReader {
       onError = () => {},
       onBlockClick = () => {},
       onBlockHover = () => {},
+      onScaleChange = () => {},
     } = {},
   ) {
     this.container = container;
@@ -21,6 +22,7 @@ export class PdfReader {
     this.onError = onError;
     this.onBlockClick = onBlockClick;
     this.onBlockHover = onBlockHover;
+    this.onScaleChange = onScaleChange;
     this.pdf = null;
     this.loadingTask = null;
     this.pageGeometries = [];
@@ -37,6 +39,16 @@ export class PdfReader {
       { root: container, rootMargin: "1200px 0px" },
     );
     this.container.addEventListener("scroll", () => this.#updatePageCounter(), { passive: true });
+    this.container.addEventListener("wheel", (event) => {
+      if (
+        !event.ctrlKey
+        || !(event.target instanceof Element)
+        || event.target.closest("#pdf-toolbar")
+      ) return;
+      event.preventDefault();
+      const next = this.scale * Math.exp(-event.deltaY * 0.002);
+      this.setScale(next);
+    }, { passive: false });
     this.container.addEventListener("pointerdown", (event) => {
       this.pointerStart = { x: event.clientX, y: event.clientY };
     }, { passive: true });
@@ -63,6 +75,7 @@ export class PdfReader {
       return;
     }
     this.#updateControls(true);
+    this.onScaleChange(this.scale);
     try {
       this.loadingTask = getDocument({ url });
       const pdf = await this.loadingTask.promise;
@@ -91,11 +104,17 @@ export class PdfReader {
   }
 
   setScale(value) {
+    if (value === "") return;
     const scale = Number(value);
     if (!Number.isFinite(scale)) return;
     this.scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale));
+    this.onScaleChange(this.scale);
     this.#resizeShells();
     void this.#rerenderVisible();
+  }
+
+  resetScale() {
+    this.setScale(1);
   }
 
   fitWidth() {
@@ -154,6 +173,7 @@ export class PdfReader {
 
   setSelected(blockIds) {
     this.selectedBlocks = new Set(blockIds || []);
+    this.pagesContainer.classList.toggle("has-selection", this.selectedBlocks.size > 0);
     this.#updateRegionClasses();
   }
 
@@ -374,8 +394,10 @@ export class PdfReader {
       for (const region of state.regions) {
         const active = region.dataset.blockId === this.hoveredBlock;
         const selected = this.selectedBlocks.has(region.dataset.blockId);
+        const dimmed = this.selectedBlocks.size > 0 && !selected;
         region.classList.toggle("is-hovered", active);
         region.classList.toggle("is-selected", selected);
+        region.classList.toggle("is-dimmed", dimmed);
       }
     }
   }
@@ -395,7 +417,7 @@ export class PdfReader {
   }
 
   #updateControls(enabled) {
-    for (const selector of ["#prev-page", "#next-page", "#zoom-select", "#fit-width", "#rotate-page"]) {
+    for (const selector of ["#prev-page", "#next-page", "#zoom-select", "#reset-zoom", "#fit-width", "#rotate-page"]) {
       const control = document.querySelector(selector);
       if (control) control.disabled = !enabled;
     }

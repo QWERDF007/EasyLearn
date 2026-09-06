@@ -9,9 +9,13 @@
   <body>
     <main class="app-shell">
       <aside class="sidebar" aria-label="文档导航">
-        <div class="brand">EasyLearn</div>
+        <div class="brand-row">
+          <div class="brand">EasyLearn</div>
+          <span class="brand-mark" aria-hidden="true">EL</span>
+        </div>
         <form id="upload-form" class="upload-form">
           <label class="upload-button">
+            <span aria-hidden="true">＋</span>
             <span>上传文档</span>
             <input id="file-input" type="file" accept=".pdf,.png,.jpg,.jpeg,.jp2,.webp,.gif,.bmp,.tif,.tiff,.docx,.pptx,.xlsx" required>
           </label>
@@ -24,52 +28,76 @@
 
       <section class="reader-column">
         <header class="topbar">
-          <div>
+          <div class="document-identity">
             <h1 id="document-name">选择一个文档</h1>
             <p id="document-status" class="muted">上传后开始解析</p>
           </div>
-          <div class="topbar-actions">
-            <label class="version-control">版本
-            <select id="version-select" aria-label="解析版本" disabled></select>
+          <div class="topbar-models">
+            <label class="select-control">
+              <span class="sr-only">MinerU 模型</span>
+              <select id="model-select" aria-label="MinerU 模型" disabled>
+                <option value="">加载模型…</option>
+              </select>
             </label>
-            <label id="auto-translate-option" class="check-control">
+            <label class="select-control version-control">
+              <span class="sr-only">解析版本</span>
+              <select id="version-select" aria-label="解析版本" disabled></select>
+            </label>
+          </div>
+          <div class="topbar-actions">
+            <label id="auto-translate-option" class="switch-control" title="解析完成后自动翻译">
               <input id="auto-translate" type="checkbox">
-              解析完成后自动翻译
+              <span aria-hidden="true"></span>
             </label>
             <details id="office-options" class="office-options" hidden>
-              <summary>Office 预览选项</summary>
+              <summary title="Office 预览选项">▦</summary>
               <label>工作表 <input id="office-sheet" maxlength="255" placeholder="当前工作表"></label>
               <label>打印范围 <input id="office-print-range" maxlength="100" placeholder="A1:D20"></label>
             </details>
-            <button id="parse-button" type="button" disabled>解析</button>
-            <button id="translate-button" type="button" disabled>翻译全文</button>
-            <button id="qa-button" type="button" disabled>AI 解读</button>
-            <button id="export-button" type="button" disabled>导出 ZIP</button>
-            <button id="favorite-button" type="button" disabled>收藏</button>
-            <button id="delete-button" type="button" disabled>删除</button>
+            <button id="parse-button" class="icon-button toolbar-icon" type="button" aria-label="开始解析" title="开始解析" disabled><span aria-hidden="true">▶</span></button>
+            <button id="translate-button" class="icon-button toolbar-icon" type="button" aria-label="翻译全文" title="翻译全文" disabled><span aria-hidden="true">文</span></button>
+            <button id="qa-button" class="icon-button toolbar-icon" type="button" aria-label="AI 解读" title="AI 解读" disabled><span aria-hidden="true">✦</span></button>
+            <button id="export-button" class="icon-button toolbar-icon" type="button" aria-label="导出 ZIP" title="导出 ZIP" disabled><span aria-hidden="true">⇩</span></button>
+            <button id="favorite-button" class="icon-button toolbar-icon" type="button" aria-label="收藏" title="收藏" disabled><span aria-hidden="true">☆</span></button>
+            <button id="delete-button" class="icon-button toolbar-icon danger-icon" type="button" aria-label="删除文档" title="删除文档" disabled><span aria-hidden="true">⌫</span></button>
           </div>
         </header>
-        <div class="reader-toolbar">
-          <div class="reader-controls" aria-label="PDF 阅读控制">
-            <button id="prev-page" type="button" aria-label="上一页" disabled>上一页</button>
-            <span id="page-count" class="muted">0 / 0</span>
-            <button id="next-page" type="button" aria-label="下一页" disabled>下一页</button>
-            <label class="zoom-control">缩放
+        <div id="parse-progress" class="parse-progress" hidden aria-live="polite">
+          <div class="progress-heading">
+            <div>
+              <span id="parse-progress-title" class="progress-title">解析中</span>
+              <span id="parse-progress-message" class="muted">等待执行</span>
+            </div>
+            <span id="parse-progress-percent" class="progress-percent"></span>
+          </div>
+          <div class="progress-track"><span id="parse-progress-bar"></span></div>
+          <div class="progress-footer">
+            <span id="parse-progress-elapsed" class="muted">已用时 0 秒</span>
+            <button id="parse-progress-cancel" class="text-icon-button" type="button" title="取消解析" aria-label="取消解析"><span aria-hidden="true">×</span> 取消</button>
+          </div>
+        </div>
+        <div id="pdf-viewer" class="pdf-viewer" aria-label="PDF 原文" tabindex="0">
+          <div id="pdf-pages" class="pdf-pages"></div>
+          <div id="pdf-toolbar" class="pdf-toolbar" aria-label="PDF 阅读控制">
+            <button id="prev-page" class="icon-button reader-icon" type="button" aria-label="上一页" title="上一页" disabled><span aria-hidden="true">‹</span></button>
+            <span id="page-count" class="page-count" aria-live="polite">0 / 0</span>
+            <button id="next-page" class="icon-button reader-icon" type="button" aria-label="下一页" title="下一页" disabled><span aria-hidden="true">›</span></button>
+            <span class="toolbar-divider" aria-hidden="true"></span>
+            <label class="zoom-control" title="缩放比例">
+              <span class="sr-only">缩放比例</span>
               <select id="zoom-select" aria-label="缩放比例" disabled>
                 <option value="0.5">50%</option>
                 <option value="0.75">75%</option>
                 <option value="1" selected>100%</option>
                 <option value="1.5">150%</option>
                 <option value="2">200%</option>
+                <option value="">自定义</option>
               </select>
             </label>
-            <button id="fit-width" type="button" disabled>适应宽度</button>
-            <button id="rotate-page" type="button" aria-label="旋转页面" disabled>旋转</button>
+            <button id="reset-zoom" class="icon-button reader-icon" type="button" aria-label="重置缩放" title="重置缩放" disabled><span aria-hidden="true">1:1</span></button>
+            <button id="fit-width" class="icon-button reader-icon" type="button" aria-label="适应宽度" title="适应宽度" disabled><span aria-hidden="true">↔</span></button>
+            <button id="rotate-page" class="icon-button reader-icon" type="button" aria-label="旋转页面" title="旋转页面" disabled><span aria-hidden="true">⟳</span></button>
           </div>
-          <span class="hint">悬浮或点击右侧块可联动定位</span>
-        </div>
-        <div id="pdf-viewer" class="pdf-viewer" aria-label="PDF 原文" tabindex="0">
-          <div id="pdf-pages" class="pdf-pages"></div>
         </div>
       </section>
 
@@ -84,7 +112,7 @@
               <button id="source-markdown-tab" class="tab result-tab" data-view="raw" type="button">源码</button>
             </div>
             <div class="result-actions">
-              <button id="search-toggle" class="small-button" type="button" aria-expanded="false">查找</button>
+              <button id="search-toggle" class="icon-button small-icon" type="button" title="查找" aria-label="查找" aria-expanded="false"><span aria-hidden="true">⌕</span></button>
               <span id="selection-count" class="muted"></span>
             </div>
           </div>
@@ -92,7 +120,7 @@
             <label for="result-search-input">查找</label>
             <input id="result-search-input" type="search" maxlength="200" placeholder="查找原文或译文">
             <span id="result-search-count" class="muted"></span>
-            <button id="clear-selection" class="small-button" type="button">清除选择</button>
+            <button id="clear-selection" class="icon-button small-icon" type="button" title="清除选择" aria-label="清除选择"><span aria-hidden="true">⊘</span></button>
           </div>
         </header>
         <div id="result-content" class="result-content" aria-live="polite">
@@ -129,6 +157,20 @@
         </div>
         <article id="answer-content" class="answer-content"></article>
         <div id="citation-list" class="citation-list"></div>
+      </form>
+    </dialog>
+
+    <dialog id="document-delete-dialog" class="confirm-dialog">
+      <form method="dialog" id="document-delete-form">
+        <div class="dialog-heading">
+          <h2>删除文档</h2>
+          <button id="close-delete-button" type="button" class="icon-button" aria-label="关闭" title="关闭"><span aria-hidden="true">×</span></button>
+        </div>
+        <p id="delete-confirm-message" class="muted"></p>
+        <div class="dialog-actions">
+          <button id="cancel-delete-button" type="button" class="secondary-button">取消</button>
+          <button id="confirm-delete-button" type="submit" class="danger-button">删除</button>
+        </div>
       </form>
     </dialog>
 

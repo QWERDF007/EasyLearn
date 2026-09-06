@@ -2,15 +2,19 @@ import { PdfReader } from "./pdf-viewer.js";
 
 const state = {
   documents: [],
+  models: [],
+  selectedModelId: null,
   document: null,
   parse: null,
   translations: new Map(),
+  sourceEdits: new Map(),
   selectedBlocks: new Set(),
   hoverBlock: null,
   view: "zh",
   searchQuery: "",
   tasks: new Map(),
   taskWatchers: new Set(),
+  taskPollers: new Map(),
   health: null,
   markdownCache: new Map(),
   qaRecords: [],
@@ -21,6 +25,9 @@ const state = {
   questionContext: null,
   retryingTasks: new Set(),
   busyButtons: new Set(),
+  editingSourceBlockId: null,
+  pendingDeleteDocumentId: null,
+  parseProgressTimer: null,
   documentLoadGeneration: 0,
   parseLoadGeneration: 0,
 };
@@ -39,6 +46,11 @@ const pdfReader = new PdfReader($("#pdf-viewer"), {
   },
   onBlockHover(blockId) {
     setHover(blockId);
+  },
+  onScaleChange(scale) {
+    const select = $("#zoom-select");
+    const value = String(Number(scale));
+    select.value = [...select.options].some((option) => option.value === value) ? value : "";
   },
   onError(error) {
     notify(`PDF 加载失败：${error?.message || "未知错误"}`);
@@ -77,6 +89,16 @@ async function refreshHealth() {
   }
 }
 
+async function refreshModels() {
+  try {
+    state.models = await api("/api/mineru/models");
+    renderModelSelect();
+    syncToolbar();
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
 function selectedParseId() {
   return state.document?.active_parse_id || state.document?.parse_results?.[0]?.parse_id || null;
 }
@@ -86,17 +108,60 @@ async function refreshDocuments() {
   const list = $("#document-list");
   list.replaceChildren();
   for (const item of state.documents) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "document-item" + (
+    const entry = document.createElement("div");
+    entry.className = "document-item" + (
       state.document?.document_id === item.document_id ? " is-active" : ""
     );
-    button.textContent = item.name;
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "document-open";
+    const name = document.createElement("span");
+    name.className = "document-item-name";
+    name.textContent = item.name;
     const detail = document.createElement("small");
     detail.textContent = item.active_parse_id ? "已解析" : "待解析";
-    button.append(detail);
-    button.addEventListener("click", () => void openDocument(item.document_id));
-    list.append(button);
+    open.append(name, detail);
+    open.addEventListener("click", () => void openDocument(item.document_id));
+    const actions = document.createElement("div");
+    actions.className = "document-actions";
+    const favorite = document.createElement("button");
+    favorite.type = "button";
+    favorite.className = "document-action favorite-action" + (item.favorite ? " is-active" : "");
+    favorite.setAttribute("aria-label", item.favorite ? "取消收藏" : "收藏");
+    favorite.title = item.favorite ? "取消收藏" : "收藏";
+    favorite.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void setDocumentFavorite(item.document_id, !item.favorite);
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "document-action delete-action";
+    remove.setAttribute("aria-label", "删除文档");
+    remove.title = "删除文档";
+    remove.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openDeleteDialog(item.document_id, item.name);
+    });
+    actions.append(favorite, remove);
+    entry.append(open, actions);
+    list.append(entry);
+  }
+}
+
+async function setDocumentFavorite(documentId, favorite) {
+  try {
+    const updated = await api(`/api/documents/${documentId}/favorite`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ favorite }),
+    });
+    if (state.document?.document_id === documentId) {
+      state.document = updated;
+      syncFavoriteButton();
+    }
+    await refreshDocuments();
+  } catch (error) {
+    notify(error.message);
   }
 }
 
@@ -108,6 +173,7 @@ async function openDocument(documentId) {
     state.document = loaded;
     state.parse = null;
     state.translations = new Map();
+    state.sourceEdits = new Map();
     state.markdownCache.clear();
     state.selectedBlocks.clear();
     state.searchQuery = "";
@@ -115,13 +181,14 @@ async function openDocument(documentId) {
     state.questionContext = null;
     state.qaRecords = [];
     state.selectedQaId = null;
+    state.editingSourceBlockId = null;
     state.answerTaskId = null;
     state.answerAbortController?.abort();
     state.answerAbortController = null;
     $("#stop-answer-button").hidden = true;
     $("#stop-answer-button").disabled = false;
     $("#document-name").textContent = loaded.name;
-    $("#favorite-button").textContent = loaded.favorite ? "取消收藏" : "收藏";
+    syncFavoriteButton();
     for (const task of loaded.tasks || []) {
       state.tasks.set(task.task_id, task);
       watchTask(task);
@@ -148,13 +215,17 @@ async function openParse(parseId, documentGeneration = state.documentLoadGenerat
   const generation = ++state.parseLoadGeneration;
   const documentId = state.document.document_id;
   try {
-    const [parse, translations] = await Promise.all([
+    const [parse, translations, sourceEdits] = await Promise.all([
       api(`/api/documents/${documentId}/parses/${parseId}`),
       api(`/api/documents/${documentId}/translations?parse_id=${encodeURIComponent(parseId)}`),
+      api(`/api/documents/${documentId}/source-edits?parse_id=${encodeURIComponent(parseId)}`),
     ]);
     if (generation !== state.parseLoadGeneration || documentGeneration !== state.documentLoadGeneration) return;
     state.parse = parse;
     state.translations = new Map(translations.map((item) => [item.unit_id, item]));
+    state.sourceEdits = new Map(
+      sourceEdits.map((item) => [`${item.block_id}:${item.node_id}`, item]),
+    );
     state.selectedBlocks = new Set([...state.selectedBlocks].filter((id) =>
       parse.blocks.some((block) => block.block_id === id)
     ));
@@ -187,6 +258,44 @@ function renderVersionSelect(activeId = selectedParseId()) {
   select.disabled = !state.document?.parse_results?.length;
 }
 
+function renderModelSelect() {
+  const select = $("#model-select");
+  const previous = state.selectedModelId || select.value;
+  select.replaceChildren();
+  if (!state.models.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "未找到 MinerU 模型";
+    select.append(option);
+    select.disabled = true;
+    state.selectedModelId = null;
+    return;
+  }
+  const selected = state.models.find((item) => item.model_id === previous)
+    || state.models.find((item) => item.selected)
+    || state.models[0];
+  for (const model of state.models) {
+    const option = document.createElement("option");
+    option.value = model.model_id;
+    option.textContent = model.name;
+    option.title = "本地 MinerU VLM 模型";
+    option.selected = model.model_id === selected.model_id;
+    select.append(option);
+  }
+  state.selectedModelId = selected.model_id;
+  select.disabled = false;
+}
+
+function syncFavoriteButton() {
+  const button = $("#favorite-button");
+  const favorite = state.document?.favorite === true;
+  button.setAttribute("aria-label", favorite ? "取消收藏" : "收藏");
+  button.title = favorite ? "取消收藏" : "收藏";
+  button.classList.toggle("is-active", favorite);
+  const icon = button.querySelector("span");
+  if (icon) icon.textContent = favorite ? "★" : "☆";
+}
+
 function syncToolbar() {
   const hasDocument = Boolean(state.document);
   const hasParse = Boolean(state.parse);
@@ -199,6 +308,7 @@ function syncToolbar() {
   $("#export-button").disabled = !hasParse || state.busyButtons.has("export-button");
   $("#favorite-button").disabled = !hasDocument;
   $("#delete-button").disabled = !hasDocument;
+  $("#model-select").disabled = !state.models.length;
   const isXlsx = Boolean(state.document?.name?.toLowerCase().endsWith(".xlsx"));
   $("#office-options").hidden = !isXlsx || !officeEnabled;
   $("#office-sheet").disabled = !isXlsx || !officeEnabled;
@@ -210,15 +320,19 @@ async function withButtonBusy(buttonId, busyLabel, work) {
   if (state.busyButtons.has(buttonId)) return undefined;
   const button = $(`#${buttonId}`);
   if (!button) return undefined;
-  const idleLabel = button.textContent;
+  const idleLabel = button.getAttribute("aria-label") || button.title;
   state.busyButtons.add(buttonId);
-  button.textContent = busyLabel;
+  button.setAttribute("aria-label", busyLabel);
+  button.title = busyLabel;
+  button.setAttribute("aria-busy", "true");
   syncToolbar();
   try {
     return await work();
   } finally {
     state.busyButtons.delete(buttonId);
-    button.textContent = idleLabel;
+    button.setAttribute("aria-label", idleLabel);
+    button.title = idleLabel;
+    button.removeAttribute("aria-busy");
     syncToolbar();
   }
 }
@@ -226,6 +340,10 @@ async function withButtonBusy(buttonId, busyLabel, work) {
 function parseRequestBody(scope = null) {
   const source = scope || {};
   const body = {};
+  const modelId = typeof source.model_id === "string"
+    ? source.model_id
+    : (!scope ? $("#model-select").value : "");
+  if (modelId) body.model_id = modelId;
   if (source.options && typeof source.options === "object") {
     body.options = source.options;
   }
@@ -371,7 +489,24 @@ function message(text) {
 }
 
 function blockSourceText(block) {
-  return block.source_text || (block.source_nodes || []).map(nodeText).join("");
+  return (block.source_nodes || []).map((node) => sourceNodeText(block, node)).join("");
+}
+
+function sourceEditKey(blockId, nodeId) {
+  return `${blockId}:${nodeId}`;
+}
+
+function sourceNodeText(block, node) {
+  return state.sourceEdits.get(sourceEditKey(block.block_id, node.node_id))?.effective_text
+    ?? nodeText(node);
+}
+
+function isEditableSourceNode(node) {
+  return ["text", "math", "code", "link", "reference", "image"].includes(node.type);
+}
+
+function editableSourceNodes(block) {
+  return (block.source_nodes || []).filter(isEditableSourceNode);
 }
 
 function blockTranslationText(block) {
@@ -420,6 +555,7 @@ async function renderRawMarkdown(content, parseId) {
 function renderResult() {
   const content = $("#result-content");
   content.replaceChildren();
+  content.classList.toggle("has-selection", state.selectedBlocks.size > 0);
   syncResultTabs();
   $("#selection-count").textContent = state.selectedBlocks.size
     ? `已选 ${state.selectedBlocks.size} 块`
@@ -478,6 +614,8 @@ function renderResult() {
     const title = document.createElement("h3");
     title.textContent = `${block.block_id} · ${block.block_type || "block"}`;
     heading.append(checkbox, title);
+    const edit = createSourceEditButton(block);
+    if (edit) heading.append(edit);
     wrapper.append(heading);
     if (block.block_type === "table" && block.table) {
       appendTable(wrapper, block, blockById);
@@ -487,6 +625,7 @@ function renderResult() {
       appendBlockContent(rendered, block, state.view);
       wrapper.append(rendered);
     }
+    if (state.editingSourceBlockId === block.block_id) addSourceEditor(wrapper, block);
     bindResultBlock(wrapper, block.block_id);
     content.append(wrapper);
   }
@@ -500,31 +639,32 @@ function setResultView(view) {
 }
 
 function nodeText(node) {
-  return node.text || node.label || node.alt || node.latex || node.code || "";
+  return node.text ?? node.label ?? node.alt ?? node.latex ?? node.code ?? "";
 }
 
 function appendInlineNodes(container, block, language) {
   for (const node of block.source_nodes || []) {
     const unit = state.translations.get(`${block.block_id}:${node.node_id}`);
     const translated = language === "chinese" ? unit?.effective_text : null;
+    const sourceText = sourceNodeText(block, node);
     if (node.type === "text") {
       const text = document.createElement("span");
-      text.textContent = translated ?? node.text ?? "";
+      text.textContent = translated ?? sourceText;
       container.append(text);
     } else if (node.type === "math") {
       const math = document.createElement("span");
       math.className = "math-node";
       math.setAttribute("aria-label", "数学公式");
-      math.textContent = `\\(${node.latex || ""}\\)`;
+      math.textContent = `\\(${translated ?? sourceText}\\)`;
       container.append(math);
     } else if (node.type === "code") {
       const code = document.createElement("code");
       code.className = "inline-code";
-      code.textContent = node.code || "";
+      code.textContent = translated ?? sourceText;
       container.append(code);
     } else if (node.type === "link") {
       const link = document.createElement("a");
-      link.textContent = translated ?? node.label ?? "";
+      link.textContent = translated ?? sourceText;
       const href = safeHref(node.target);
       if (href) link.href = href;
       else link.title = "已隐藏不安全链接";
@@ -533,7 +673,7 @@ function appendInlineNodes(container, block, language) {
       const reference = document.createElement("button");
       reference.type = "button";
       reference.className = "inline-reference";
-      reference.textContent = translated ?? node.label ?? "";
+      reference.textContent = translated ?? sourceText;
       reference.addEventListener("click", (event) => {
         event.stopPropagation();
         const target = node.target?.block_id;
@@ -546,7 +686,7 @@ function appendInlineNodes(container, block, language) {
       const image = document.createElement("img");
       image.className = "inline-image";
       image.loading = "lazy";
-      image.alt = translated ?? node.alt ?? "";
+      image.alt = translated ?? sourceText;
       if (state.document?.document_id && state.parse?.parse_run_id && node.asset_id) {
         image.src = `/api/documents/${encodeURIComponent(state.document.document_id)}/files/asset:${encodeURIComponent(state.parse.parse_run_id)}:${encodeURIComponent(node.asset_id)}`;
       }
@@ -602,6 +742,9 @@ function appendTable(container, block, blockById) {
     element.colSpan = cell.column_span;
     appendBlockContent(element, child, state.view);
     if (state.view === "zh") addEditor(element, child);
+    const edit = createSourceEditButton(child);
+    if (edit) element.prepend(edit);
+    if (state.editingSourceBlockId === child.block_id) addSourceEditor(element, child);
     bindResultBlock(element, child.block_id);
     row.append(element);
   }
@@ -631,6 +774,95 @@ function blockUnits(block) {
   return (block.source_nodes || [])
     .map((node) => state.translations.get(`${block.block_id}:${node.node_id}`))
     .filter(Boolean);
+}
+
+function createSourceEditButton(block) {
+  if (!editableSourceNodes(block).length) return null;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "icon-button block-edit-button";
+  button.setAttribute("aria-label", `编辑原文 ${block.block_id}`);
+  button.title = "编辑原文";
+  button.innerHTML = '<span aria-hidden="true">✎</span>';
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    state.editingSourceBlockId = state.editingSourceBlockId === block.block_id
+      ? null
+      : block.block_id;
+    renderResult();
+  });
+  return button;
+}
+
+function addSourceEditor(wrapper, block) {
+  const editor = document.createElement("div");
+  editor.className = "source-editor";
+  for (const node of editableSourceNodes(block)) {
+    const field = document.createElement("label");
+    field.className = "source-editor-field";
+    const label = document.createElement("span");
+    label.textContent = node.node_id;
+    const textarea = document.createElement("textarea");
+    textarea.value = sourceNodeText(block, node);
+    textarea.dataset.nodeId = node.node_id;
+    textarea.setAttribute("aria-label", `原文 ${node.node_id}`);
+    field.append(label, textarea);
+    editor.append(field);
+  }
+  const actions = document.createElement("div");
+  actions.className = "source-editor-actions";
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "primary-button";
+  save.textContent = "保存原文";
+  save.addEventListener("click", () => void saveSourceEditor(editor, block));
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "secondary-button";
+  cancel.textContent = "取消";
+  cancel.addEventListener("click", (event) => {
+    event.stopPropagation();
+    state.editingSourceBlockId = null;
+    renderResult();
+  });
+  actions.append(save, cancel);
+  editor.append(actions);
+  wrapper.append(editor);
+}
+
+async function saveSourceEditor(editor, block) {
+  if (!state.document || !state.parse) return;
+  const parseId = state.parse.parse_run_id;
+  try {
+    for (const textarea of editor.querySelectorAll("textarea[data-node-id]")) {
+      const nodeId = textarea.dataset.nodeId;
+      if (!nodeId) continue;
+      const current = state.sourceEdits.get(sourceEditKey(block.block_id, nodeId));
+      const original = (block.source_nodes || []).find((node) => node.node_id === nodeId);
+      const previousText = current?.effective_text ?? (original ? nodeText(original) : "");
+      if (textarea.value === previousText) continue;
+      const updated = await api(
+        `/api/documents/${state.document.document_id}/source-edits`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            parse_id: parseId,
+            block_id: block.block_id,
+            node_id: nodeId,
+            expected_revision: current?.revision ?? 0,
+            text: textarea.value,
+          }),
+        },
+      );
+      state.sourceEdits.set(sourceEditKey(block.block_id, nodeId), updated);
+    }
+    state.editingSourceBlockId = null;
+    await openParse(parseId);
+    notify("原文已保存");
+  } catch (error) {
+    notify(error.message);
+  }
 }
 
 function addEditor(wrapper, block) {
@@ -830,6 +1062,19 @@ async function runTask(path, body, successMessage) {
 }
 
 async function waitTask(taskId) {
+  const existing = state.taskPollers.get(taskId);
+  if (existing) return existing;
+  const polling = pollTask(taskId);
+  state.taskPollers.set(taskId, polling);
+  polling.then(
+    () => state.taskPollers.delete(taskId),
+    () => state.taskPollers.delete(taskId),
+  );
+  return polling;
+}
+
+async function pollTask(taskId) {
+  let delay = 650;
   while (true) {
     let task;
     try {
@@ -851,7 +1096,8 @@ async function waitTask(taskId) {
     state.tasks.set(taskId, task);
     renderTasks();
     if (terminalStatuses.has(task.status)) return task;
-    await new Promise((resolve) => window.setTimeout(resolve, 500));
+    await new Promise((resolve) => window.setTimeout(resolve, delay));
+    delay = task.status === "running" ? 1100 : 800;
   }
 }
 
@@ -951,7 +1197,9 @@ function renderTasks() {
     if (task.status === "failed" && task.failure?.retryable) {
       const retry = document.createElement("button");
       retry.type = "button";
-      retry.textContent = "重试";
+      retry.className = "task-action retry-action";
+      retry.setAttribute("aria-label", "重试任务");
+      retry.title = "重试任务";
       retry.disabled = state.retryingTasks.has(task.task_id);
       retry.addEventListener("click", () => void retryTask(task));
       item.append(retry);
@@ -959,19 +1207,83 @@ function renderTasks() {
     if (task.status === "queued" || task.status === "running") {
       const cancel = document.createElement("button");
       cancel.type = "button";
-      cancel.textContent = "取消";
-      cancel.addEventListener("click", async () => {
-        try {
-          const updated = await api(`/api/tasks/${task.task_id}/cancel`, { method: "POST" });
-          state.tasks.set(task.task_id, updated);
-          renderTasks();
-        } catch (error) {
-          notify(error.message);
-        }
-      });
+      cancel.className = "task-action cancel-action";
+      cancel.setAttribute("aria-label", "取消任务");
+      cancel.title = "取消任务";
+      cancel.addEventListener("click", () => void cancelTask(task.task_id));
       item.append(cancel);
     }
     list.append(item);
+  }
+  renderParseProgress();
+}
+
+async function cancelTask(taskId) {
+  try {
+    const updated = await api(`/api/tasks/${taskId}/cancel`, { method: "POST" });
+    state.tasks.set(taskId, updated);
+    renderTasks();
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+function parseTaskForCurrentDocument() {
+  const documentId = state.document?.document_id;
+  if (!documentId) return null;
+  return [...state.tasks.values()]
+    .filter((task) => task.document_id === documentId && task.kind === "parse")
+    .sort((left, right) => new Date(right.created_at || 0) - new Date(left.created_at || 0))[0] || null;
+}
+
+function elapsedText(task) {
+  const start = Date.parse(task.created_at || "");
+  const end = task.finished_at ? Date.parse(task.finished_at) : Date.now();
+  const seconds = Math.max(0, Math.floor((end - start) / 1000));
+  if (seconds < 60) return `已用时 ${seconds} 秒`;
+  return `已用时 ${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+}
+
+function renderParseProgress() {
+  const panel = $("#parse-progress");
+  const task = parseTaskForCurrentDocument();
+  const visible = Boolean(task && (task.status === "queued" || task.status === "running" || task.status === "failed" || task.status === "cancelled"));
+  panel.hidden = !visible;
+  if (!visible) {
+    if (state.parseProgressTimer !== null) {
+      window.clearInterval(state.parseProgressTimer);
+      state.parseProgressTimer = null;
+    }
+    return;
+  }
+  const running = task.status === "queued" || task.status === "running";
+  const knownProgress = typeof task.progress === "number";
+  const indeterminate = running && (
+    !knownProgress || /MinerU/i.test(task.message || "")
+  );
+  const percent = knownProgress ? Math.round(task.progress * 100) : null;
+  $("#parse-progress-title").textContent = task.status === "queued"
+    ? "等待解析"
+    : task.status === "failed"
+      ? "解析失败"
+      : task.status === "cancelled"
+        ? "解析已取消"
+        : "正在解析";
+  $("#parse-progress-message").textContent = task.message || "处理中";
+  $("#parse-progress-percent").textContent = percent === null ? "处理中" : `${percent}%`;
+  const bar = $("#parse-progress-bar");
+  bar.style.width = `${percent ?? 6}%`;
+  bar.classList.toggle("is-indeterminate", indeterminate);
+  $("#parse-progress-elapsed").textContent = elapsedText(task);
+  const cancel = $("#parse-progress-cancel");
+  cancel.hidden = !running;
+  cancel.disabled = task.cancel_requested === true;
+  if (running && state.parseProgressTimer === null) {
+    state.parseProgressTimer = window.setInterval(renderParseProgress, 1000);
+  }
+  if (!running && state.parseProgressTimer !== null) {
+    window.clearInterval(state.parseProgressTimer);
+    state.parseProgressTimer = null;
   }
 }
 
@@ -1057,8 +1369,16 @@ $("#next-page").addEventListener("click", () => {
 });
 
 $("#zoom-select").addEventListener("change", (event) => pdfReader.setScale(event.target.value));
+$("#reset-zoom").addEventListener("click", () => pdfReader.resetScale());
 $("#fit-width").addEventListener("click", () => pdfReader.fitWidth());
 $("#rotate-page").addEventListener("click", () => pdfReader.rotate());
+$("#model-select").addEventListener("change", (event) => {
+  state.selectedModelId = event.target.value || null;
+});
+$("#parse-progress-cancel").addEventListener("click", () => {
+  const task = parseTaskForCurrentDocument();
+  if (task) void cancelTask(task.task_id);
+});
 
 $("#parse-button").addEventListener("click", async () => {
   if (!state.document || $("#parse-button").disabled) return;
@@ -1083,14 +1403,7 @@ $("#favorite-button").addEventListener("click", async () => {
   if (!state.document || $("#favorite-button").disabled) return;
   $("#favorite-button").disabled = true;
   try {
-    const updated = await api(`/api/documents/${state.document.document_id}/favorite`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ favorite: !state.document.favorite }),
-    });
-    state.document = updated;
-    $("#favorite-button").textContent = updated.favorite ? "取消收藏" : "收藏";
-    await refreshDocuments();
+    await setDocumentFavorite(state.document.document_id, !state.document.favorite);
   } catch (error) {
     notify(error.message);
   } finally {
@@ -1099,37 +1412,71 @@ $("#favorite-button").addEventListener("click", async () => {
 });
 
 $("#delete-button").addEventListener("click", async () => {
-  if (!state.document || !window.confirm("确定删除“" + state.document.name + "”吗？")) return;
-  $("#delete-button").disabled = true;
-  const documentId = state.document.document_id;
+  if (!state.document) return;
+  openDeleteDialog(state.document.document_id, state.document.name);
+});
+
+function openDeleteDialog(documentId, name) {
+  state.pendingDeleteDocumentId = documentId;
+  $("#delete-confirm-message").textContent = `确定删除“${name}”吗？此操作会移除该文档的解析版本。`;
+  $("#document-delete-dialog").showModal();
+}
+
+async function deletePendingDocument() {
+  const documentId = state.pendingDeleteDocumentId;
+  if (!documentId) return;
+  $("#confirm-delete-button").disabled = true;
   try {
     state.answerAbortController?.abort();
     await api(`/api/documents/${documentId}`, { method: "DELETE" });
-    state.document = null;
-    state.parse = null;
-    state.translations = new Map();
-    state.selectedBlocks.clear();
-    state.evidenceBlock = null;
-    state.questionContext = null;
-    state.answerTaskId = null;
-    state.answerAbortController?.abort();
-    state.answerAbortController = null;
-    $("#stop-answer-button").hidden = true;
-    $("#stop-answer-button").disabled = false;
-    pdfReader.destroy();
-    $("#document-name").textContent = "选择一个文档";
-    $("#document-status").textContent = "上传后开始解析";
-    $("#page-count").textContent = "0 / 0";
-    renderVersionSelect();
-    renderResult();
-    syncToolbar();
+    if (state.document?.document_id === documentId) clearCurrentDocument();
+    $("#document-delete-dialog").close();
     await refreshDocuments();
     notify("文档已删除");
   } catch (error) {
     notify(error.message);
   } finally {
+    $("#confirm-delete-button").disabled = false;
+    state.pendingDeleteDocumentId = null;
     syncToolbar();
   }
+}
+
+function clearCurrentDocument() {
+  state.document = null;
+  state.parse = null;
+  state.translations = new Map();
+  state.sourceEdits = new Map();
+  state.selectedBlocks.clear();
+  state.evidenceBlock = null;
+  state.questionContext = null;
+  state.editingSourceBlockId = null;
+  state.answerTaskId = null;
+  state.answerAbortController?.abort();
+  state.answerAbortController = null;
+  $("#stop-answer-button").hidden = true;
+  $("#stop-answer-button").disabled = false;
+  pdfReader.destroy();
+  $("#document-name").textContent = "选择一个文档";
+  $("#document-status").textContent = "上传后开始解析";
+  $("#page-count").textContent = "0 / 0";
+  renderVersionSelect();
+  renderResult();
+  syncFavoriteButton();
+  syncToolbar();
+}
+
+$("#document-delete-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  void deletePendingDocument();
+});
+$("#cancel-delete-button").addEventListener("click", () => {
+  state.pendingDeleteDocumentId = null;
+  $("#document-delete-dialog").close();
+});
+$("#close-delete-button").addEventListener("click", () => {
+  state.pendingDeleteDocumentId = null;
+  $("#document-delete-dialog").close();
 });
 
 $("#translate-button").addEventListener("click", async () => {
@@ -1287,4 +1634,4 @@ for (const tab of document.querySelectorAll(".result-tab")) {
   tab.addEventListener("click", () => setResultView(tab.dataset.view));
 }
 
-void Promise.all([refreshHealth(), refreshDocuments()]).catch((error) => notify(error.message));
+void Promise.all([refreshHealth(), refreshModels(), refreshDocuments()]).catch((error) => notify(error.message));
