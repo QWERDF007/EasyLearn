@@ -6,45 +6,44 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 
 class JobKind(StrEnum):
-    PREVIEW = "PREVIEW"
-    PARSE = "PARSE"
-
-    @property
-    def queue_name(self) -> str:
-        return self.value.lower()
+    PARSE = "parse"
+    TRANSLATE = "translate"
+    EXPORT = "export"
+    QA = "qa"
 
 
 class JobStatus(StrEnum):
-    QUEUED = "QUEUED"
-    RUNNING = "RUNNING"
-    SUCCEEDED = "SUCCEEDED"
-    FAILED = "FAILED"
-    CANCEL_REQUESTED = "CANCEL_REQUESTED"
-    CANCELLED = "CANCELLED"
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
-
-class RunRef(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    document_id: UUID
-    run_id: UUID
-    kind: JobKind
+    @property
+    def terminal(self) -> bool:
+        return self in (self.SUCCEEDED, self.FAILED, self.CANCELLED)
 
 
 class JobFailure(BaseModel):
     code: str
     message: str
-    retryable: bool
+    retryable: bool = False
 
 
-class JobView(BaseModel):
-    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+class TaskView(BaseModel):
+    model_config = ConfigDict(frozen=True)
 
-    job_id: UUID = Field(validation_alias="id")
-    run_ref: RunRef
+    task_id: UUID
+    server_boot_id: UUID
+    document_id: UUID
+    kind: JobKind
+    scope: dict[str, JsonValue]
     status: JobStatus
-    generation: int
-    stage: str
-    checkpoint: dict[str, JsonValue]
+    progress: float | None = Field(default=None, ge=0, le=1)
+    message: str = ""
+    cancel_requested: bool = False
     created_at: datetime
-    failure: JobFailure | None
+    finished_at: datetime | None = None
+    result_ref: dict[str, JsonValue] | None = None
+    failure: JobFailure | None = None
+    answer: str | None = None

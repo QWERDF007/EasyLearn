@@ -1,40 +1,39 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
-from easylearn.document_ir.schema import PageGeometry, Sha256
-from easylearn.previews.schema import PreviewStatus
-
-
-class DocumentRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    upload_id: UUID
-    client_id: UUID | None = None
+from easylearn.jobs.schema import TaskView
 
 
-class DocumentAccepted(BaseModel):
-    document_id: UUID
-    preview_run_id: UUID
-    job_id: UUID
-    status_url: str
-
-
-class PreviewView(BaseModel):
-    preview_run_id: UUID
-    job_id: UUID
-    status: PreviewStatus
-    preview_asset_id: UUID | None = None
-    preview_sha256: Sha256 | None = None
-    pages: tuple[PageGeometry, ...] = ()
+class ParseResultView(BaseModel):
+    parse_id: UUID
+    created_at: datetime
+    pages: int = Field(gt=0)
+    preview_file_id: str
+    ir_file_id: str
+    raw_file_id: str | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
 
 
 class DocumentView(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     document_id: UUID
-    original_asset_id: UUID
-    filename: str
-    client_id: UUID | None
-    active_parse_run_id: UUID | None = None
+    name: str
+    favorite: bool
     created_at: datetime
-    preview_runs: list[PreviewView]
+    active_parse_id: UUID | None = None
+    original_file_id: str = "original"
+    parse_results: tuple[ParseResultView, ...] = ()
+    tasks: tuple[TaskView, ...] = ()
+
+
+class DocumentListView(BaseModel):
+    documents: tuple[DocumentView, ...]
+
+
+class FavoriteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    favorite: bool

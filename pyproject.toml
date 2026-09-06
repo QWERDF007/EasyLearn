@@ -5,21 +5,16 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "easylearn"
 version = "0.1.0"
-description = "Versioned document parsing, translation and evidence workspace"
+description = "A lightweight local document parsing, translation and reading workspace"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "fastapi==0.141.1",
   "pydantic==2.13.5",
-  "pydantic-settings==2.15.0",
-  "PyYAML==6.0.3",
   "uvicorn==0.52.4",
   "httpx==0.28.1",
-  "sqlalchemy==2.0.52",
-  "alembic==1.19.2",
-  "psycopg[binary]==3.3.5",
-  "asyncpg==0.31.0",
-  "redis==7.4.1",
-  "dramatiq==2.2.0",
+  "aiosqlite==0.22.1",
+  "filelock==3.20.3",
+  "jinja2==3.1.6",
   "python-multipart==0.0.32",
   "pypdfium2==5.10.1",
   "pypdf==6.16.2",
