@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ title }}</title>
+    <link rel="stylesheet" href="/static/katex/katex.min.css">
     <link rel="stylesheet" href="/static/app.css">
   </head>
   <body>
@@ -16,13 +17,21 @@
         <div class="sidebar-top-actions">
           <form id="upload-form" class="upload-form">
             <label id="upload-button" class="sidebar-btn sidebar-btn-primary" for="file-input">
-              <span aria-hidden="true">＋</span>
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="8" y1="3" x2="8" y2="13"/>
+                <line x1="3" y1="8" x2="13" y2="8"/>
+              </svg>
               <span>新解析</span>
               <input id="file-input" type="file" accept=".pdf,.png,.jpg,.jpeg,.jp2,.webp,.gif,.bmp,.tif,.tiff,.docx,.pptx,.xlsx" required>
             </label>
           </form>
           <button id="settings-button" class="sidebar-btn sidebar-btn-secondary" type="button" title="系统设置" aria-label="系统设置" aria-expanded="false" aria-controls="settings-panel">
-            <span aria-hidden="true">⚙</span>
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M2 3.5H4.5M6.5 3.5H14M2 8H9.5M11.5 8H14M2 12.5H4.5M6.5 12.5H14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <circle cx="5.5" cy="3.5" r="1.5" stroke="currentColor" stroke-width="1.5"/>
+              <circle cx="10.5" cy="8" r="1.5" stroke="currentColor" stroke-width="1.5"/>
+              <circle cx="5.5" cy="12.5" r="1.5" stroke="currentColor" stroke-width="1.5"/>
+            </svg>
             <span>系统设置</span>
           </button>
         </div>
@@ -35,12 +44,9 @@
       <section class="reader-column">
         <header class="topbar">
           <div class="header-row-top">
-            <span class="source-file-badge">源文件</span>
-          </div>
-          <div class="header-row-bottom">
             <div class="source-file-info">
               <span class="file-icon-pdf" aria-hidden="true">
-                <svg width="18" height="20" viewBox="0 0 18 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <svg width="16" height="18" viewBox="0 0 18 20" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <path d="M11 0H2C0.9 0 0 0.9 0 2V18C0 19.1 0.9 20 2 20H16C17.1 20 18 19.1 18 18V7L11 0Z" fill="#E2E8F0"/>
                   <path d="M11 0V7H18L11 0Z" fill="#CBD5E1"/>
                   <rect x="2" y="7" width="14" height="9" rx="2" fill="#EF4444"/>
@@ -50,6 +56,48 @@
               <h1 id="document-name" class="source-file-name">选择一个文档</h1>
               <span id="document-size" class="source-file-size muted"></span>
               <span id="document-status" class="sr-only">上传后开始解析</span>
+            </div>
+          </div>
+          <div class="header-row-bottom">
+            <div class="reader-tabs">
+              <span class="tab reader-tab is-active">原文件</span>
+            </div>
+            <div id="pdf-toolbar" class="pdf-toolbar" aria-label="PDF 阅读控制" hidden>
+              <button id="prev-page" class="icon-button toolbar-icon-btn" type="button" aria-label="上一页" title="上一页" disabled>
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="10 3 5 8 10 13"/></svg>
+              </button>
+              <span id="page-count" class="page-count" aria-live="polite">
+                <span class="page-current-box"><span id="page-current">1</span></span>
+                <span class="page-separator">/</span>
+                <span id="page-total">1</span>
+              </span>
+              <button id="next-page" class="icon-button toolbar-icon-btn" type="button" aria-label="下一页" title="下一页" disabled>
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 3 11 8 6 13"/></svg>
+              </button>
+              <span class="toolbar-space" aria-hidden="true"></span>
+              <button id="zoom-out" class="icon-button toolbar-icon-btn" type="button" aria-label="缩小" title="缩小" disabled>
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="6.5" cy="6.5" r="4.5"/>
+                  <line x1="10" y1="10" x2="14.5" y2="14.5"/>
+                  <line x1="4.5" y1="6.5" x2="8.5" y2="6.5"/>
+                </svg>
+              </button>
+              <span id="zoom-value" class="zoom-value">100%</span>
+              <button id="zoom-in" class="icon-button toolbar-icon-btn" type="button" aria-label="放大" title="放大" disabled>
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="6.5" cy="6.5" r="4.5"/>
+                  <line x1="10" y1="10" x2="14.5" y2="14.5"/>
+                  <line x1="4.5" y1="6.5" x2="8.5" y2="6.5"/>
+                  <line x1="6.5" y1="4.5" x2="6.5" y2="8.5"/>
+                </svg>
+              </button>
+              <span class="toolbar-divider" aria-hidden="true"></span>
+              <button id="reset-zoom" class="icon-button toolbar-icon-btn" type="button" aria-label="重置缩放" title="重置缩放" disabled>
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M13.5 8C13.5 11.0376 11.0376 13.5 8 13.5C4.96243 13.5 2.5 11.0376 2.5 8C2.5 4.96243 4.96243 2.5 8 2.5C10.15 2.5 12.02 3.73 12.94 5.5"/>
+                  <path d="M13.5 2.5V5.5H10.5"/>
+                </svg>
+              </button>
             </div>
           </div>
         </header>
@@ -77,26 +125,6 @@
         </div>
         <div id="pdf-viewer" class="pdf-viewer" aria-label="PDF 原文" tabindex="0" hidden>
           <div id="pdf-pages" class="pdf-pages"></div>
-          <div id="pdf-toolbar" class="pdf-toolbar" aria-label="PDF 阅读控制">
-            <button id="prev-page" class="icon-button reader-icon" type="button" aria-label="上一页" title="上一页" disabled><span aria-hidden="true">‹</span></button>
-            <span id="page-count" class="page-count" aria-live="polite">0 / 0</span>
-            <button id="next-page" class="icon-button reader-icon" type="button" aria-label="下一页" title="下一页" disabled><span aria-hidden="true">›</span></button>
-            <span class="toolbar-divider" aria-hidden="true"></span>
-            <label class="zoom-control" title="缩放比例">
-              <span class="sr-only">缩放比例</span>
-              <select id="zoom-select" aria-label="缩放比例" disabled>
-                <option value="0.5">50%</option>
-                <option value="0.75">75%</option>
-                <option value="1" selected>100%</option>
-                <option value="1.5">150%</option>
-                <option value="2">200%</option>
-                <option value="">自定义</option>
-              </select>
-            </label>
-            <button id="reset-zoom" class="icon-button reader-icon" type="button" aria-label="重置缩放" title="重置缩放" disabled><span aria-hidden="true">1:1</span></button>
-            <button id="fit-width" class="icon-button reader-icon" type="button" aria-label="适应宽度" title="适应宽度" disabled><span aria-hidden="true">↔</span></button>
-            <button id="rotate-page" class="icon-button reader-icon" type="button" aria-label="旋转页面" title="旋转页面" disabled><span aria-hidden="true">⟳</span></button>
-          </div>
         </div>
       </section>
 
@@ -114,13 +142,49 @@
           </div>
           <div class="header-row-bottom">
             <div class="tabs" role="tablist" aria-label="结果视图">
-              <button class="tab result-tab is-active" data-view="zh" type="button">中文 Markdown</button>
-              <button class="tab result-tab" data-view="source" type="button">原文 Markdown</button>
+              <button class="tab result-tab" data-view="zh" type="button" disabled title="尚未生成中文翻译">中文 Markdown</button>
+              <button class="tab result-tab is-active" data-view="source" type="button">原文 Markdown</button>
               <button class="tab result-tab" data-view="json" type="button">JSON</button>
             </div>
             <div class="result-actions">
-              <button id="reparse-button" class="icon-button toolbar-icon" type="button" title="重新解析" aria-label="重新解析" disabled><span aria-hidden="true">↻</span></button>
-              <button id="download-button" class="icon-button toolbar-icon" type="button" title="下载解析结果" aria-label="下载解析结果" disabled><span aria-hidden="true">⇩</span></button>
+              <button id="qa-button" class="icon-button action-icon-btn" type="button" data-tooltip="AI 解读" aria-label="AI 解读" disabled>
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                  <path d="M8 1L9.6 5.4L14 7L9.6 8.6L8 13L6.4 8.6L2 7L6.4 5.4L8 1Z" fill="currentColor"/>
+                  <path d="M12.5 2.5L13.2 4.3L15 5L13.2 5.7L12.5 7.5L11.8 5.7L10 5L11.8 4.3L12.5 2.5Z" fill="currentColor"/>
+                </svg>
+              </button>
+              <button id="translate-button" class="icon-button action-icon-btn" type="button" data-tooltip="翻译全文" aria-label="翻译全文" disabled>
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M2.5 3.5H9.5M6 1.5V3.5M7.5 3.5C7 6.5 5 9 2 10.5M4 6.5C5.5 8 7 9.5 9 10.5"/>
+                  <path d="M9.5 14.5L12 7.5L14.5 14.5M10.2 12.5H13.8"/>
+                </svg>
+              </button>
+              <button id="toolbar-settings-button" class="icon-button action-icon-btn" type="button" data-tooltip="设置" aria-label="设置">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                  <path d="M2 3.5H4.5M6.5 3.5H14M2 8H9.5M11.5 8H14M2 12.5H4.5M6.5 12.5H14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                  <circle cx="5.5" cy="3.5" r="1.5" stroke="currentColor" stroke-width="1.5"/>
+                  <circle cx="10.5" cy="8" r="1.5" stroke="currentColor" stroke-width="1.5"/>
+                  <circle cx="5.5" cy="12.5" r="1.5" stroke="currentColor" stroke-width="1.5"/>
+                </svg>
+              </button>
+              <button id="reparse-button" class="icon-button action-icon-btn" type="button" data-tooltip="重新解析" aria-label="重新解析" disabled>
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                  <path d="M13.5 8C13.5 11.0376 11.0376 13.5 8 13.5C4.96243 13.5 2.5 11.0376 2.5 8C2.5 4.96243 4.96243 2.5 8 2.5C10.15 2.5 12.02 3.73 12.94 5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                  <path d="M13.5 2.5V5.5H10.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+              <button id="copy-button" class="icon-button action-icon-btn" type="button" data-tooltip="复制" aria-label="复制" disabled>
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                  <rect x="2.5" y="4.5" width="8" height="9" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+                  <path d="M5.5 2.5H12C12.8284 2.5 13.5 3.17157 13.5 4V10.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+              </button>
+              <button id="download-button" class="icon-button action-icon-btn" type="button" data-tooltip="下载" aria-label="下载" disabled>
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                  <path d="M8 2.5V10.5M8 10.5L5 7.5M8 10.5L11 7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M2.5 11.5V12.5C2.5 13.0523 2.94772 13.5 3.5 13.5H12.5C13.0523 13.5 13.5 13.0523 13.5 12.5V11.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+              </button>
             </div>
           </div>
           <div id="result-search" class="result-search" hidden>
@@ -134,68 +198,209 @@
       </section>
     </main>
 
-    <div id="settings-panel" class="settings-modal" hidden>
-      <div class="settings-modal-backdrop" id="settings-backdrop"></div>
-      <div class="settings-modal-card">
-        <div class="settings-modal-header">
-          <h2>系统设置</h2>
-          <button id="close-settings-button" type="button" class="icon-button" aria-label="关闭" title="关闭"><span aria-hidden="true">×</span></button>
-        </div>
-        <div class="settings-modal-body">
-          <div class="settings-field">
-            <label class="settings-switch" title="解析完成后自动翻译">
-              <span>解析后自动翻译</span>
-              <span id="auto-translate-option" class="switch-control">
-                <input id="auto-translate" type="checkbox">
-                <span aria-hidden="true"></span>
-              </span>
-            </label>
+    <div id="settings-panel" class="settings-drawer-wrapper" hidden>
+      <div class="settings-drawer-backdrop" id="settings-backdrop"></div>
+      <aside class="settings-drawer" role="dialog" aria-modal="true" aria-label="解析与系统设置">
+        <div class="settings-drawer-header">
+          <div class="settings-drawer-title-group">
+            <h2 id="settings-drawer-heading">EasyLearn 解析配置</h2>
+            <span class="settings-drawer-sub">设置变化将自动同步并作用于解析任务</span>
           </div>
-          <div class="settings-field" id="version-setting-field">
-            <label class="select-control version-control">
-              <span>解析版本</span>
-              <select id="version-select" aria-label="解析版本" disabled></select>
-            </label>
-          </div>
-          <details id="office-options" class="office-options" hidden>
-            <summary title="Office 预览选项">Office 预览选项</summary>
-            <label>工作表 <input id="office-sheet" maxlength="255" placeholder="当前工作表"></label>
-            <label>打印范围 <input id="office-print-range" maxlength="100" placeholder="A1:D20"></label>
-          </details>
+          <button id="close-settings-button" type="button" class="icon-button settings-close-btn" aria-label="关闭设置" title="关闭设置"><span aria-hidden="true">×</span></button>
         </div>
-      </div>
+
+        <div class="settings-drawer-tabs" role="tablist">
+          <button id="tab-btn-settings" class="settings-tab-btn is-active" type="button" data-tab="settings">设置</button>
+          <button id="tab-btn-api" class="settings-tab-btn" type="button" data-tab="api">API / 模型</button>
+        </div>
+
+        <div class="settings-drawer-body">
+          <div id="pane-settings" class="settings-pane">
+            <div class="settings-section">
+              <h3 class="settings-section-title">流程与自动化</h3>
+              <div class="settings-field">
+                <label class="settings-switch" title="解析完成后自动翻译">
+                  <span>解析后自动翻译</span>
+                  <span id="auto-translate-option" class="switch-control">
+                    <input id="auto-translate" type="checkbox">
+                    <span aria-hidden="true"></span>
+                  </span>
+                </label>
+              </div>
+              <div class="settings-field" id="version-setting-field">
+                <label class="select-control version-control">
+                  <span>解析版本</span>
+                  <select id="version-select" aria-label="解析版本" disabled></select>
+                </label>
+              </div>
+            </div>
+
+            <div class="settings-section">
+              <h3 class="settings-section-title">辅助内容解析</h3>
+              <p class="settings-section-tip">模型自动识别并过滤辅助内容，开启后将恢复解析</p>
+              <div class="settings-switch-grid">
+                <label class="settings-switch">
+                  <span>页眉</span>
+                  <span class="switch-control"><input type="checkbox" id="cfg-header" checked><span aria-hidden="true"></span></span>
+                </label>
+                <label class="settings-switch">
+                  <span>页眉图片</span>
+                  <span class="switch-control"><input type="checkbox" id="cfg-header-img"><span aria-hidden="true"></span></span>
+                </label>
+                <label class="settings-switch">
+                  <span>页脚</span>
+                  <span class="switch-control"><input type="checkbox" id="cfg-footer" checked><span aria-hidden="true"></span></span>
+                </label>
+                <label class="settings-switch">
+                  <span>页脚图片</span>
+                  <span class="switch-control"><input type="checkbox" id="cfg-footer-img"><span aria-hidden="true"></span></span>
+                </label>
+                <label class="settings-switch">
+                  <span>页码</span>
+                  <span class="switch-control"><input type="checkbox" id="cfg-page-no" checked><span aria-hidden="true"></span></span>
+                </label>
+                <label class="settings-switch">
+                  <span>脚注</span>
+                  <span class="switch-control"><input type="checkbox" id="cfg-footnote" checked><span aria-hidden="true"></span></span>
+                </label>
+                <label class="settings-switch">
+                  <span>旁注文本</span>
+                  <span class="switch-control"><input type="checkbox" id="cfg-sidenote"><span aria-hidden="true"></span></span>
+                </label>
+              </div>
+            </div>
+
+            <div class="settings-section">
+              <h3 class="settings-section-title">模型参数设置</h3>
+              <div class="settings-switch-grid">
+                <label class="settings-switch">
+                  <span>图片方向矫正</span>
+                  <span class="switch-control"><input type="checkbox" id="cfg-orient"><span aria-hidden="true"></span></span>
+                </label>
+                <label class="settings-switch">
+                  <span>版面分析</span>
+                  <span class="switch-control"><input type="checkbox" id="cfg-layout" checked><span aria-hidden="true"></span></span>
+                </label>
+                <label class="settings-switch">
+                  <span>图表识别</span>
+                  <span class="switch-control"><input type="checkbox" id="cfg-charts" checked><span aria-hidden="true"></span></span>
+                </label>
+                <label class="settings-switch">
+                  <span>印章识别</span>
+                  <span class="switch-control"><input type="checkbox" id="cfg-seal"><span aria-hidden="true"></span></span>
+                </label>
+                <label class="settings-switch">
+                  <span>跨页表格合并</span>
+                  <span class="switch-control"><input type="checkbox" id="cfg-table-merge" checked><span aria-hidden="true"></span></span>
+                </label>
+                <label class="settings-switch">
+                  <span>段落标题级别识别</span>
+                  <span class="switch-control"><input type="checkbox" id="cfg-heading-level" checked><span aria-hidden="true"></span></span>
+                </label>
+              </div>
+            </div>
+
+            <details id="office-options" class="office-options" hidden>
+              <summary title="Office 预览选项">Office 预览选项</summary>
+              <label>工作表 <input id="office-sheet" maxlength="255" placeholder="当前工作表"></label>
+              <label>打印范围 <input id="office-print-range" maxlength="100" placeholder="A1:D20"></label>
+            </details>
+          </div>
+
+          <div id="pane-api" class="settings-pane" hidden>
+            <div class="settings-section">
+              <h3 class="settings-section-title">LLM 大模型与翻译服务</h3>
+              <p class="settings-section-tip">用于全文高质量学术翻译与段落级 AI 智能解读</p>
+              <div class="settings-api-card">
+                <div class="api-card-row">
+                  <span class="api-label">服务状态：</span>
+                  <span id="api-status-badge" class="api-badge">检查中...</span>
+                </div>
+                <div class="api-card-row">
+                  <span class="api-label">端点地址：</span>
+                  <code id="api-endpoint-text" class="api-code">http://127.0.0.1:8000/v1</code>
+                </div>
+                <div class="api-card-row">
+                  <span class="api-label">当前模型：</span>
+                  <code id="api-model-text" class="api-code">未配置</code>
+                </div>
+              </div>
+              <div class="api-config-guide">
+                <strong>配置说明：</strong>
+                <p>在项目根目录 <code>config.toml</code> 中添加 <code>[llm]</code> 配置段：</p>
+                <pre class="code-example"><code>[llm]
+base_url = "http://127.0.0.1:8000/v1" # 或 OpenAI/Ollama/DeepSeek 等
+model = "Qwen2.5-7B-Instruct"          # 模型名
+api_key_env = "OPENAI_API_KEY"         # API Key 环境变量</code></pre>
+                <p class="api-note">配置完成后重启后台服务即可生效。</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-drawer-footer">
+          <button id="apply-settings-button" type="button" class="primary-button drawer-btn">应用</button>
+          <button id="cancel-settings-button" type="button" class="secondary-button drawer-btn">重置</button>
+        </div>
+      </aside>
     </div>
 
-    <dialog id="qa-dialog" class="qa-dialog">
-      <form id="qa-form">
-        <div class="dialog-heading">
-          <h2>AI 解读</h2>
-          <button id="close-qa-button" type="button" class="icon-button" aria-label="关闭">×</button>
+    <div id="ai-panel" class="settings-drawer-wrapper" hidden>
+      <div class="settings-drawer-backdrop" id="ai-backdrop"></div>
+      <aside class="settings-drawer ai-drawer" role="dialog" aria-modal="true" aria-label="AI 解读">
+        <div class="settings-drawer-header">
+          <div class="settings-drawer-title-group">
+            <h2 id="ai-drawer-heading">✦ AI 解读</h2>
+            <span class="settings-drawer-sub">围绕选中文档内容提问，点击锚点块可在原文与解析区定位</span>
+          </div>
+          <button id="close-qa-button" type="button" class="icon-button settings-close-btn" aria-label="关闭 AI 解读" title="关闭 AI 解读"><span aria-hidden="true">×</span></button>
         </div>
-        <p id="qa-anchor" class="muted">当前未选择块，将根据问题查找相关内容。</p>
-        <div class="qa-history-row">
-          <label for="qa-history-select">历史提问</label>
-          <select id="qa-history-select" disabled>
-            <option value="">暂无历史提问</option>
-          </select>
-          <button id="delete-qa-button" type="button" hidden>删除记录</button>
+        <div class="settings-drawer-body ai-drawer-body">
+          <div class="ai-row ai-section-label">
+            <span id="qa-anchor-label">问题锚点</span>
+            <span class="spacer"></span>
+            <button id="adopt-selection-button" type="button" class="small-text-btn">使用当前选择</button>
+          </div>
+          <div id="qa-anchor-box" class="anchor-box clickable-anchor" role="button" tabindex="0" title="点击在原文与解析区域高亮定位该块">
+            <div class="anchor-box-header">
+              <b id="qa-anchor-title">未选择块</b>
+              <span class="anchor-locate-tag">🎯 点击定位</span>
+            </div>
+            <p id="qa-anchor-snippet">请在左侧或右侧点击选择要解读的内容块。</p>
+          </div>
+          <div class="quick-prompts">
+            <button type="button" class="quick-btn" data-prompt="用通俗语言解释这段内容">解释这段</button>
+            <button type="button" class="quick-btn" data-prompt="总结这些内容的关键点">总结要点</button>
+            <button type="button" class="quick-btn" data-prompt="这些段落之间有什么联系">比较关联</button>
+          </div>
+          <div class="ai-row ai-section-label">
+            <span>回答</span>
+            <span class="spacer"></span>
+            <span id="answer-state" class="answer-badge">等待提问</span>
+          </div>
+          <div id="answer-box" class="answer-box">
+            <article id="answer-content" class="answer-content">选择快捷问题或在下方输入自己的问题，体验深度解读与证据定位。</article>
+          </div>
+          <div class="ai-history-bar">
+            <label for="qa-history-select">历史记录</label>
+            <select id="qa-history-select" disabled>
+              <option value="">暂无提问记录</option>
+            </select>
+            <button id="delete-qa-button" type="button" class="small-danger-btn" hidden title="删除当前记录">删除</button>
+          </div>
         </div>
-        <div class="qa-options">
-          <label class="check-control"><input id="qa-auto-related" type="checkbox" checked> 自动关联相关块</label>
-          <label class="field-control">手动加入块 ID
-            <input id="qa-related-blocks" maxlength="2000" placeholder="可用逗号分隔"></label>
-          <label class="field-control">排除块 ID
-            <input id="qa-exclude-blocks" maxlength="2000" placeholder="可用逗号分隔"></label>
-        </div>
-        <textarea id="question-input" rows="4" maxlength="4000" placeholder="针对当前文档提问"></textarea>
-        <div class="dialog-actions">
-          <button id="ask-button" type="submit">提问</button>
-          <button id="stop-answer-button" type="button" hidden>停止</button>
-        </div>
-        <article id="answer-content" class="answer-content"></article>
-        <div id="citation-list" class="citation-list"></div>
-      </form>
-    </dialog>
+        <form id="qa-form" class="ai-compose">
+          <label class="sr-only" for="question-input">问题</label>
+          <textarea id="question-input" rows="3" maxlength="4000" placeholder="针对选中内容提出你想了解的问题... (Ctrl + Enter 发送)"></textarea>
+          <div class="ai-bottom">
+            <span id="ai-model-status" class="ai-model-tag">本地大模型服务</span>
+            <span class="spacer"></span>
+            <button id="stop-answer-button" type="button" class="secondary-button small-action-btn" hidden>停止</button>
+            <button id="ask-button" type="submit" class="primary-button small-action-btn">发送</button>
+          </div>
+        </form>
+      </aside>
+    </div>
 
     <dialog id="document-delete-dialog" class="confirm-dialog">
       <form method="dialog" id="document-delete-form">

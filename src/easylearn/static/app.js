@@ -1,4 +1,5 @@
-import { PdfReader } from "./pdf-viewer.js";
+import { PdfReader, blockTypeLabel } from "./pdf-viewer.js";
+import katex from "./katex/katex.mjs";
 
 const state = {
   documents: [],
@@ -10,7 +11,8 @@ const state = {
   sourceEdits: new Map(),
   selectedBlocks: new Set(),
   hoverBlock: null,
-  view: "zh",
+  view: "source",
+  userPreferredSourceView: false,
   searchQuery: "",
   tasks: new Map(),
   taskWatchers: new Set(),
@@ -19,6 +21,7 @@ const state = {
   markdownCache: new Map(),
   qaRecords: [],
   selectedQaId: null,
+  activeQaAnchorBlockId: null,
   answerTaskId: null,
   answerAbortController: null,
   evidenceBlock: null,
@@ -28,6 +31,7 @@ const state = {
   editingSourceBlockId: null,
   pendingDeleteDocumentId: null,
   uploading: false,
+  uploadingDoc: null,
   parseProgressTimer: null,
   documentLoadGeneration: 0,
   parseLoadGeneration: 0,
@@ -36,23 +40,42 @@ const state = {
 const $ = (selector) => document.querySelector(selector);
 const terminalStatuses = new Set(["succeeded", "failed", "cancelled"]);
 const pdfReader = new PdfReader($("#pdf-viewer"), {
-  onPageChange(pageIndex, pageCount) {
-    $("#page-count").textContent = `${pageIndex + 1} / ${pageCount}`;
+  onPageChange(pageIndex, pageCount, isUserScroll = false) {
+    const currentElem = $("#page-current");
+    const totalElem = $("#page-total");
+    if (currentElem && totalElem) {
+      currentElem.textContent = String(pageIndex + 1);
+      totalElem.textContent = String(pageCount);
+    } else {
+      $("#page-count").textContent = `${pageIndex + 1} / ${pageCount}`;
+    }
     $("#prev-page").disabled = pageIndex <= 0;
     $("#next-page").disabled = pageIndex >= pageCount - 1;
+    if (!isUserScroll) {
+      const firstBlock = document.querySelector(`[data-block-id^="p${pageIndex}."]`);
+      if (firstBlock) {
+        firstBlock.scrollIntoView({ block: "start", behavior: "auto" });
+      }
+    }
   },
   onBlockClick(blockId) {
     selectBlock(blockId, false);
     scrollToResultBlock(blockId);
   },
+  onBlankClick() {
+    clearBlockSelection();
+  },
   onBlockHover(blockId) {
     setHover(blockId);
   },
   onScaleChange(scale) {
-    const select = $("#zoom-select");
-    const value = String(Number(scale));
-    select.value = [...select.options].some((option) => option.value === value) ? value : "";
+    const zoomValue = $("#zoom-value");
+    if (zoomValue) zoomValue.textContent = `${Math.round(scale * 100)}%`;
     $("#pdf-viewer").dataset.scale = String(scale);
+    const zoomOut = $("#zoom-out");
+    if (zoomOut) zoomOut.disabled = scale <= 0.5;
+    const zoomIn = $("#zoom-in");
+    if (zoomIn) zoomIn.disabled = scale >= 2.0;
   },
   onError(error) {
     notify(`PDF 加载失败：${error?.message || "未知错误"}`);
@@ -142,50 +165,289 @@ function selectedParseId() {
   return state.document?.active_parse_id || state.document?.parse_results?.[0]?.parse_id || null;
 }
 
-async function refreshDocuments() {
-  state.documents = await api("/api/documents");
-  const list = $("#document-list");
-  list.replaceChildren();
-  for (const item of state.documents) {
-    const entry = document.createElement("div");
-    entry.className = "document-item" + (
-      state.document?.document_id === item.document_id ? " is-active" : ""
-    );
+function getDocumentTask(documentId, item) {
+  const activeInState = [...state.tasks.values()]
+    .filter((t) => t.document_id === documentId && (t.status === "queued" || t.status === "running"))
+    .sort((a, b) => {
+      if (a.status === "running" && b.status !== "running") return -1;
+      if (b.status === "running" && a.status !== "running") return 1;
+      return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+    })[0];
+  if (activeInState) return activeInState;
+
+  if (Array.isArray(item?.tasks)) {
+    const activeInItem = item.tasks
+      .filter((t) => t.status === "queued" || t.status === "running")
+      .sort((a, b) => {
+        if (a.status === "running" && b.status !== "running") return -1;
+        if (b.status === "running" && a.status !== "running") return 1;
+        return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+      })[0];
+    if (activeInItem) return activeInItem;
+  }
+
+  const recentTerminal = [...state.tasks.values()]
+    .filter((t) => t.document_id === documentId && (t.status === "failed" || t.status === "cancelled"))
+    .sort((a, b) => new Date(b.finished_at || b.created_at || 0) - new Date(a.finished_at || a.created_at || 0))[0];
+  if (recentTerminal) return recentTerminal;
+
+  return null;
+}
+
+function getFileIconSvg(filename = "") {
+  const ext = (filename.split(".").pop() || "").toLowerCase();
+  if (ext === "pdf") {
+    return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M8.27 14.75c-1.14 2.1-2.18 3.03-3.08 3.03-.68 0-1.19-.52-1.19-1.25 0-1.4 1.62-3.6 4.27-5.06l-.01.03c.51-1.3 1.05-2.92 1.4-4.27C9.37 5.75 9.77 4 10.96 4c.83 0 1.25.56 1.25 1.34 0 1.53-1.07 3.96-2.22 6.55.77.46 1.66.95 2.62 1.43 1.93-.72 3.64-1.07 4.66-1.07.96 0 1.43.43 1.43 1.07 0 1.28-1.71 2.24-4.22 2.24-1.31 0-2.88-.3-4.47-.94-.58.85-1.17 1.68-1.74 2.37zm-.26-1.31c-.53.69-1.07 1.33-1.57 1.89-1.58.91-2.43 1.69-2.43 2.45 0 .28.18.45.45.45.49 0 1.3-.64 2.16-2.13.47-.73.94-1.59 1.39-2.66zm2.34-4.81c.64-1.53 1.15-2.99 1.15-3.83 0-.31-.13-.48-.36-.48-.51 0-.91 1.08-1.26 2.57-.17.76-.38 1.63-.64 2.6 1.04-.52 2.06-1.02 1.11-.86zm3.32 4.19c1.07.39 2.11.58 3.04.58 1.45 0 2.26-.47 2.26-1.07 0-.25-.17-.4-.48-.4-.73 0-2.02.26-3.82.89-.35.12-.69.25-1 .39z" fill="#DC2626"/></svg>`;
+  }
+  if (["ppt", "pptx"].includes(ext)) {
+    return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><text x="12" y="12" font-size="14" font-weight="800" fill="#EA580C" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif">P</text></svg>`;
+  }
+  if (["doc", "docx", "word"].includes(ext)) {
+    return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><text x="12" y="12" font-size="13" font-weight="800" fill="#2563eb" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif">W</text></svg>`;
+  }
+  if (["xls", "xlsx", "csv"].includes(ext)) {
+    return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><text x="12" y="12" font-size="13" font-weight="800" fill="#16a34a" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif">X</text></svg>`;
+  }
+  if (["png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "jp2"].includes(ext)) {
+    return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3" ry="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>`;
+  }
+  return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
+}
+
+function createDocumentItemElement(item) {
+  const isUploading = Boolean(item.isUploading);
+  let statusText = "待解析";
+  let statusClass = "is-muted";
+  let statusIcon = null;
+  let progress = null;
+  let isSpinning = false;
+  let hasActiveTask = false;
+  let runningTask = null;
+  let failedTask = null;
+
+  if (isUploading) {
+    hasActiveTask = true;
+    statusClass = "is-running";
+    const pct = Math.round((item.uploadProgress || 0) * 100);
+    statusText = `上传中 ${pct}%`;
+    progress = item.uploadProgress || 0;
+  } else {
+    const task = getDocumentTask(item.document_id, item);
+    if (task && (task.status === "queued" || task.status === "running")) {
+      hasActiveTask = true;
+      runningTask = task;
+      statusClass = "is-running";
+      if (task.status === "queued") {
+        statusText = task.kind === "translate" ? "排队翻译" : "排队中";
+        isSpinning = true;
+      } else {
+        const known = typeof task.progress === "number";
+        const pct = known ? Math.round(task.progress * 100) : null;
+        if (task.kind === "parse") {
+          statusText = pct !== null ? `解析中 ${pct}%` : (task.message || "解析中");
+        } else if (task.kind === "translate") {
+          statusText = pct !== null ? `翻译中 ${pct}%` : (task.message || "翻译中");
+        } else {
+          statusText = pct !== null ? `处理中 ${pct}%` : (task.message || "处理中");
+        }
+        if (pct !== null) {
+          progress = pct / 100;
+        } else {
+          isSpinning = true;
+        }
+      }
+    } else if (task && task.status === "failed") {
+      failedTask = task;
+      statusText = "解析失败";
+      statusClass = "is-failed";
+      statusIcon = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" fill="#dc2626"/><path d="M5.5 5.5L10.5 10.5M10.5 5.5L5.5 10.5" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg>`;
+    } else if (task && task.status === "cancelled") {
+      statusText = "已取消";
+      statusClass = "is-muted";
+    } else if (item.active_parse_id || (item.parse_results && item.parse_results.length > 0)) {
+      statusText = "解析完成";
+      statusClass = "is-success";
+      statusIcon = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" fill="#16a34a"/><path d="M5 8L7.2 10.2L11 6" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    } else {
+      statusText = "待解析";
+      statusClass = "is-muted";
+    }
+  }
+
+  const entry = document.createElement("div");
+  entry.className = "document-item" + (
+    state.document?.document_id === item.document_id ? " is-active" : ""
+  ) + (hasActiveTask ? " is-busy" : "");
+  if (item.document_id && !isUploading) {
     entry.dataset.documentId = item.document_id;
-    const open = document.createElement("button");
-    open.type = "button";
-    open.className = "document-open";
-    const name = document.createElement("span");
-    name.className = "document-item-name";
-    name.textContent = item.name;
-    const detail = document.createElement("small");
-    detail.textContent = item.active_parse_id ? "已解析" : "待解析";
-    open.append(name, detail);
+  }
+
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "document-open";
+  if (isUploading) {
+    open.disabled = true;
+  } else {
     open.addEventListener("click", () => void openDocument(item.document_id));
+  }
+
+  const iconContainer = document.createElement("div");
+  iconContainer.className = "doc-icon-container";
+
+  if (hasActiveTask) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", `doc-ring-svg ${isSpinning ? "is-spinning" : ""}`);
+    svg.setAttribute("viewBox", "0 0 36 36");
+
+    const track = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    track.setAttribute("class", "ring-track");
+    track.setAttribute("fill", "none");
+    track.setAttribute("cx", "18");
+    track.setAttribute("cy", "18");
+    track.setAttribute("r", "15.5");
+
+    const progCircle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    progCircle.setAttribute("class", "ring-progress");
+    progCircle.setAttribute("fill", "none");
+    progCircle.setAttribute("cx", "18");
+    progCircle.setAttribute("cy", "18");
+    progCircle.setAttribute("r", "15.5");
+
+    const circumference = 97.39;
+    progCircle.setAttribute("stroke-dasharray", isSpinning ? "24.35 73.04" : String(circumference));
+    const offset = isSpinning
+      ? 0
+      : (progress !== null ? circumference * (1 - progress) : circumference);
+    progCircle.setAttribute("stroke-dashoffset", String(offset));
+
+    svg.append(track, progCircle);
+    iconContainer.append(svg);
+  }
+
+  const badge = document.createElement("div");
+  badge.className = "doc-badge";
+  badge.innerHTML = getFileIconSvg(item.name);
+  iconContainer.append(badge);
+
+  const info = document.createElement("div");
+  info.className = "doc-info";
+
+  const name = document.createElement("span");
+  name.className = "document-item-name";
+  name.textContent = item.name;
+  name.title = item.name;
+
+  const statusElem = document.createElement("small");
+  statusElem.className = `document-item-status ${statusClass}`;
+  if (statusIcon) {
+    const iconSpan = document.createElement("span");
+    iconSpan.className = "status-icon";
+    iconSpan.innerHTML = statusIcon;
+    const textSpan = document.createElement("span");
+    textSpan.className = "status-text";
+    textSpan.textContent = statusText;
+    statusElem.append(iconSpan, textSpan);
+  } else {
+    const textSpan = document.createElement("span");
+    textSpan.className = "status-text";
+    textSpan.textContent = statusText;
+    statusElem.append(textSpan);
+  }
+
+  info.append(name, statusElem);
+  open.append(iconContainer, info);
+  entry.append(open);
+
+  if (!isUploading) {
     const actions = document.createElement("div");
     actions.className = "document-actions";
+
+
+    if (failedTask && failedTask.failure?.retryable) {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "icon-button action-icon-btn document-action retry-action";
+      retry.setAttribute("aria-label", "重试任务");
+      retry.dataset.tooltip = "重试任务";
+      retry.title = "重试任务";
+      retry.disabled = state.retryingTasks.has(failedTask.task_id);
+      retry.innerHTML = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M13.5 8C13.5 11.0376 11.0376 13.5 8 13.5C4.96243 13.5 2.5 11.0376 2.5 8C2.5 4.96243 4.96243 2.5 8 2.5C10.15 2.5 12.02 3.73 12.94 5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M13.5 2.5V5.5H10.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+      retry.addEventListener("click", (e) => {
+        e.stopPropagation();
+        void retryTask(failedTask);
+      });
+      actions.append(retry);
+    }
+
     const favorite = document.createElement("button");
     favorite.type = "button";
-    favorite.className = "document-action favorite-action" + (item.favorite ? " is-active" : "");
+    favorite.className = "icon-button action-icon-btn document-action favorite-action" + (item.favorite ? " is-active" : "");
     favorite.setAttribute("aria-label", item.favorite ? "取消收藏" : "收藏");
+    favorite.dataset.tooltip = item.favorite ? "取消收藏" : "收藏";
     favorite.title = item.favorite ? "取消收藏" : "收藏";
+    favorite.innerHTML = item.favorite
+      ? `<svg width="14" height="14" viewBox="0 0 16 16" fill="#f59e0b" stroke="#f59e0b" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><polygon points="8 1.5 10 5.8 14.5 6.4 11.2 9.6 12 14.2 8 12 4 14.2 4.8 9.6 1.5 6.4 6 5.8 8 1.5"/></svg>`
+      : `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><polygon points="8 1.5 10 5.8 14.5 6.4 11.2 9.6 12 14.2 8 12 4 14.2 4.8 9.6 1.5 6.4 6 5.8 8 1.5"/></svg>`;
     favorite.addEventListener("click", (event) => {
       event.stopPropagation();
       void setDocumentFavorite(item.document_id, !item.favorite);
     });
+
     const remove = document.createElement("button");
     remove.type = "button";
-    remove.className = "document-action delete-action";
+    remove.className = "icon-button action-icon-btn document-action delete-action";
     remove.setAttribute("aria-label", "删除文档");
+    remove.dataset.tooltip = "删除文档";
     remove.title = "删除文档";
+    remove.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4H13M5.5 4V2.5C5.5 2.22386 5.72386 2 6 2H10C10.2761 2 10.5 2.22386 10.5 2.5V4M6.5 7V11.5M9.5 7V11.5M4 4L4.8 13.2C4.85 13.65 5.2 14 5.65 14H10.35C10.8 14 11.15 13.65 11.2 13.2L12 4"/></svg>`;
     remove.addEventListener("click", (event) => {
       event.stopPropagation();
       openDeleteDialog(item.document_id, item.name);
     });
+
     actions.append(favorite, remove);
-    entry.append(open, actions);
+    entry.append(actions);
+  }
+
+  return entry;
+}
+
+function renderDocumentList() {
+  const list = $("#document-list");
+  if (!list) return;
+  list.replaceChildren();
+
+  if (state.uploadingDoc) {
+    const uploadingEntry = createDocumentItemElement({
+      document_id: "uploading",
+      name: state.uploadingDoc.name,
+      isUploading: true,
+      uploadProgress: state.uploadingDoc.progress,
+    });
+    list.append(uploadingEntry);
+  }
+
+  for (const item of state.documents) {
+    const entry = createDocumentItemElement(item);
     list.append(entry);
   }
+}
+
+async function refreshDocuments() {
+  state.documents = await api("/api/documents");
+  for (const doc of state.documents) {
+    if (Array.isArray(doc.tasks)) {
+      for (const t of doc.tasks) {
+        if (t.status === "queued" || t.status === "running") {
+          if (!state.tasks.has(t.task_id)) {
+            state.tasks.set(t.task_id, t);
+            watchTask(t);
+          }
+        }
+      }
+    }
+  }
+  renderDocumentList();
 }
 
 async function setDocumentFavorite(documentId, favorite) {
@@ -217,10 +479,12 @@ async function openDocument(documentId) {
     state.markdownCache.clear();
     state.selectedBlocks.clear();
     state.searchQuery = "";
+    state.userPreferredSourceView = false;
     $("#result-search-input").value = "";
     state.questionContext = null;
     state.qaRecords = [];
     state.selectedQaId = null;
+    state.activeQaAnchorBlockId = null;
     state.editingSourceBlockId = null;
     state.answerTaskId = null;
     state.answerAbortController?.abort();
@@ -268,6 +532,12 @@ async function openParse(parseId, documentGeneration = state.documentLoadGenerat
     state.sourceEdits = new Map(
       sourceEdits.map((item) => [`${item.block_id}:${item.node_id}`, item]),
     );
+    const hasTranslation = hasDocumentTranslation();
+    if (!hasTranslation) {
+      state.view = "source";
+    } else if (state.view === "source" && !state.userPreferredSourceView) {
+      state.view = "zh";
+    }
     state.selectedBlocks = new Set([...state.selectedBlocks].filter((id) =>
       parse.blocks.some((block) => block.block_id === id)
     ));
@@ -320,9 +590,14 @@ function syncToolbar() {
 
   const settingsBtn = $("#settings-button");
   if (settingsBtn) settingsBtn.disabled = false;
+  const toolbarSettingsBtn = $("#toolbar-settings-button");
+  if (toolbarSettingsBtn) toolbarSettingsBtn.disabled = false;
 
   const reparseBtn = $("#reparse-button");
   if (reparseBtn) reparseBtn.disabled = !hasDocument || state.busyButtons.has("reparse-button");
+
+  const copyBtn = $("#copy-button");
+  if (copyBtn) copyBtn.disabled = !hasParse;
 
   const downloadBtn = $("#download-button");
   if (downloadBtn) downloadBtn.disabled = !hasParse || state.busyButtons.has("download-button");
@@ -331,10 +606,10 @@ function syncToolbar() {
   if (modelSelect) modelSelect.disabled = !state.models.length || state.busyButtons.has("reparse-button");
 
   const translateBtn = $("#translate-button");
-  if (translateBtn) translateBtn.disabled = !hasParse || !llmConfigured || state.busyButtons.has("translate-button");
+  if (translateBtn) translateBtn.disabled = !hasParse || state.busyButtons.has("translate-button");
 
   const qaBtn = $("#qa-button");
-  if (qaBtn) qaBtn.disabled = !hasParse || !qaEnabled || state.busyButtons.has("ask-button");
+  if (qaBtn) qaBtn.disabled = !hasParse || state.busyButtons.has("ask-button");
 
   const favoriteBtn = $("#favorite-button");
   if (favoriteBtn) favoriteBtn.disabled = !hasDocument;
@@ -366,6 +641,8 @@ function syncWorkspaceLayout() {
   shell.classList.toggle("no-document", !hasDocument);
   $("#empty-upload-state").hidden = hasDocument;
   $("#pdf-viewer").hidden = !hasDocument;
+  const pdfToolbar = $("#pdf-toolbar");
+  if (pdfToolbar) pdfToolbar.hidden = !hasDocument;
 }
 
 async function withButtonBusy(buttonId, busyLabel, work) {
@@ -423,18 +700,18 @@ function parseBlockIds(value) {
 function qaRequestBody(scope = null) {
   const source = scope || {};
   const context = {
-    parse_id: source.parse_id || state.parse.parse_run_id,
-    question: typeof source.question === "string" ? source.question : $("#question-input").value,
+    parse_id: source.parse_id || state.parse?.parse_run_id,
+    question: typeof source.question === "string" ? source.question : ($("#question-input")?.value || ""),
     block_ids: Array.isArray(source.block_ids) ? [...source.block_ids] : [...state.selectedBlocks],
     related_block_ids: Array.isArray(source.related_block_ids)
       ? [...source.related_block_ids]
-      : parseBlockIds($("#qa-related-blocks").value),
+      : parseBlockIds($("#qa-related-blocks")?.value || ""),
     exclude_block_ids: Array.isArray(source.exclude_block_ids)
       ? [...source.exclude_block_ids]
-      : parseBlockIds($("#qa-exclude-blocks").value),
+      : parseBlockIds($("#qa-exclude-blocks")?.value || ""),
     auto_related: typeof source.auto_related === "boolean"
       ? source.auto_related
-      : $("#qa-auto-related").checked,
+      : Boolean($("#qa-auto-related")?.checked ?? true),
   };
   if (!scope) {
     state.questionContext = {
@@ -463,6 +740,7 @@ async function loadQaRecords() {
 
 function renderQaHistory() {
   const select = $("#qa-history-select");
+  if (!select) return;
   select.replaceChildren();
   if (!state.qaRecords.length) {
     const option = document.createElement("option");
@@ -470,66 +748,106 @@ function renderQaHistory() {
     option.textContent = "暂无历史提问";
     select.append(option);
     select.disabled = true;
-    $("#delete-qa-button").hidden = true;
+    const delBtn = $("#delete-qa-button");
+    if (delBtn) delBtn.hidden = true;
     return;
   }
   for (const record of state.qaRecords) {
     const option = document.createElement("option");
     option.value = record.qa_id;
-    option.textContent = `${record.question.slice(0, 48)} · ${new Date(record.created_at).toLocaleString()}`;
+    option.textContent = `${record.question.slice(0, 36)} · ${new Date(record.created_at).toLocaleTimeString()}`;
     option.selected = record.qa_id === state.selectedQaId;
     select.append(option);
   }
   select.disabled = false;
-  $("#delete-qa-button").hidden = !state.selectedQaId;
+  const delBtn = $("#delete-qa-button");
+  if (delBtn) delBtn.hidden = !state.selectedQaId;
 }
 
 function renderQaRecord(record) {
+  const answerContent = $("#answer-content");
+  const delBtn = $("#delete-qa-button");
+  const answerState = $("#answer-state");
   if (!record) {
-    $("#answer-content").textContent = "";
-    $("#citation-list").replaceChildren();
-    $("#delete-qa-button").hidden = true;
+    if (answerContent) answerContent.textContent = "选择快捷问题或在下方输入自己的问题，体验深度解读与证据定位。";
+    if (delBtn) delBtn.hidden = true;
+    if (answerState) answerState.textContent = "等待提问";
+    state.activeQaAnchorBlockId = [...state.selectedBlocks][0] || null;
+    updateQaAnchorBox();
     return;
   }
   state.selectedQaId = record.qa_id;
-  $("#question-input").value = record.question;
-  $("#answer-content").textContent = record.answer;
-  const list = $("#citation-list");
-  list.replaceChildren();
-  for (const citation of record.citations || []) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "citation";
-    button.textContent = `[${citation.citation}] ${citation.text}`;
-    button.addEventListener("click", () => void focusCitation(citation));
-    list.append(button);
-  }
-  $("#delete-qa-button").hidden = false;
+  const questionInput = $("#question-input");
+  if (questionInput) questionInput.value = record.question;
+  if (answerContent) answerContent.textContent = record.answer;
+  if (answerState) answerState.textContent = "已完成";
+  if (delBtn) delBtn.hidden = false;
+
+  const anchorId = record.citations?.[0]?.block_id || record.context?.[0]?.block_id || null;
+  state.activeQaAnchorBlockId = anchorId;
+  updateQaAnchorBox(anchorId);
 }
 
-async function focusCitation(citation) {
-  const parseId = citation.block_ref?.parse_run_id;
-  const blockId = citation.block_id;
-  if (typeof parseId !== "string" || typeof blockId !== "string") {
-    notify("引用缺少可定位信息");
+async function locateAnchorBlock() {
+  const blockId = state.activeQaAnchorBlockId || [...state.selectedBlocks][0];
+  if (!blockId) {
+    notify("当前为整篇文档模式，暂无特定内容块可定位");
     return;
   }
-  try {
-    if (state.parse?.parse_run_id !== parseId) {
-      await openParse(parseId);
-    }
-    if (state.parse?.parse_run_id !== parseId) {
-      notify("引用对应的解析版本已不可用");
-      return;
-    }
-    state.evidenceBlock = blockId;
-    setResultView("zh");
-    selectBlock(blockId, false);
-    await pdfReader.focusBlock(blockId);
-    $("#qa-dialog").close();
-  } catch (error) {
-    notify(error.message);
+  selectBlock(blockId, false);
+  scrollToResultBlock(blockId);
+  await pdfReader.focusBlock(blockId);
+  notify(`已在原文与解析区域高亮定位块 ${blockId}`);
+}
+
+function updateQaAnchorBox(forcedBlockId = null) {
+  const titleEl = $("#qa-anchor-title");
+  const snippetEl = $("#qa-anchor-snippet");
+  const locateTag = $("#qa-anchor-box .anchor-locate-tag");
+  if (!titleEl || !snippetEl) return;
+
+  const targetBlockId = forcedBlockId || state.activeQaAnchorBlockId || [...state.selectedBlocks][0] || null;
+  if (!targetBlockId) {
+    titleEl.textContent = "整篇文档";
+    snippetEl.textContent = "当前未限定具体内容块，将基于整篇文档上下文提问与解读。点击左侧或右侧任意块可直接限定。";
+    if (locateTag) locateTag.hidden = true;
+    return;
   }
+  const block = state.parse?.blocks?.find((b) => b.block_id === targetBlockId);
+  titleEl.textContent = `已选块 ${targetBlockId} (${blockTypeLabel(block?.block_type) || "内容块"})`;
+  if (block) {
+    const text = state.view === "source" ? blockSourceText(block) : blockTranslationText(block);
+    snippetEl.textContent = text.slice(0, 160) + (text.length > 160 ? "…" : "");
+  } else {
+    snippetEl.textContent = "";
+  }
+  if (locateTag) locateTag.hidden = false;
+}
+
+function openQaDrawer() {
+  const panel = $("#ai-panel");
+  if (!panel) return;
+  panel.hidden = false;
+  $("#qa-button")?.setAttribute("aria-expanded", "true");
+  updateQaAnchorBox();
+  void loadQaRecords().catch((err) => notify(err.message));
+  $("#question-input")?.focus();
+}
+
+function closeQaDrawer() {
+  const panel = $("#ai-panel");
+  if (panel) panel.hidden = true;
+  $("#qa-button")?.setAttribute("aria-expanded", "false");
+}
+
+const openQaPopover = openQaDrawer;
+const closeQaPopover = closeQaDrawer;
+
+function openQaForBlock(blockId) {
+  state.activeQaAnchorBlockId = blockId;
+  selectBlock(blockId, false);
+  scrollToResultBlock(blockId);
+  openQaDrawer();
 }
 
 function message(text) {
@@ -571,7 +889,25 @@ function blockDisplayText(block) {
   return state.view === "source" ? blockSourceText(block) : blockTranslationText(block);
 }
 
+function hasDocumentTranslation() {
+  if (!state.translations || state.translations.size === 0) return false;
+  for (const item of state.translations.values()) {
+    if (item.auto_text || item.manual_text) return true;
+  }
+  return false;
+}
+
 function syncResultTabs() {
+  const hasTranslation = hasDocumentTranslation();
+  const zhTab = document.querySelector('.result-tab[data-view="zh"]');
+  if (zhTab) {
+    zhTab.disabled = !hasTranslation;
+    zhTab.setAttribute("aria-disabled", String(!hasTranslation));
+    zhTab.title = hasTranslation ? "" : "尚未生成中文翻译，可点击右上角翻译按钮进行翻译";
+  }
+  if (!hasTranslation && state.view === "zh") {
+    state.view = "source";
+  }
   document.querySelectorAll(".result-tab").forEach((tab) => {
     tab.classList.toggle("is-active", tab.dataset.view === state.view);
   });
@@ -650,11 +986,19 @@ function renderResult() {
     return;
   }
   for (const block of blocks) {
+    if (state.editingSourceBlockId === block.block_id) {
+      const editCard = renderBlockEditCard(block);
+      content.append(editCard);
+      continue;
+    }
+
     const wrapper = document.createElement("article");
     wrapper.className = "result-block" + (
       state.selectedBlocks.has(block.block_id) ? " is-selected" : ""
     );
     wrapper.dataset.blockId = block.block_id;
+    wrapper.dataset.blockType = block.block_type || "paragraph";
+    wrapper.dataset.label = blockTypeLabel(block.block_type);
 
     const heading = document.createElement("div");
     heading.className = "result-block-heading";
@@ -668,8 +1012,6 @@ function renderResult() {
     const title = document.createElement("h3");
     title.textContent = `${block.block_id} · ${block.block_type || "block"}`;
     heading.append(checkbox, title);
-    const edit = createSourceEditButton(block);
-    if (edit) heading.append(edit);
     wrapper.append(heading);
     if (block.block_type === "table" && block.table) {
       appendTable(wrapper, block, blockById);
@@ -679,7 +1021,41 @@ function renderResult() {
       appendBlockContent(rendered, block, state.view);
       wrapper.append(rendered);
     }
-    if (state.editingSourceBlockId === block.block_id) addSourceEditor(wrapper, block);
+    const actions = document.createElement("div");
+    actions.className = "result-block-actions";
+    const copyBlockBtn = document.createElement("button");
+    copyBlockBtn.type = "button";
+    copyBlockBtn.className = "result-block-action-btn";
+    copyBlockBtn.textContent = "复制";
+    copyBlockBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const text = state.view === "source" ? blockSourceText(block) : blockTranslationText(block);
+      try {
+        await navigator.clipboard.writeText(text);
+        notify("已复制块内容");
+      } catch {
+        notify("复制失败");
+      }
+    });
+    actions.append(copyBlockBtn);
+    const edit = createSourceEditButton(block);
+    if (edit) {
+      edit.className = "result-block-action-btn";
+      edit.textContent = "纠正";
+      actions.append(edit);
+    }
+    const qaBlockBtn = document.createElement("button");
+    qaBlockBtn.type = "button";
+    qaBlockBtn.className = "result-block-action-btn";
+    qaBlockBtn.textContent = "✦ AI解读";
+    qaBlockBtn.title = "针对该块进行 AI 解读";
+    qaBlockBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openQaForBlock(block.block_id);
+    });
+    actions.append(qaBlockBtn);
+    wrapper.append(actions);
+
     bindResultBlock(wrapper, block.block_id);
     content.append(wrapper);
   }
@@ -687,7 +1063,16 @@ function renderResult() {
 }
 
 function setResultView(view) {
+  if (view === "zh" && !hasDocumentTranslation()) {
+    notify("当前文档尚未翻译，请点击右上角翻译按钮进行全文翻译");
+    return;
+  }
   state.view = view;
+  if (view === "source") {
+    state.userPreferredSourceView = true;
+  } else if (view === "zh") {
+    state.userPreferredSourceView = false;
+  }
   syncResultTabs();
   renderResult();
 }
@@ -696,20 +1081,77 @@ function nodeText(node) {
   return node.text ?? node.label ?? node.alt ?? node.latex ?? node.code ?? "";
 }
 
+function renderTextWithMath(text, container) {
+  if (!text) return;
+  const regex = /(\\\[[\s\S]*?\\\]|\$\$[\s\S]*?\$\$|\\\([\s\S]*?\\\)|\$(?:[^\$\n\\]|\\.)+?\$)/g;
+  let lastIndex = 0;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      container.append(document.createTextNode(text.slice(lastIndex, match.index)));
+    }
+    const token = match[0];
+    let isDisplay = false;
+    let mathContent = "";
+    if (token.startsWith("\\[") && token.endsWith("\\]")) {
+      isDisplay = true;
+      mathContent = token.slice(2, -2).trim();
+    } else if (token.startsWith("$$") && token.endsWith("$$")) {
+      isDisplay = true;
+      mathContent = token.slice(2, -2).trim();
+    } else if (token.startsWith("\\(") && token.endsWith("\\)")) {
+      isDisplay = false;
+      mathContent = token.slice(2, -2).trim();
+    } else if (token.startsWith("$") && token.endsWith("$")) {
+      isDisplay = false;
+      mathContent = token.slice(1, -1).trim();
+    }
+    if (mathContent) {
+      const span = document.createElement("span");
+      span.className = "math-node" + (isDisplay ? " math-display" : "");
+      span.setAttribute("aria-label", "数学公式");
+      try {
+        katex.render(mathContent, span, {
+          displayMode: isDisplay,
+          throwOnError: false,
+        });
+        container.append(span);
+      } catch {
+        container.append(document.createTextNode(token));
+      }
+    } else {
+      container.append(document.createTextNode(token));
+    }
+    lastIndex = regex.lastIndex;
+  }
+  if (lastIndex < text.length) {
+    container.append(document.createTextNode(text.slice(lastIndex)));
+  }
+}
+
 function appendInlineNodes(container, block, language) {
+  const isFormulaBlock = block.block_type === "formula" || block.block_type === "equation";
   for (const node of block.source_nodes || []) {
     const unit = state.translations.get(`${block.block_id}:${node.node_id}`);
     const translated = language === "chinese" ? unit?.effective_text : null;
     const sourceText = sourceNodeText(block, node);
     if (node.type === "text") {
-      const text = document.createElement("span");
-      text.textContent = translated ?? sourceText;
-      container.append(text);
+      const text = translated ?? sourceText;
+      renderTextWithMath(text, container);
     } else if (node.type === "math") {
       const math = document.createElement("span");
-      math.className = "math-node";
+      const isDisplay = isFormulaBlock;
+      math.className = "math-node" + (isDisplay ? " math-display" : "");
       math.setAttribute("aria-label", "数学公式");
-      math.textContent = `\\(${translated ?? sourceText}\\)`;
+      const latex = (translated ?? sourceText).trim();
+      try {
+        katex.render(latex, math, {
+          displayMode: isDisplay,
+          throwOnError: false,
+        });
+      } catch {
+        math.textContent = isDisplay ? `\\[${latex}\\]` : `\\(${latex}\\)`;
+      }
       container.append(math);
     } else if (node.type === "code") {
       const code = document.createElement("code");
@@ -765,7 +1207,12 @@ function appendBlockContent(container, block, view) {
     return;
   }
   const language = view === "zh" ? "chinese" : "source";
-  if (block.block_type === "code") {
+  if (block.block_type === "formula" || block.block_type === "equation") {
+    const formulaBox = document.createElement("div");
+    formulaBox.className = "result-formula-container";
+    appendInlineNodes(formulaBox, block, language);
+    container.append(formulaBox);
+  } else if (block.block_type === "code") {
     const pre = document.createElement("pre");
     pre.className = "code-block";
     appendInlineNodes(pre, block, language);
@@ -835,66 +1282,185 @@ function createSourceEditButton(block) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "icon-button block-edit-button";
-  button.setAttribute("aria-label", `编辑原文 ${block.block_id}`);
-  button.title = "编辑原文";
+  button.setAttribute("aria-label", `纠正 ${block.block_id}`);
+  button.title = "纠正";
   button.innerHTML = '<span aria-hidden="true">✎</span>';
   button.addEventListener("click", (event) => {
     event.stopPropagation();
     state.editingSourceBlockId = state.editingSourceBlockId === block.block_id
       ? null
       : block.block_id;
+    if (state.editingSourceBlockId) {
+      state.selectedBlocks = new Set([block.block_id]);
+      pdfReader.setSelected(state.selectedBlocks);
+    }
     renderResult();
   });
   return button;
 }
 
-function addSourceEditor(wrapper, block) {
-  const editor = document.createElement("div");
-  editor.className = "source-editor";
-  for (const node of editableSourceNodes(block)) {
-    const field = document.createElement("label");
-    field.className = "source-editor-field";
-    const label = document.createElement("span");
-    label.textContent = node.node_id;
-    const textarea = document.createElement("textarea");
-    textarea.value = sourceNodeText(block, node);
-    textarea.dataset.nodeId = node.node_id;
-    textarea.setAttribute("aria-label", `原文 ${node.node_id}`);
-    field.append(label, textarea);
-    editor.append(field);
+function applyTextareaFormat(textarea, type) {
+  textarea.focus();
+  const start = textarea.selectionStart;
+  const end = textarea.selectionEnd;
+  const val = textarea.value;
+  const selectedText = val.substring(start, end);
+
+  if (type === "bold") {
+    const wrapped = `**${selectedText || "粗体文字"}**`;
+    textarea.setRangeText(wrapped, start, end, "select");
+  } else if (type === "italic") {
+    const wrapped = `*${selectedText || "斜体文字"}*`;
+    textarea.setRangeText(wrapped, start, end, "select");
+  } else if (type === "strike") {
+    const wrapped = `~~${selectedText || "删除线文字"}~~`;
+    textarea.setRangeText(wrapped, start, end, "select");
+  } else if (type === "title") {
+    const lineStart = val.lastIndexOf("\n", start - 1) + 1;
+    const lineEnd = val.indexOf("\n", end);
+    const actualLineEnd = lineEnd === -1 ? val.length : lineEnd;
+    const line = val.substring(lineStart, actualLineEnd);
+    let newLine;
+    if (line.startsWith("### ")) {
+      newLine = line.slice(4);
+    } else if (line.startsWith("## ")) {
+      newLine = "### " + line.slice(3);
+    } else if (line.startsWith("# ")) {
+      newLine = "## " + line.slice(2);
+    } else {
+      newLine = "# " + line;
+    }
+    textarea.setRangeText(newLine, lineStart, actualLineEnd, "select");
   }
-  const actions = document.createElement("div");
-  actions.className = "source-editor-actions";
-  const save = document.createElement("button");
-  save.type = "button";
-  save.className = "primary-button";
-  save.textContent = "保存原文";
-  save.addEventListener("click", () => void saveSourceEditor(editor, block));
-  const cancel = document.createElement("button");
-  cancel.type = "button";
-  cancel.className = "secondary-button";
-  cancel.textContent = "取消";
-  cancel.addEventListener("click", (event) => {
-    event.stopPropagation();
+  textarea.style.height = "auto";
+  textarea.style.height = `${Math.max(60, textarea.scrollHeight)}px`;
+}
+
+function renderBlockEditCard(block) {
+  const card = document.createElement("article");
+  card.className = "block-edit-card";
+  card.dataset.blockId = block.block_id;
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "block-edit-toolbar";
+
+  const formatGroup = document.createElement("div");
+  formatGroup.className = "block-edit-format-group";
+
+  const titleBtn = document.createElement("button");
+  titleBtn.type = "button";
+  titleBtn.className = "block-format-btn";
+  titleBtn.title = "标题格式";
+  titleBtn.innerHTML = 'T<sub style="font-size: 10px; bottom: 0;">ᴛ</sub>';
+
+  const boldBtn = document.createElement("button");
+  boldBtn.type = "button";
+  boldBtn.className = "block-format-btn font-bold";
+  boldBtn.title = "加粗";
+  boldBtn.textContent = "B";
+
+  const italicBtn = document.createElement("button");
+  italicBtn.type = "button";
+  italicBtn.className = "block-format-btn font-italic";
+  italicBtn.title = "斜体";
+  italicBtn.textContent = "I";
+
+  const strikeBtn = document.createElement("button");
+  strikeBtn.type = "button";
+  strikeBtn.className = "block-format-btn font-strike";
+  strikeBtn.title = "删除线";
+  strikeBtn.textContent = "S";
+
+  formatGroup.append(titleBtn, boldBtn, italicBtn, strikeBtn);
+
+  const actionGroup = document.createElement("div");
+  actionGroup.className = "block-edit-action-group";
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "block-edit-cancel-btn";
+  cancelBtn.textContent = "取消";
+  cancelBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
     state.editingSourceBlockId = null;
     renderResult();
   });
-  actions.append(save, cancel);
-  editor.append(actions);
-  wrapper.append(editor);
+
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.className = "block-edit-save-btn";
+  saveBtn.textContent = "保存";
+
+  actionGroup.append(cancelBtn, saveBtn);
+  toolbar.append(formatGroup, actionGroup);
+  card.append(toolbar);
+
+  const textarea = document.createElement("textarea");
+  textarea.className = "block-edit-textarea";
+  textarea.value = blockSourceText(block);
+  textarea.setAttribute("aria-label", `纠正文本 ${block.block_id}`);
+
+  titleBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); applyTextareaFormat(textarea, "title"); });
+  boldBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); applyTextareaFormat(textarea, "bold"); });
+  italicBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); applyTextareaFormat(textarea, "italic"); });
+  strikeBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); applyTextareaFormat(textarea, "strike"); });
+
+  saveBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    void saveBlockEdit(card, block, textarea.value);
+  });
+
+  textarea.addEventListener("input", () => {
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.max(60, textarea.scrollHeight)}px`;
+  });
+
+  textarea.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      void saveBlockEdit(card, block, textarea.value);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      state.editingSourceBlockId = null;
+      renderResult();
+    }
+  });
+
+  card.addEventListener("click", (e) => {
+    e.stopPropagation();
+  });
+
+  card.append(textarea);
+
+  requestAnimationFrame(() => {
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.max(60, textarea.scrollHeight)}px`;
+    textarea.focus();
+  });
+
+  return card;
 }
 
-async function saveSourceEditor(editor, block) {
+async function saveBlockEdit(card, block, text) {
   if (!state.document || !state.parse) return;
   const parseId = state.parse.parse_run_id;
+  const editableNodes = editableSourceNodes(block);
+  if (!editableNodes.length) return;
+
+  const saveBtn = card.querySelector(".block-edit-save-btn");
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.textContent = "保存中…";
+  }
+
   try {
-    for (const textarea of editor.querySelectorAll("textarea[data-node-id]")) {
-      const nodeId = textarea.dataset.nodeId;
-      if (!nodeId) continue;
-      const current = state.sourceEdits.get(sourceEditKey(block.block_id, nodeId));
-      const original = (block.source_nodes || []).find((node) => node.node_id === nodeId);
-      const previousText = current?.effective_text ?? (original ? nodeText(original) : "");
-      if (textarea.value === previousText) continue;
+    const firstNode = editableNodes[0];
+    const current = state.sourceEdits.get(sourceEditKey(block.block_id, firstNode.node_id));
+    const previousText = editableNodes.length === 1
+      ? (current?.effective_text ?? ((block.source_nodes || []).find((n) => n.node_id === firstNode.node_id) ? nodeText(firstNode) : ""))
+      : blockSourceText(block);
+
+    if (text !== previousText) {
       const updated = await api(
         `/api/documents/${state.document.document_id}/source-edits`,
         {
@@ -903,20 +1469,48 @@ async function saveSourceEditor(editor, block) {
           body: JSON.stringify({
             parse_id: parseId,
             block_id: block.block_id,
-            node_id: nodeId,
+            node_id: firstNode.node_id,
             expected_revision: current?.revision ?? 0,
-            text: textarea.value,
+            text: text,
           }),
         },
       );
-      state.sourceEdits.set(sourceEditKey(block.block_id, nodeId), updated);
+      state.sourceEdits.set(sourceEditKey(block.block_id, firstNode.node_id), updated);
+
+      for (let i = 1; i < editableNodes.length; i++) {
+        const extraNode = editableNodes[i];
+        const extraCurrent = state.sourceEdits.get(sourceEditKey(block.block_id, extraNode.node_id));
+        const extraUpdated = await api(
+          `/api/documents/${state.document.document_id}/source-edits`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              parse_id: parseId,
+              block_id: block.block_id,
+              node_id: extraNode.node_id,
+              expected_revision: extraCurrent?.revision ?? 0,
+              text: "",
+            }),
+          },
+        );
+        state.sourceEdits.set(sourceEditKey(block.block_id, extraNode.node_id), extraUpdated);
+      }
     }
     state.editingSourceBlockId = null;
     await openParse(parseId);
-    notify("原文已保存");
+    notify("原文已纠正并保存");
   } catch (error) {
     notify(error.message);
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.textContent = "保存";
+    }
   }
+}
+
+function addSourceEditor(wrapper, block) {
+  wrapper.append(renderBlockEditCard(block));
 }
 
 function addEditor(wrapper, block) {
@@ -1071,13 +1665,39 @@ function selectBlock(blockId, additive) {
   } else {
     state.selectedBlocks = new Set([blockId]);
   }
+  state.activeQaAnchorBlockId = [...state.selectedBlocks][0] || null;
   pdfReader.setSelected(state.selectedBlocks);
   renderResult();
+  const panel = $("#ai-panel");
+  if (panel && !panel.hidden) {
+    updateQaAnchorBox();
+  }
+}
+
+function clearBlockSelection() {
+  if (!state.selectedBlocks.size && !state.editingSourceBlockId) return;
+  state.selectedBlocks.clear();
+  state.editingSourceBlockId = null;
+  state.activeQaAnchorBlockId = null;
+  pdfReader.setSelected(state.selectedBlocks);
+  renderResult();
+  const panel = $("#ai-panel");
+  if (panel && !panel.hidden) {
+    updateQaAnchorBox();
+  }
 }
 
 function scrollToResultBlock(blockId) {
-  document.querySelector(`[data-block-id="${CSS.escape(blockId)}"]`)
-    ?.scrollIntoView({ block: "center", behavior: "auto" });
+  const container = $("#result-content");
+  if (!container) return;
+  const target = container.querySelector(`.result-block[data-block-id="${CSS.escape(blockId)}"]`);
+  if (target) {
+    target.scrollIntoView({ block: "center", behavior: "smooth" });
+    target.classList.remove("is-target-flash");
+    void target.offsetWidth;
+    target.classList.add("is-target-flash");
+    setTimeout(() => target.classList.remove("is-target-flash"), 1000);
+  }
 }
 
 async function runTask(path, body, successMessage) {
@@ -1159,12 +1779,15 @@ function watchTask(task) {
   if (terminalStatuses.has(task.status) || state.taskWatchers.has(task.task_id)) return;
   state.taskWatchers.add(task.task_id);
   void waitTask(task.task_id).then(async (finished) => {
+    await refreshDocuments();
     if (finished.status !== "succeeded" || state.document?.document_id !== finished.document_id) return;
     if (finished.kind === "parse") {
       await openDocument(finished.document_id);
     } else if (finished.kind === "translate") {
       const parseId = finished.scope?.parse_id;
       if (typeof parseId === "string" && state.parse?.parse_run_id === parseId) {
+        state.view = "zh";
+        state.userPreferredSourceView = false;
         await openParse(parseId);
       }
     } else if (finished.kind === "qa") {
@@ -1251,25 +1874,30 @@ function renderTasks() {
     if (task.status === "failed" && task.failure?.retryable) {
       const retry = document.createElement("button");
       retry.type = "button";
-      retry.className = "task-action retry-action";
+      retry.className = "icon-button action-icon-btn task-action retry-action";
       retry.setAttribute("aria-label", "重试任务");
+      retry.dataset.tooltip = "重试任务";
       retry.title = "重试任务";
       retry.disabled = state.retryingTasks.has(task.task_id);
+      retry.innerHTML = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M13.5 8C13.5 11.0376 11.0376 13.5 8 13.5C4.96243 13.5 2.5 11.0376 2.5 8C2.5 4.96243 4.96243 2.5 8 2.5C10.15 2.5 12.02 3.73 12.94 5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M13.5 2.5V5.5H10.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
       retry.addEventListener("click", () => void retryTask(task));
       item.append(retry);
     }
     if (task.status === "queued" || task.status === "running") {
       const cancel = document.createElement("button");
       cancel.type = "button";
-      cancel.className = "task-action cancel-action";
+      cancel.className = "icon-button action-icon-btn task-action cancel-action";
       cancel.setAttribute("aria-label", "取消任务");
+      cancel.dataset.tooltip = "取消任务";
       cancel.title = "取消任务";
+      cancel.innerHTML = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3.5" y1="3.5" x2="12.5" y2="12.5"/><line x1="12.5" y1="3.5" x2="3.5" y2="12.5"/></svg>`;
       cancel.addEventListener("click", () => void cancelTask(task.task_id));
       item.append(cancel);
     }
     list.append(item);
   }
   renderParseProgress();
+  renderDocumentList();
 }
 
 async function cancelTask(taskId) {
@@ -1386,11 +2014,52 @@ async function retryTask(task) {
 async function uploadDocument(file) {
   if (!file || state.uploading) return;
   state.uploading = true;
+  state.uploadingDoc = {
+    name: file.name,
+    progress: 0,
+  };
   syncToolbar();
+  renderDocumentList();
+
   try {
     const form = new FormData();
     form.append("file", file);
-    const item = await api("/api/documents", { method: "POST", body: form });
+
+    const item = await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/documents");
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable && event.total > 0) {
+          if (state.uploadingDoc) {
+            state.uploadingDoc.progress = event.loaded / event.total;
+            renderDocumentList();
+          }
+        }
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText));
+          } catch (err) {
+            reject(err);
+          }
+        } else {
+          try {
+            const data = JSON.parse(xhr.responseText);
+            reject(new Error(data.detail || data.message || "上传失败"));
+          } catch {
+            reject(new Error(`上传失败 (${xhr.status})`));
+          }
+        }
+      };
+      xhr.onerror = () => reject(new Error("网络连接失败，请重试"));
+      xhr.send(form);
+    });
+
+    state.uploadingDoc = null;
+    state.uploading = false;
+    $("#file-input").value = "";
+    syncToolbar();
     await refreshDocuments();
     await openDocument(item.document_id);
     await runTask(
@@ -1400,11 +2069,14 @@ async function uploadDocument(file) {
     );
     await openDocument(item.document_id);
   } catch (error) {
+    state.uploadingDoc = null;
     notify(error.message);
   } finally {
     $("#file-input").value = "";
     state.uploading = false;
+    state.uploadingDoc = null;
     syncToolbar();
+    renderDocumentList();
   }
 }
 
@@ -1437,41 +2109,105 @@ $("#version-select").addEventListener("change", (event) => {
 });
 
 $("#prev-page").addEventListener("click", () => {
-  const current = Number($("#page-count").textContent.split("/")[0]) - 1;
+  const currentElem = $("#page-current");
+  const current = currentElem
+    ? Number(currentElem.textContent) - 1
+    : Number($("#page-count").textContent.split("/")[0]) - 1;
   if (Number.isInteger(current)) void pdfReader.goToPage(current - 1);
 });
 
 $("#next-page").addEventListener("click", () => {
-  const current = Number($("#page-count").textContent.split("/")[0]) - 1;
+  const currentElem = $("#page-current");
+  const current = currentElem
+    ? Number(currentElem.textContent) - 1
+    : Number($("#page-count").textContent.split("/")[0]) - 1;
   if (Number.isInteger(current)) void pdfReader.goToPage(current + 1);
 });
 
-$("#zoom-select").addEventListener("change", (event) => pdfReader.setScale(event.target.value));
-$("#reset-zoom").addEventListener("click", () => pdfReader.resetScale());
-$("#fit-width").addEventListener("click", () => pdfReader.fitWidth());
-$("#rotate-page").addEventListener("click", () => pdfReader.rotate());
+$("#zoom-out")?.addEventListener("click", () => pdfReader.zoomOut());
+$("#zoom-in")?.addEventListener("click", () => pdfReader.zoomIn());
+$("#reset-zoom")?.addEventListener("click", () => pdfReader.resetScale());
 $("#parse-progress-cancel").addEventListener("click", () => {
   const task = parseTaskForCurrentDocument();
   if (task) void cancelTask(task.task_id);
 });
 
-$("#settings-button")?.addEventListener("click", () => {
+function openSettingsDrawer(activeTab = "settings") {
   const panel = $("#settings-panel");
   if (!panel) return;
-  panel.hidden = !panel.hidden;
-  $("#settings-button").setAttribute("aria-expanded", String(!panel.hidden));
-});
+  panel.hidden = false;
+  $("#settings-button")?.setAttribute("aria-expanded", "true");
+  $("#toolbar-settings-button")?.setAttribute("aria-expanded", "true");
+  switchSettingsTab(activeTab);
+  syncSettingsApiInfo();
+}
 
-$("#close-settings-button")?.addEventListener("click", () => {
+function closeSettingsDrawer() {
   const panel = $("#settings-panel");
   if (panel) panel.hidden = true;
   $("#settings-button")?.setAttribute("aria-expanded", "false");
+  $("#toolbar-settings-button")?.setAttribute("aria-expanded", "false");
+}
+
+function switchSettingsTab(tabName) {
+  const isSettings = tabName === "settings";
+  $("#tab-btn-settings")?.classList.toggle("is-active", isSettings);
+  $("#tab-btn-api")?.classList.toggle("is-active", !isSettings);
+  const paneSettings = $("#pane-settings");
+  const paneApi = $("#pane-api");
+  if (paneSettings) paneSettings.hidden = !isSettings;
+  if (paneApi) paneApi.hidden = isSettings;
+}
+
+function syncSettingsApiInfo() {
+  const llmConfigured = state.health?.llm?.configured === true;
+  const badge = $("#api-status-badge");
+  if (badge) {
+    badge.textContent = llmConfigured ? "已连接并就绪" : "未配置大模型";
+    badge.classList.toggle("is-ok", llmConfigured);
+  }
+  const endpoint = $("#api-endpoint-text");
+  if (endpoint) {
+    endpoint.textContent = state.health?.llm?.base_url || "http://127.0.0.1:8000/v1";
+  }
+  const modelText = $("#api-model-text");
+  if (modelText) {
+    modelText.textContent = state.health?.llm?.model || "（未配置）";
+  }
+}
+
+$("#settings-button")?.addEventListener("click", () => openSettingsDrawer("settings"));
+$("#toolbar-settings-button")?.addEventListener("click", () => openSettingsDrawer("settings"));
+$("#close-settings-button")?.addEventListener("click", closeSettingsDrawer);
+$("#cancel-settings-button")?.addEventListener("click", closeSettingsDrawer);
+$("#settings-backdrop")?.addEventListener("click", closeSettingsDrawer);
+$("#tab-btn-settings")?.addEventListener("click", () => switchSettingsTab("settings"));
+$("#tab-btn-api")?.addEventListener("click", () => switchSettingsTab("api"));
+$("#apply-settings-button")?.addEventListener("click", () => {
+  closeSettingsDrawer();
+  notify("设置已应用");
 });
 
-$("#settings-backdrop")?.addEventListener("click", () => {
-  const panel = $("#settings-panel");
-  if (panel) panel.hidden = true;
-  $("#settings-button")?.setAttribute("aria-expanded", "false");
+$("#copy-button")?.addEventListener("click", async () => {
+  if (!state.parse || $("#copy-button").disabled) return;
+  let text = "";
+  if (state.view === "json") {
+    text = JSON.stringify(state.parse, null, 2);
+  } else if (state.view === "raw") {
+    text = state.markdownCache.get(state.parse.parse_run_id) || "";
+  } else {
+    text = state.parse.blocks
+      .filter((b) => b.block_type !== "table_cell")
+      .map((b) => (state.view === "source" ? blockSourceText(b) : blockTranslationText(b)))
+      .filter(Boolean)
+      .join("\n\n");
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    notify("已复制当前视图内容至剪贴板");
+  } catch {
+    notify("复制失败，请重试");
+  }
 });
 
 $("#model-select")?.addEventListener("change", (event) => {
@@ -1557,7 +2293,16 @@ function clearCurrentDocument() {
   const sizeElem = $("#document-size");
   if (sizeElem) sizeElem.textContent = "";
   $("#document-status").textContent = "上传后开始解析";
-  $("#page-count").textContent = "0 / 0";
+  const currentElem = $("#page-current");
+  const totalElem = $("#page-total");
+  if (currentElem && totalElem) {
+    currentElem.textContent = "0";
+    totalElem.textContent = "0";
+  } else {
+    $("#page-count").textContent = "0 / 0";
+  }
+  const zoomValue = $("#zoom-value");
+  if (zoomValue) zoomValue.textContent = "100%";
   renderVersionSelect();
   renderResult();
   syncFavoriteButton();
@@ -1579,6 +2324,12 @@ $("#close-delete-button").addEventListener("click", () => {
 
 $("#translate-button")?.addEventListener("click", async () => {
   if (!state.document || !state.parse || $("#translate-button")?.disabled) return;
+  const llmConfigured = state.health?.llm?.configured === true;
+  if (!llmConfigured) {
+    notify("未配置大模型服务：请在 config.toml 中配置 [llm] 后即可执行全文翻译");
+    openSettingsDrawer("api");
+    return;
+  }
   const documentId = state.document.document_id;
   const parseId = state.parse.parse_run_id;
   const blockIds = state.selectedBlocks.size ? [...state.selectedBlocks] : null;
@@ -1616,25 +2367,76 @@ $("#download-button").addEventListener("click", async () => {
 
 $("#qa-button")?.addEventListener("click", () => {
   if (!state.document || !state.parse || $("#qa-button").disabled) return;
-  $("#qa-anchor").textContent = state.selectedBlocks.size
-    ? `已固定 ${state.selectedBlocks.size} 个块作为问题锚点。`
-    : "当前未选择块，将根据问题查找相关内容。";
-  $("#qa-dialog").showModal();
-  void loadQaRecords().catch((error) => notify(error.message));
+  const panel = $("#ai-panel");
+  if (panel && !panel.hidden) {
+    closeQaDrawer();
+  } else {
+    openQaDrawer();
+  }
 });
 
-$("#close-qa-button").addEventListener("click", () => $("#qa-dialog").close());
+$("#close-qa-button")?.addEventListener("click", closeQaDrawer);
+$("#ai-backdrop")?.addEventListener("click", closeQaDrawer);
+$("#qa-anchor-box")?.addEventListener("click", () => void locateAnchorBlock());
+$("#qa-anchor-box")?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    void locateAnchorBlock();
+  }
+});
+$("#adopt-selection-button")?.addEventListener("click", () => {
+  state.selectedQaId = null;
+  state.activeQaAnchorBlockId = [...state.selectedBlocks][0] || null;
+  updateQaAnchorBox();
+  notify("已将当前所选块设为问题锚点");
+});
+
+document.querySelectorAll(".quick-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const prompt = btn.dataset.prompt;
+    const input = $("#question-input");
+    if (input && prompt) {
+      input.value = prompt;
+      $("#qa-form")?.requestSubmit();
+    }
+  });
+});
+
+$("#question-input")?.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+    e.preventDefault();
+    $("#qa-form")?.requestSubmit();
+  }
+});
 
 $("#qa-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!state.document || !state.parse || state.busyButtons.has("ask-button")) return;
+  const q = $("#question-input")?.value?.trim();
+  if (!q) {
+    notify("请输入要解读的问题");
+    return;
+  }
+  const llmConfigured = state.health?.llm?.configured === true;
+  if (!llmConfigured) {
+    const answer = $("#answer-content");
+    const answerState = $("#answer-state");
+    if (answerState) answerState.textContent = "未配置 LLM";
+    if (answer) {
+      answer.innerHTML = `⚠️ <strong>大模型服务尚未配置</strong><br>请在项目根目录 <code>config.toml</code> 中添加 <code>[llm]</code> 配置段（如 <code>base_url</code> 和 <code>model</code>），即可启用基于整篇文档或选中段落的深度 AI 解读与问答。`;
+    }
+    notify("请在 config.toml 中配置 [llm] 后启用大模型解读");
+    openSettingsDrawer("api");
+    return;
+  }
   const documentId = state.document.document_id;
   const answer = $("#answer-content");
+  const answerState = $("#answer-state");
   const body = qaRequestBody();
   state.selectedQaId = null;
+  if (answerState) answerState.textContent = "生成中…";
   await withButtonBusy("ask-button", "回答中…", async () => {
     answer.textContent = "";
-    $("#citation-list").replaceChildren();
     let taskId = null;
     try {
       const task = await api(`/api/documents/${documentId}/qa`, {
@@ -1657,12 +2459,17 @@ $("#qa-form").addEventListener("submit", async (event) => {
       if (state.answerTaskId !== taskId) return;
       if (finished.status !== "succeeded") {
         answer.textContent = finished.answer || finished.failure?.message || finished.message || "回答未完成";
+        if (answerState) answerState.textContent = "未完成";
         return;
       }
+      if (answerState) answerState.textContent = "已完成";
       state.selectedQaId = finished.result_ref?.qa_id || null;
       await loadQaRecords();
     } catch (error) {
-      if (state.answerTaskId === taskId || taskId === null) answer.textContent = error.message;
+      if (state.answerTaskId === taskId || taskId === null) {
+        answer.textContent = error.message;
+        if (answerState) answerState.textContent = "出错";
+      }
     } finally {
       if (state.answerTaskId === taskId) {
         state.answerTaskId = null;
@@ -1723,13 +2530,38 @@ $("#result-search-input").addEventListener("input", (event) => {
 });
 
 $("#clear-selection").addEventListener("click", () => {
-  state.selectedBlocks.clear();
-  pdfReader.setSelected(state.selectedBlocks);
-  renderResult();
+  clearBlockSelection();
+});
+
+$("#result-content")?.addEventListener("click", (event) => {
+  if (event.target.closest(".result-block, .block-edit-card, button, input, textarea, select, a")) return;
+  if (window.getSelection()?.toString()) return;
+  clearBlockSelection();
+});
+
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    const aiPanel = $("#ai-panel");
+    if (aiPanel && !aiPanel.hidden) {
+      closeQaDrawer();
+      return;
+    }
+    const settingsPanel = $("#settings-panel");
+    if (settingsPanel && !settingsPanel.hidden) {
+      closeSettingsDrawer();
+      return;
+    }
+    if (state.selectedBlocks.size || state.editingSourceBlockId) {
+      clearBlockSelection();
+    }
+  }
 });
 
 for (const tab of document.querySelectorAll(".result-tab")) {
-  tab.addEventListener("click", () => setResultView(tab.dataset.view));
+  tab.addEventListener("click", () => {
+    if (tab.disabled) return;
+    setResultView(tab.dataset.view);
+  });
 }
 
 syncWorkspaceLayout();

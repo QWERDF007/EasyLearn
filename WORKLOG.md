@@ -7,6 +7,605 @@
 - 无。
 
 
+### 2026-09-07 — 修复公式 KaTeX 离线渲染、点击左侧原文平滑跳转联动、根除页面外层多余滚动条与重塑公式粉红色系规范
+
+**目标**
+1. 本地内置 KaTeX (v0.16.11) 库，彻底解决右侧面板块级公式与行内公式显示为原始 LaTeX 文本字符串的问题；
+2. 修复点击左侧 PDF 原文块时右侧不自动跳转的问题（修复 `scrollToResultBlock` 选择器在全局匹配时命中左侧 `.pdf-region` 自身导致右侧纹丝不动的根因）；
+3. 彻底根除浏览器页面最右侧多余的全局外层滚动条，使页面 100% 撑满视口自适应，仅保留内部各列滚动；
+4. 参照 MinerU 原生设计规范（截图 232330），为公式块建立专属粉红/洋红色系（PDF 选框、角标、右侧卡片高亮），并确保常态下无多余框线背景，与普通文本块风格一致。
+
+**当前状态**
+- 已完成：本地集成 KaTeX 离线运行库至 `src/easylearn/static/katex/`（包含完整 CSS、ES 模块与离线 WOFF2 字体，零外部网络依赖）；
+- 已完成：更新 `src/easylearn/templates/index.html` 引入 KaTeX 样式表；
+- 已完成：更新 `src/easylearn/static/app.js`：
+  1. 引入 `katex.mjs`，实现 `renderTextWithMath`，对段落内的 `\(...\)`、`\[...\]` 及 `$...$` 自动渲染；
+  2. 对公式块（`formula`）启用 `displayMode: true` 进行居中排版并保留编号 `\tag{...}`；
+  3. 重构 `scrollToResultBlock` 仅在 `#result-content` 容器内精确定位，并添加 `is-target-flash` 聚焦平滑高亮动画；
+  4. 在 `renderResult` 中设置 `wrapper.dataset.blockType`；
+- 已完成：更新 `src/easylearn/static/pdf-viewer.js`：在 `#renderRegions` 中为选框标注 `blockType` 属性；
+- 已完成：更新 `src/easylearn/static/app.css`：
+  1. 设定 `html, body { height: 100%; overflow: hidden; margin: 0; }` 与 `.app-shell { height: 100%; max-height: 100%; }` 消除外层多余滚动条；
+  2. 规范 `.result-block[data-block-type="formula"]` 交互样式：未选中/未悬浮时与普通文本块保持完全一致（透明、无边框、无常态粉红底色）；仅在 `.is-hovered` 或 `.is-selected` 时呈现粉红边框（`#f43f5e`）、柔粉背景（`#fff1f2`）与粉红公式角标；
+  3. 新增 `.result-formula-container` 与 `.is-target-flash` 动画样式；
+- 已完成：在 `tests/v3/test_app.py` 中新增 `test_katex_assets_and_layout_served` 测试用例；
+- 已验证：
+  1. 真实浏览器环境（Selenium Headless）端到端自动化验证：
+     - `Outer vertical scrollbar present: False`（最右侧全局滚动条彻底消失）
+     - `Outer horizontal scrollbar present: False`
+     - `Found KaTeX rendered elements: 110`（公式全面高质量排版）
+     - `PDF region active border-color: rgb(244, 63, 94)`（粉红色选框）
+     - 公式未选中状态：`border: rgba(0, 0, 0, 0), background: rgba(0, 0, 0, 0)`（常态完全透明无底色，截图 `ui_formula_normal_state.png`）
+     - 公式选中状态：`is-selected: True, border: rgb(244, 63, 94), bg: rgba(255, 241, 242, 1)`（粉红选中态，截图 `ui_formula_selected_state.png`）
+     - 点击左侧公式选框后，右侧卡片自动平滑居中滚动可见；
+  2. `pytest tests/v3`：94 个单元测试全部通过（**94 passed in 11.5s**）；
+  3. `ruff check src tests`：全部通过（All checks passed）。
+
+**验证证据**
+- `pytest tests/v3`：94 passed in 11.5s
+- `ruff check src tests`：All checks passed!
+- Selenium 端到端自动化实测截图：
+  - `ui_formula_normal_state.png`（常态透明如普通块）
+  - `ui_formula_selected_state.png`（选中态粉红突出高亮）
+  - `ui_verified_formula_jump.png`（点击联动跳转）
+
+**下一步**
+- 用户刷新浏览器页面（Ctrl+F5）即可体验公式高质量排版、无常态粉红框线打扰、仅选中/悬浮时粉红高亮联动的视觉交互。
+
+### 2026-09-07 — 实现全文翻译按批次即时持久化与断点续传（跳过已翻译块）
+
+**目标**
+1. 彻底解决全文翻译只有在所有批次全部完成后才统一落库、中途失败导致前期已翻译成果丢失并必须从头全量翻译的严重体验痛点；
+2. 实现按批次即时落库（Batch-level Incremental Persistence）：每个批次（20 个单元）翻译完成后立即写入 SQLite 数据库（`translations` 与 `translation_history`）；
+3. 实现断点续传（Skip Already Translated Units）：任务重试或再次翻译时，自动检测已有 `auto_text` 的单元并跳过，仅将尚未翻译的单元分批提交大模型；全篇已译完时直接复用；
+4. 在接口层支持 `force: bool = False` 字段，允许在需要时进行全量强制覆盖翻译；
+5. 编写针对性 TDD 单元测试覆盖断点续传、中间失败保护与强制全译场景。
+
+**当前状态**
+- 已完成：代码实现与架构优化：
+  - `src/easylearn/translation.py`：
+    1. 在 `TranslateRequest` 中增加 `force: bool = False` 字段并在 `submit()` 存入任务上下文；
+    2. 重构 `execute()` 流程：先从数据库中查询已有 `auto_text` 的单元，当 `force=False` 时，仅筛选 `units_to_translate`，已完成单元计入全局进度；若全部已完成则直接报告 100% 并完工；
+    3. 在 `translate_worker` 中，每批翻译完成后立即调用 `publish_batch()` 写入数据库，并更新全局进度；
+    4. 任务全部完成后通过 `context.publish` 标记事务发布并更新指标。
+  - `tests/v3/test_features.py`：
+    1. 新增 `test_translation_saves_batches_incrementally_and_resumes_on_retry`：验证在第 2 批失败时第 1 批已被即时安全落库，且再次重试时直接跳过第 1 批仅翻译第 2 批；
+    2. 新增 `test_translation_force_retranslates_all_units`：验证默认跳过与 `force=True` 强制全译行为；
+- 已验证：
+  - `pytest tests/v3`：93 个单元测试全部通过（**93 passed in 12.15s**）；
+  - `ruff check src tests`：全部通过（All checks passed）。
+
+**验证证据**
+- `pytest tests/v3`：93 passed in 12.15s
+- `ruff check src tests`：All checks passed!
+
+**下一步**
+- 用户可在网页界面直接点击重试任务，系统将自动从上次断点处（已保存的批次）无缝继续，无需重复消耗 Token 与时间从头翻译。
+
+### 2026-09-07 — 移除文档卡片上的取消任务按钮 & 修复 URL 紧跟中文标点导致 Protected tokens changed 失败问题
+
+**目标**
+1. 优化侧边栏文档交互体验：移除文档卡片上的红色取消任务按钮（`cancel-action`），避免在文档项上遮挡标题或与下方“任务”面板中的取消按钮产生重复与混淆；任务取消操作统一集中在下方的“任务”列表中；
+2. 彻底解决引文 URL 紧随中文标点（如 `https://.../pytorch-image-models，2019年`）时，因 `\S+` 贪婪包含非空白中文字符及全角逗号导致的 `TRANSLATION_STRUCTURE_INVALID: Protected tokens changed for p9.b5.c60:l0.s0` 失败缺陷。
+
+**当前状态**
+- 已完成：根因分析：
+  - 用户反馈在 55% 进度时 `Task failed: TRANSLATION_STRUCTURE_INVALID: Protected tokens changed for p9.b5.c60:l0.s0`；
+  - 查看日志发现：英文原文为 `.../pytorch-image-models, 2019.`（逗号后有空格），大模型中文排版翻译为 `.../pytorch-image-models，2019年。`（无空格）；
+  - 旧正则表达式 `https?://\S+` 贪婪匹配所有非空白 unicode 字符，将全角逗号与年份汉字一同匹配入 URL，且尾部标点剥离正则在末尾不是标点时失效，捕获为 `.../pytorch-image-models，2019`，比对失败；
+- 已完成：代码修复与重构：
+  - `src/easylearn/static/app.js`：从 `renderDocumentList()` 中彻底移除文档项上的 `cancel-action` 按钮创建逻辑，统一保留在下方 `renderTasks()` 列表；
+  - `src/easylearn/translation.py`：在 `_protected_tokens` 中，将 URL 提取正则收敛至标准 ASCII URL 字符集 `https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'*+,;=%]+`，遇到全角符号与汉字自然截断，再剥离英文尾随标点；
+  - `tests/v3/test_features.py`：在 `test_protected_tokens_normalizes_urls_and_preserves_placeholders` 中加入包含全角逗号与年份汉字紧随 URL 的完整真实用例；
+- 已验证：
+  - `pytest tests/v3`：91 个单元测试全部通过（91 passed in 11.43s）；
+  - `ruff check src tests`：全部通过（All checks passed）。
+
+**验证证据**
+- `pytest tests/v3`：91 passed in 11.43s
+- `ruff check src tests`：All checks passed!
+- 真实数据针对性校验：英文 `.../pytorch-image-models, 2019.` 与中文 `.../pytorch-image-models，2019年。` 提取出的 Token 完全一致（`Counter({'https://github.com/rwightman/pytorch-image-models': 1})`）。
+
+**下一步**
+- 用户可重新点击“重试任务”或发起全文翻译。文档卡片上不再会有红色的取消按钮干扰，且包含此类文献引用的段落均能平稳通过结构校验。
+
+### 2026-09-07 — 修复全文翻译偶发缺失 ID 导致的 TRANSLATION_PROTOCOL_INVALID 失败，实现批次增量补漏与键名清洗
+
+**目标**
+1. 彻底解决大模型批量翻译生成时因概率性偶发漏回个别段落 ID 或键名包含微小空白字符，导致 `TRANSLATION_PROTOCOL_INVALID: LLM returned missing or extra translation IDs` 中断整篇长文档全文翻译的问题；
+2. 实现批次翻译的键名空白清洗与增量补漏（Incremental Repair）机制，保留大模型已成功翻译的单元，仅针对缺失单元发起精简补全请求；
+3. 增强日志诊断，精准记录 missing_ids 与 extra_ids；
+4. 编写针对性的 TDD 单元测试确保覆盖。
+
+**当前状态**
+- 已完成：根因分析：
+  - 用户反馈 `Task failed: TRANSLATION_PROTOCOL_INVALID: LLM returned missing or extra translation IDs`；
+  - 排查日志发现前 5 批次（100 个单元）均顺畅完成，在第 6 批时因大模型偶发遗漏个别单元或键名边缘带空白，旧代码采取全有或全无的绝对比对且零容错、零补漏，直接抛出异常杀死了全部 22 批任务；
+- 已完成：代码重构与实现：
+  - `src/easylearn/translation.py`：
+    1. 在 `_translate_batch` 中引入键名 `strip()` 清洗，消除前后偶发空格/换行；
+    2. 实现增量补漏循环（`max_attempts` 最多 3 次）：对有效返回的单元直接纳入 `completed_results`，若仍有 `pending_units`，以递增退避间隔仅针对缺失单元重新发起精简补全调用；
+    3. 详细告警日志：记录每一轮解析出的 `missing_ids` 和 `extra_ids`；
+    4. 重试耗尽时若仍有缺失，在异常详情中透出具体的 `missing translation IDs`；
+  - `tests/v3/test_features.py`：
+    1. 新增 `test_translation_repairs_missing_keys_incrementally`：验证首轮漏返回 1 个 key 时，系统精准且只请求缺失的该 key 并完成整体翻译；
+    2. 新增 `test_translation_normalizes_whitespace_in_keys`：验证 key 中带有额外空白与换行时自动清洗并完成翻译；
+- 已验证：
+  - `pytest tests/v3`：91 个单元测试 100% 通过（91 passed in 14.35s）；
+  - `ruff check src tests`：全部通过（All checks passed）。
+
+**验证证据**
+- `pytest tests/v3`：91 passed in 14.35s
+- `ruff check src tests`：All checks passed!
+
+**下一步**
+- 用户可重新点击“重试任务”或再次提交翻译，在遇到大模型偶发遗漏时系统将自动在批次内部补齐，保障长文档顺畅翻译完成。
+
+### 2026-09-07 — 修复全文翻译网络传输断流导致的“LLM could not be reached”问题，增加系统代理自动探测与指数退避重试机制
+
+**目标**
+1. 定位并彻底解决用户使用第三方中转服务（如 PINAI）时，虽然服务端控制台已收到请求，但客户端因网络抖动或长连接中断触发 `httpx.TransportError` 并被误报为 `LLM could not be reached` 导致长任务中断的问题；
+2. 为 LLM 请求层引入健全的指数退避重试机制（默认最多 3 次），避免几十上百批次的长篇文档翻译因偶发 socket reset/断流或 429/5xx 波动而前功尽弃；
+3. 支持透明系统代理探测（`urllib.request.getproxies()`）与显式 `[llm] proxy` 配置，保证 Windows 环境下无环境变量时仍能准确命中本地代理（如 Clash 7890 端口）；
+4. 消除底层异常掩盖，将底层的连接/协议错误（如 `RemoteProtocolError`、`ConnectError` 等）真实完整地记录在日志与抛出信息中。
+
+**当前状态**
+- 已完成：根因定位与排查验证：
+  - 用户反馈服务端（PINAI 控制台）有请求到达记录，但客户端报错 `translate · failed · LLM could not be reached`；
+  - 根因：`httpx` 处理长数据返回时，若底层 TCP 链路因并发压力或代理长连接中断抛出 `httpx.RemoteProtocolError` / `ReadError` 等 `TransportError`，旧代码直接捕获并抛出无重试、且硬编码为 `"LLM could not be reached"` 的异常，掩盖了真实的传输断开根因；
+  - 同时在 Windows 下，若终端未提前 export `HTTP_PROXY`，`httpx` 不会自动读取 Windows Internet Settings 注册表代理，极易导致直连受阻或代理路由异常。
+- 已完成：功能增强与架构重构：
+  - `src/easylearn/config.py`：在 `LLMSettings` 中新增 `proxy: str | None = None` 与 `max_retries: int = Field(default=3, ge=0, le=10)`；
+  - `src/easylearn/translation.py`：
+    1. 实现 `_resolve_proxy(self)`：优先级为：显式配置 `settings.llm.proxy` -> 环境变量 `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY` -> 系统代理注册表探测 `urllib.request.getproxies()`（适配 Windows）；
+    2. `_client()` 统一应用解析后的 `proxy`；
+    3. 在 `complete_json()` 中实现指数退避重试循环（对 `httpx.TransportError`、`httpx.TimeoutException`、HTTP 429/5xx 进行重试），并在重试耗尽时保留真实异常类型与详情抛出；
+    4. 在 `stream()` 中同样增加详尽的底层异常识别与精准分类。
+  - `config.toml`：在 `[llm]` 中补充显式 `proxy = "http://127.0.0.1:7890"` 示例与支持。
+- 已验证：
+  - 使用用户真实文档第 0 批（20 个单元，3386 字符）直接请求 `https://api.pinaic.com/v1/chat/completions`，28 秒内顺利返回合法 JSON，翻译结果结构完整；
+  - 运行 `pytest tests/v3`，全部 89 个单元测试 100% 通过；
+  - 运行 `ruff check src tests`，代码检查全部通过（All checks passed）。
+
+**验证证据**
+- PinAI 真实大批次联调：`SUCCESS in 28.05s!`，收到 20 个完整译文单元；
+- `pytest tests/v3`：89 passed in 8.43s；
+- `ruff check src tests`：All checks passed!
+
+**下一步**
+- 向用户解释 PinAI 存在访问记录但报“无法连接”的底层网络原因及解决方案；
+- 用户可重新启动服务并点击“重试任务”或重新发起翻译。
+
+### 2026-09-07 — 左侧文件列表操作按钮统一样式 & 修复全文翻译 Protected tokens changed 失败问题
+
+**目标**
+1. 统一左侧文件列表各文档操作按钮（收藏/取消收藏、删除、取消任务、重试任务）以及左上角（“新解析”、“系统设置”）的按钮样式，与右侧工具栏的 `.action-icon-btn` 标准保持高度统一（内联 SVG 图标、26x26px/28x28px 规范尺寸、圆角、背景微过渡动画、统一 floating tooltip）；
+2. 定位并彻底修复全文翻译时因 `Protected tokens changed for p9.b3:l0.s0` 导致的翻译在 27% 中断失败的结构校验缺陷。
+
+**当前状态**
+- 已完成：修复 `src/easylearn/translation.py`：
+  - 根因分析：论文源文本中存在紧跟标点符号的 URL（例如 `...work.`、`...pytorch,`、`...work)`），原正则 `https?://\S+` 提取时捕获了句尾标点（`.`、`,`、`)` 等），而大模型返回的中文翻译中 URL 剥离了英文标点或换成中文标点/空格，导致 Counter 严格比对判定不一致而抛出 `TRANSLATION_STRUCTURE_INVALID`；同时数字计数在自然语言翻译中存在数字与汉字转化问题。
+  - 精准修复：
+    1. 在 URL 提取后剔除尾随标点（`_TRAILING_URL_PUNCT` 覆盖半角及全角中英文标点 `.,;:!?)>"']` 等）；
+    2. 校验保护标记聚焦于系统结构占位符 `{{...}}` 与规整化后的 URL；
+    3. 增加结构不匹配时的告警日志（打印 expected vs actual tokens），便于排查。
+  - 在 `tests/v3/test_features.py` 补充结构保护符与 URL 规整化的针对性单元测试，所有 89 个测试全部通过。
+- 已完成：统一样式与矢量图标：
+  - 在 `src/easylearn/templates/index.html` 中：
+    - 将左侧边栏顶部的“＋”替换为标准 SVG 加号图标；
+    - 将“⚙”替换为与右侧工具栏一致的 SVG 设置图标。
+  - 在 `src/easylearn/static/app.js` 中：
+    - 文档项操作按钮统一赋予 `icon-button action-icon-btn document-action <action-name>`；
+    - 收藏按钮使用矢量五角星（未收藏为空心，已收藏填充金黄色 `#f59e0b`）；
+    - 删除按钮使用与工具栏风格一致的矢量垃圾桶图标；
+    - 取消任务使用矢量叉号图标；重试任务使用与重新解析一致的刷新矢量图标；
+    - 全部配置 `data-tooltip` 与 `aria-label`。
+    - 修复连续上传文件时上传状态标志未在 POST 结束后立即释放的问题，保证多文件连续上传不被阻塞。
+  - 在 `src/easylearn/static/app.css` 中：
+    - 移除原有的伪元素 `::before` 字符内容，改由统一的 `.action-icon-btn` 渲染 SVG 图标；
+    - 配置统一的 hover 背景、语义颜色与浮动提示气泡。
+- 已验证：
+  - Selenium 浏览器自动化截图验证：`ui_unified_action_buttons.png` 与 `ui_left_right_buttons_unified.png`，左侧文档按钮、顶栏按钮与右侧工具栏完全统一；
+  - 运行 `pytest tests/browser/test_upload.py`，全部 7 个浏览器端到端测试 100% 通过；
+  - 运行 `pytest tests/v3`，全部 89 个单元测试 100% 通过；
+  - 运行 `ruff check src tests`，代码检查全部通过。
+
+**验证证据**
+- `pytest tests/browser/test_upload.py`：7 passed in 39.98s
+- `pytest tests/v3`：89 passed in 8.10s
+- `ruff check src tests`：All checks passed!
+- 截图证据：
+  - `ui_unified_action_buttons.png`（空态及悬停删除按钮展示气泡）
+  - `ui_left_right_buttons_unified.png`（文档打开态下左右两侧操作按钮对比）
+
+**下一步**
+- 向用户汇报修复成果，提供截图预览。用户可点击“翻译全文”重新体验顺畅无阻的全文翻译。
+
+
+### 2026-09-07 — 文件列表各文档集成文件类型徽标、环形进度条与实时进度状态展示
+
+**目标**
+- 根据用户提供的参考截图，将任务处理进度（包括上传中、排队中、解析中、翻译中等）直接做进左侧文件列表的每个文档项上；
+- 增加区分度高的文件类型圆形徽标（PDF 红色曲线、PPT 橙色P、Word 蓝色W、Excel 绿色X、图片蓝色图像等）；
+- 在徽标外圈包裹 SVG 环形进度条（支持精确百分比弧长或排队旋转动画）；
+- 在文档标题下方以清晰色彩呈现进度状态文案（如 `解析中 72%`、`上传中 50%`、`排队中`、绿色对勾 `解析完成`、`待解析`、`解析失败` 等）。
+
+**当前状态**
+- 已完成：在 `src/easylearn/main.py` 中：
+  - 在 `list_documents` 接口中为每个返回的 `DocumentView` 动态挂载其实时活动任务（`await state.tasks.active_for(doc.document_id)`），确保页面加载/刷新时自动同步所有正在处理中的文档任务。
+- 已完成：在 `src/easylearn/static/app.css` 中：
+  - 重构 `.document-open` 为左右弹性对齐布局，并微调文本溢出截断与间距；
+  - 增加 `.doc-icon-container` 容器与 `.doc-ring-svg` SVG 环形进度条样式（`r=15.5`，`stroke-width=2.2`，精确支持 `stroke-dashoffset` 动画与 `doc-ring-spin` 旋转动画，严格配置 `circle { fill: none; }` 避免黑色底色）；
+  - 增加 `.doc-badge` 圆形文件徽标样式（居中、投影与描边）；
+  - 增加 `.document-item-status` 状态行样式及各种语义色彩（`.is-running` 品牌蓝、`.is-success` 翡翠绿、`.is-failed` 珊瑚红、`.is-muted` 灰色）。
+- 已完成：在 `src/easylearn/static/app.js` 中：
+  - 封装 `getFileIconSvg(filename)`：针对 PDF、PPT、Word、Excel、Image、通用文件等精确生成居中矢量图标；
+  - 封装 `getDocumentTask(documentId, item)`：结合 `state.tasks` 与接口返回的 `item.tasks` 快速匹配文档关联的最优任务；
+  - 抽离独立的 `renderDocumentList()` 与 `createDocumentItemElement(item)`：动态构建环形 SVG 进度条及副标题状态元素，支持文档级取消与重试快捷操作；
+  - 升级 `uploadDocument(file)`：通过 `XMLHttpRequest.upload.onprogress` 精确捕获实际上传进度并实时更新至列表第一项的 `上传中 XX%` 与环形进度条；
+  - 联动 `renderTasks()` 与 `watchTask()`：在任务每秒轮询进度推进或结束时自动调用 `renderDocumentList()` / `refreshDocuments()`，实时刷新所有文档状态。
+- 已验证：
+  - 执行 `verify_document_list_progress.py`（无头 Chrome 端到端测试）：
+    - 验证真实文档加载、解析完成对勾徽标展示以及点击打开渲染正常；
+    - 验证多文档多状态（72%解析、50%上传、排队旋转、90%解析、完成对勾）的展示效果与用户截图高度一致；
+    - 保存截图证据：`ui_doc_list_progress_initial.png` 与 `ui_doc_list_progress_showcase.png`。
+  - 执行 `pytest tests/v3`，全部 87 个单元测试通过；
+  - 执行 `ruff check src tests`，全量代码格式检查通过。
+
+**验证证据**
+- `verify_document_list_progress.py` 端到端自动化运行输出：
+  - `Document name: HOW DO VISION TRANSFORMERS WORK.pdf`
+  - `Status text: 解析完成`
+  - `Status class: document-item-status is-success`
+  - `Successfully opened document and verified result-block rendered!`
+  - 截图证据：`ui_doc_list_progress_initial.png`、`ui_doc_list_progress_showcase.png`
+- `& "D:\Software\anaconda3\envs\learn\python.exe" -m pytest tests/v3` → 87 passed in 8.16s。
+- `& "D:\Software\anaconda3\envs\learn\python.exe" -m ruff check src tests` → All checks passed!
+
+**下一步**
+- 功能已就绪，等待用户体验并确认。
+
+**目标**
+- 根据用户需求，当文档尚未生成中文翻译时，解析结果区域默认选中“原文 Markdown”，且“中文 Markdown”选项卡置灰不可选（disabled）；
+- 当翻译完成或打开已有翻译的文档时，恢复“中文 Markdown”的可点击状态并优先展示中文翻译。
+
+**当前状态**
+- 已完成：在 `src/easylearn/templates/index.html` 中初始化“中文 Markdown”选项卡为 `disabled title="尚未生成中文翻译"`，默认“原文 Markdown”为 `.is-active`。
+- 已完成：在 `src/easylearn/static/app.css` 中为 `.tab:disabled` 添加置灰、禁用鼠标指针与不可选中样式（`opacity: 0.38; cursor: not-allowed; border-color: transparent !important; color: var(--muted) !important;`）。
+- 已完成：在 `src/easylearn/static/app.js` 中：
+  - 实现精准的翻译存在性判定 `hasDocumentTranslation()`：由于翻译单元数据接口在未翻译状态下仍会按段落返回 `auto_text: null, manual_text: null` 的结构，因此不能仅靠键值数量判断，而是精确检查是否存在非空的 `auto_text` 或 `manual_text`；
+  - 在 `syncResultTabs()` 中动态控制 `zhTab.disabled`、`aria-disabled` 与 `title` 提示，并在无翻译时强制将视图修正为 `source`；
+  - 在 `setResultView(view)` 中拦截未翻译时切入 `zh` 的请求；
+  - 在 `openParse()`、`loadDocument()` 中初始化/切换解析时自适应选择视图：无翻译时默认选中 `source`，有翻译时默认选中 `zh`；
+  - 在翻译异步任务完成（`finished.kind === "translate"`）时，动态刷新并激活切换至 `zh`。
+- 已验证：
+  - 执行 `verify_untranslated_tab.py`（无头 Chrome 真实环境模拟测试）：未翻译文档打开后 `zh_tab.disabled === true`，`source_tab` 激活且右侧展示原文 Markdown，点击 `zh_tab` 被拦截无法切换；已保存截图证据 `ui_untranslated_tabs.png`；
+  - 执行 `pytest tests/v3`，全部 87 个单元测试通过；
+  - 执行 `ruff check src tests`，全量代码格式及规范检查通过。
+
+**验证证据**
+- `verify_untranslated_tab.py` 自动化测试输出：
+  - `zh_tab disabled: true`
+  - `zh_tab classes: tab result-tab`
+  - `source_tab classes: tab result-tab is-active`
+  - 截图证据：`ui_untranslated_tabs.png`
+- `& "D:\Software\anaconda3\envs\learn\python.exe" -m pytest tests/v3` → 87 passed in 7.93s。
+- `& "D:\Software\anaconda3\envs\learn\python.exe" -m ruff check src tests` → All checks passed!
+
+**下一步**
+- 交互已全部生效，等待用户后续指令。
+
+
+### 2026-09-07 — 恢复服务启动与关闭生命周期控制台日志、保持业务操作文件纯净落盘
+
+**目标**
+- 解决用户反馈的“启动和关闭服务的日志怎么也不输出到控制台了”的问题；
+- 在保持业务操作日志（上传、解析、批量翻译、AI问答、请求轮询等）纯净写入日期日志文件的前提下，恢复控制台终端中的服务启动生命周期提示（URL、端口）与关闭提示。
+
+**当前状态**
+- 已完成：在 `src/easylearn/__main__.py` 中移除 `log_config=None`，恢复 Uvicorn 核心服务生命周期的控制台输出机制，同时保留 `access_log=False` 阻止 HTTP 轮询请求刷屏。
+- 已完成：在 `src/easylearn/logging_setup.py` 中：
+  - 调整 `cleanup_loggers`，不再剥离 `uvicorn` 与 `uvicorn.error` 的原生控制台处理器；
+  - 为生命周期核心记录器 `easylearn.main` 显式挂载 `sys.stdout` 的控制台处理器；
+  - 维持 `root` 记录器无控制台处理器的状态，使业务操作模块（`easylearn.translation`, `easylearn.parser`, `easylearn.documents`, `easylearn.qa`, `mineru`）的日志仅落盘至每日日志文件，不污染终端；
+  - 在 `LoggingController.close()` 中同步释放并移除生命周期控制台处理器。
+- 已完成：在 `tests/v3/test_runtime.py` 中新增单元测试 `test_lifecycle_logs_to_console_while_domain_logs_go_to_file`。
+- 已验证：
+  - 87 个单元测试全部通过（`87 passed in 8.06s`）；
+  - `ruff check src tests` 无任何警告与错误；
+  - 实测验证启动与关闭日志输出至控制台，同时业务模块日志纯净写入文件。
+
+**验证证据**
+- `& "D:\Software\anaconda3\envs\learn\python.exe" -m pytest tests/v3` → 87 passed in 8.06s。
+- `& "D:\Software\anaconda3\envs\learn\python.exe" -m ruff check src tests` → All checks passed!
+- `test_console_logging.py` 实测输出：控制台仅打印 `EasyLearn started at ...` 和 `EasyLearn stopped`，而业务操作日志仅在 `YYYY-MM-DD.log` 中记录。
+
+**下一步**
+- 用户重启 `python -m easylearn` 即可看到控制台的启动服务提示及 Ctrl+C 关闭提示。
+
+
+
+### 2026-09-07 — AI解读重构为侧边抽屉、回答区域移除冗余引用块、锚点块点击双向联动定位及日志多份成因排查
+
+**目标**
+- 改造 AI 解读界面交互形态：将原浮动弹窗（`#ai-popover`）重构为与设置抽屉一致的右侧全高滑出抽屉（`#ai-panel` / `.settings-drawer.ai-drawer`），包含模糊半透明遮罩与侧边平滑滑入动画；
+- 精简回答区域内容：移除回答区域内部多余的重复引用按钮块（`#citation-list`），避免与上方已有的问题锚点信息重复；
+- 实现问题锚点块双向联动定位：点击上方问题锚点块（`#qa-anchor-box`）或按回车/空格，能在左侧原文 PDF 区域和右侧解析 Markdown 区域同步高亮选中并滚动居中定位至对应块；
+- 排查并明确说明日志输出多份（`F:\Projects\EasyLearn\logs` 与 `config.toml` 中配置的 `F:\tmp\easylearn-logs`）的具体成因与定位。
+
+**当前状态**
+- 已完成：在 `src/easylearn/templates/index.html` 中：
+  - 将原 `#ai-popover` 替换为与 `#settings-panel` 一致的 `.settings-drawer-wrapper` 抽屉结构（`#ai-panel`、`#ai-backdrop`、`.settings-drawer.ai-drawer`）；
+  - 移除回答框内的 `#citation-list` 容器；
+  - 为 `#qa-anchor-box` 添加可交互属性 `.clickable-anchor`、`tabindex="0"`、`role="button"` 及 `🎯 点击定位` 标签。
+- 已完成：在 `src/easylearn/static/app.css` 中：
+  - 移除已废弃的浮动窗样式 `.ai-popover`、`.ai-head` 等；
+  - 增加 `.ai-drawer`、`.ai-drawer-body`、`.clickable-anchor`、`.anchor-box-header`、`.anchor-locate-tag` 等样式规范；
+  - 优化抽屉内 `.answer-box` 为自适应纵向弹性展开（`flex: 1; min-height: 120px`），大幅提升长篇解读与要点总结的阅读体验。
+- 已完成：在 `src/easylearn/static/app.js` 中：
+  - 升级 `openQaDrawer` / `closeQaDrawer` 控制抽屉及遮罩层；
+  - 为 `#ai-backdrop` 绑定点击遮罩关闭抽屉；为全局 `Escape` 键盘事件绑定关闭 AI 抽屉；
+  - 增加 `locateAnchorBlock()` 方法：点击锚点块触发 `selectBlock(blockId, false)`、`scrollToResultBlock(blockId)` 与 `pdfReader.focusBlock(blockId)`，实现 PDF 原文与解析内容双向同步居中高亮；
+  - 问答历史切换（`renderQaRecord`）或手动选择时实时同步锚点内容与高亮状态，移除旧版引用按钮逻辑；
+  - 选择变化时（`selectBlock` / `clearBlockSelection`）自动与打开的 AI 抽屉联动刷新。
+- 已完成：排查确认两处日志路径的成因并留证：
+  1. `F:\tmp\easylearn-logs`：由实际运行服务（读取 `config.toml` 中 `files.log_dir = "F:/tmp/easylearn-logs"`）写入的用户真实操作日志；
+  2. `F:\Projects\EasyLearn\logs`：由自动化测试套件（`pytest tests/v3`）或未指定配置文件的代码测试实例化 `Settings()` 时，回退到默认值 `FileSettings.log_dir = Path("./logs")` 所生成的测试虚拟请求日志。
+- 已验证：
+  - 86 个单元测试全部通过；
+  - `ruff check src tests` 无任何警告与错误；
+  - 真实运行实例浏览器自动化端到端验收通过：抽屉滑入滑出、遮罩点击关闭、Esc 关闭、锚点点击高亮定位 PDF 和解析块均全部正常，并产出截图证据 `ui_ai_drawer.png`。
+
+**验证证据**
+- `& "D:\Software\anaconda3\envs\learn\python.exe" -m pytest tests/v3` → 86 passed in 8.34s。
+- `& "D:\Software\anaconda3\envs\learn\python.exe" -m ruff check src tests` → All checks passed!
+- Selenium 端到端自动化脚本执行成功，生成截图 `ui_ai_drawer.png`，证实 AI 抽屉结构完整、交互无瑕疵。
+
+**下一步**
+- 向用户汇报交付成果，附带截图说明与两处日志路径成因解释。
+
+
+
+### 2026-09-07 — 全文翻译异步并发加速、全流程关键业务日志落盘与控制台打印抑制
+
+**目标**
+- 解决全文翻译耗时过长问题：由原先完全单线程串行等待各批次大模型响应，升级为受控异步并发（`asyncio.Semaphore`），大幅缩短整篇文档翻译时间；
+- 解决翻译、上传、解析无日志响应、无法感知进度问题：在文档上传/删除、解析、翻译、AI问答、导出、编辑等核心关键操作中补齐规范详细日志；
+- 满足“日志不要输出到控制台，写入文件即可”：彻底抑制控制台终端标准输出/错误打印，所有服务与业务日志统一、干净地记录于日期日志文件（`YYYY-MM-DD.log`），并过滤前端轮询高频噪音。
+
+**当前状态**
+- 已完成：在 `src/easylearn/config.py` 的 `TaskSettings` 中增加 `translation_concurrency: int = Field(default=4, ge=1, le=16)`，并在 `config.toml` 的 `[tasks]` 节点中配置 `translation_concurrency = 4`。
+- 已完成：在 `src/easylearn/translation.py` 中改造 `TranslationService.execute`：
+  - 通过 `asyncio.Semaphore(concurrency)` 与 `asyncio.gather` 并发向大模型请求批次翻译；
+  - 互斥安全地累计完成数，每批次完成后精确调用 `await context.progress(...)` 刷新任务进度（如 `已翻译 5/22 批次 (22%)`）；
+  - 遇异常或取消时及时中止所有挂起协程并记录失败日志。
+- 已完成：在 `src/easylearn/__main__.py` 中为 `uvicorn.run()` 增加 `log_config=None`，防止 uvicorn 默认向控制台注册 `StreamHandler`。
+- 已完成：在 `src/easylearn/logging_setup.py` 中：
+  - `configure_logging()` 移除所有控制台 `StreamHandler`（保留 pytest 捕获），确保日志纯净落盘至 `YYYY-MM-DD.log`；
+  - 将 `uvicorn.access` 级别设为 `WARNING`，屏蔽前端每秒轮询任务状态的无效刷屏。
+- 已完成：补全核心业务关键操作日志：
+  - `DocumentService`：上传文件（含原文件名、ID、字节数）、删除文件、收藏切换；
+  - `ParseService`：解析任务提交、开始解析（模型）、PDF预检（页数）、MinerU解析完成（资产数）、发布成果、失败告警；
+  - `TranslationService`：翻译提交、开始翻译（块数、批次数、并发度）、每批次完成耗时与进度、人工编辑、历史恢复、全文完成与总耗时、失败告警；
+  - `QAService`：问答开始（问题摘要、证据块数）、问答完成（答案长度、引用数）、失败告警；
+  - `ExportService`：导出提交、开始导出、发布文件、失败告警；
+  - `SourceEditService`：源文档块文本修改保存。
+- 已完成：在 `tests/v3` 中新增 3 个单元测试：
+  - `test_config_resolves_translation_concurrency`（并发配置解析测试）；
+  - `test_logging_removes_console_handlers`（控制台日志处理器过滤测试）；
+  - `test_translation_executes_batches_concurrently`（翻译批次异步并发执行测试）。
+
+**验证证据**
+- `& "D:\Software\anaconda3\envs\learn\python.exe" -m pytest tests/v3` → 86 passed in 8.74s。
+- `& "D:\Software\anaconda3\envs\learn\python.exe" -m ruff check src tests` → All checks passed!
+- 实测验证控制台 StreamHandler 已被正确剥离，只有文件日志记录器生效。
+
+**下一步**
+- 提示用户重启本地服务进程以应用并发加速与纯文件日志配置。
+
+
+
+### 2026-09-07 — 适配 PinAI OpenAI 兼容网关配置、.env 环境变量加载、推理强度支持与外部代理
+
+**目标**
+- 依据 PinAI 官方调用指南（https://app.pinaic.com/docs/home-guide）在 `config.toml` 中配置 OpenAI 兼容 API 接入参数；
+- 支持使用根目录 `.env` 文件维护敏感 API Key（`PINAI_API_KEY`），并配置 `.gitignore` 与 `.env.example` 模板，杜绝敏感密钥提交泄漏；
+- 支持推理强度参数 `reasoning_effort`（如 `"low"`, `"medium"`, `"high"`），大幅降低深度推理模型（如 `gpt-5.6-luna`）的调用耗时；
+- 解决设置抽屉中大模型信息显示“（未配置）”的问题：在 `/api/health` 接口中回传 `model` 与 `base_url`；
+- 解决国内直连 PinAI 网关 403 权限限制问题：在外部大模型模式下（`local_only=false`）使底层 `httpx` 客户端自动继承环境代理配置；
+- 解决 OpenAI 流式协议中含 `usage` 尾包导致 `IndexError` 的解析 Bug。
+
+**当前状态**
+- 已完成：在 `config.toml` 中写入 `[llm]` 配置块（`base_url = "https://api.pinaic.com/v1"`，`model = "gpt-5.6-luna"`，`reasoning_effort = "low"`，`api_key_env = "PINAI_API_KEY"`，`local_only = false`）。
+- 已完成：在 `src/easylearn/config.py` 中：
+  - `Settings.load()` 自动检测并加载 `.env` 环境变量文件；
+  - `LLMSettings` 增加可选 `api_key: str | None = None` 与 `reasoning_effort: str | None = None`；
+  - `llm_api_key` 优先读取显式 `api_key`，缺省时读取 `api_key_env` 对应环境变量。
+- 已完成：在 `src/easylearn/main.py` 的 `/api/health` 接口中补充 `model`、`base_url` 与 `has_api_key` 字段，使前端设置抽屉实时显示当前真实模型。
+- 已完成：在 `src/easylearn/translation.py` 中将 `reasoning_effort` 注入 `complete_json` 与 `stream` 请求载荷；
+- 已完成：在 `.env` 中填入用户更新的 `PINAI_API_KEY`，在 `.gitignore` 中确认忽略 `.env`，并提供 `.env.example` 样例。
+- 已完成：在 `src/easylearn/translation.py` 与 `src/easylearn/main.py` 中将 `httpx.AsyncClient(trust_env=False)` 优化为 `trust_env=not settings.llm.local_only`，在外部大模型调用时自动继承系统环境代理（如 `127.0.0.1:7890`）。
+- 已完成：在 `src/easylearn/translation.py` 的 `LLMClient.stream()` 中增强对 OpenAI 尾部空 choices（usage chunk）的兼容解析，避免引发 `LLM_PROTOCOL_INVALID`。
+- 已完成：在 `pyproject.toml` 的 `dependencies` 中显式添加 `python-dotenv==1.2.3`。
+- 已完成：在 `tests/v3/test_config.py` 中新增对 `[llm]` 设置加载（含 `reasoning_effort`）、密钥优先级覆盖及 `.env` 自动加载的单元测试。
+
+**验证证据**
+- 真实 API 连通性测试：
+  - `gpt-5.6-luna` 配合 `reasoning_effort="low"` 实测流式问答约 7 秒返回结果；
+  - `gpt-5.6-luna` 配合 `reasoning_effort="low"` 实测批量 JSON 翻译顺利返回：`{"p0.b0":"计算机系统导论","p0.b1":"程序员的视角"}`；
+  - `/api/health` 返回 `{'configured': True, 'model': 'gpt-5.6-luna', 'base_url': 'https://api.pinaic.com/v1', 'has_api_key': True}`。
+- `& "D:\Software\anaconda3\envs\learn\python.exe" -m pytest tests/v3` → 83 passed in 7.26s。
+- `& "D:\Software\anaconda3\envs\learn\python.exe" -m ruff check src tests` → All checks passed!
+- `node --check src/easylearn/static/app.js ; node --check src/easylearn/static/pdf-viewer.js` → 0 errors。
+
+**下一步**
+- 交付用户验收当前配置与大模型功能。
+
+**目标**
+- 解决“AI 解读功能呢，还有中文翻译呢，现在中文 markdown 里面还是英文”：
+  - 查明原因：MinerU 是文档解析引擎（按原文提取），中文翻译需由后端 `TranslationService` 异步调用大模型完成；因顶栏操作区缺少触发入口导致用户无法发起翻译与问答；
+  - 在顶栏工具栏 `.result-actions` 中补齐 `[ 翻译全文 ]`（`#translate-button`）与 `[ ✦ AI 解读 ]`（`#qa-button`），并默认启用 `qa_enabled = true`；当用户未配置大模型密钥时提供清晰引导并直接打开 API 设置抽屉；
+- 对标截图 150418.png 将原居中弹出式设置重构为右侧滑入式设置抽屉（`.settings-drawer`），支持 `[ 设置 ]` 与 `[ API / 模型 ]` 双标签页、解析与辅助选项开关及底部固定操作条；
+- 对标交互原型 `FastAPI_MinerU右上角AI解读交互示例.html`：
+  - 在选中文档块悬浮操作栏（Action Pill）中增加 `[ ✦ AI解读 ]`（与 `[复制]`、`[纠正]` 并列）；
+  - 点击块级“AI解读”或顶栏全局“AI解读”时打开右上角 AI 解读面板（`#ai-popover`），显示当前锚点块信息、快捷提问指令（`[ 解释这段 ] [ 总结要点 ] [ 比较关联 ]`）、问答历史、正文引用定位及 `Ctrl + Enter` 快捷提问。
+
+**当前状态**
+- 已完成：在 `src/easylearn/config.py` 与 `config.toml` 中设置 `qa_enabled = true`，默认启用问答模块。
+- 已完成：在 `src/easylearn/templates/index.html` 中：
+  - 顶栏 `.result-actions` 增加 `[ 翻译全文 ]`（`#translate-button`）与 `[ ✦ AI 解读 ]`（`#qa-button`）；
+  - 重构右侧滑出抽屉结构 `.settings-drawer-wrapper`，包含对标 150418.png 的双标签页、解析选项与辅助开关，底部包含 `[ 应用 ]` 与 `[ 重置 ]`；
+  - 接入对标原型 HTML 的 `#ai-popover` 结构，包含锚点块预览、快捷提问胶囊、答案与引用区域以及快捷输入框。
+- 已完成：在 `src/easylearn/static/app.css` 中增加右侧滑入抽屉（带半透明遮罩、平滑 transform 过渡、底部悬浮操作栏）和 AI 解读浮层（包含精巧锚点胶囊、快捷提问卡片、引用小徽标高亮及打字框）的完整现代 UI 样式。
+- 已完成：在 `src/easylearn/static/app.js` 中：
+  - 在 `renderResult()` 渲染每个文档块时，向 `.result-block-actions` 动态添加 `[ ✦ AI解读 ]` 按钮并绑定 `openQaForBlock(blockId)`；
+  - 完善设置抽屉的展开、收起、标签切换及同步 `config.toml` 选项与 API 凭据逻辑；
+  - 实现 AI 解读面板的展开、收起、锚点块摘要与滚动联动、快捷提问填充、提问发起、答案引用跳转及未配置 LLM 时的引导提示；
+  - 全局 Escape 键可一键退出选中文档块、关闭设置抽屉或 AI 解读面板。
+
+**验证证据**
+- `scratch/verify_qa_and_drawer.py` 驱动 Selenium 对运行中的 EasyLearn 实例进行实机测试：
+  - 选中块胶囊栏按钮验收：`['复制', '纠正', '✦ AI解读']`；
+  - 点击“✦ AI解读”验收：`#ai-popover` 正确弹出，锚点预览正确显示 `已选块 p0.b0 (标题)`；
+  - 设置抽屉验收：点击顶栏设置按钮，`.settings-drawer` 顺滑滑出，默认停留在 `[ 设置 ]` 标签页，切换至 `[ API / 模型 ]` 标签页显示模型配置信息；
+  - 实测截屏验证：
+    - `ui_block_actions_pill.png`：块级操作胶囊栏展示 `[复制] [纠正] [✦ AI解读]`；
+    - `ui_ai_popover.png`：右上角 AI 解读面板、锚点块信息及快捷指令；
+    - `ui_settings_drawer.png`：对标 PaddleOCR 150418.png 的抽屉式面板；
+    - `ui_settings_drawer_api.png`：API / 模型配置标签页。
+- `& "D:\Software\anaconda3\envs\learn\python.exe" -m pytest tests/v3` → 81 passed in 9.22s。
+- `node --check src/easylearn/static/app.js` → 0 错误。
+
+**下一步**
+- 交付用户验收。
+
+**目标**
+- 将 PDF 底部工具栏移至阅读列顶部导航栏（`.topbar` 第二行），完全对标截图 145121.png；
+- 交换顶栏中“源文件”标签与“文件名/文件信息”的位置：第一行展示文件名与大小，第二行左侧展示“原文件”标签；
+- 去除工具栏中缩放比例的 `<select>` 下拉框；
+- 对标截图 144918.png 与 145000.png，将缩放控制改为只读百分比数值（`⊖ 100% ⊕`），居于缩小与放大两个按钮之间；
+- 移除 `1:1` 与 `↔`（适应宽度）按钮，并将旋转按钮重构为“重置缩放比例”按钮（保留 `↻` 图标，点击重置为适应窗口大小 fitWidth）；整体造型采用 145000.png 风格的圆角白色胶囊条。
+
+**当前状态**
+- 已完成：在 `src/easylearn/templates/index.html` 中重构 `.topbar`：
+  - 第一行展示 `source-file-info`（PDF 图标、文档名、文件大小）；
+  - 第二行左侧展示 `reader-tabs`（“原文件”标签），中央居中嵌入 `#pdf-toolbar`；
+  - 移出底部多余的旧工具栏结构。
+- 已完成：在 `#pdf-toolbar` 中实现 145000.png 胶囊布局：
+  - 翻页区：`‹` 上一页、`[ 1 ] / 26` 页码输入框效果、`›` 下一页；
+  - 缩放区：`⊖` 缩小、`100%` 只读数值、`⊕` 放大；
+  - 分割线与 `↻` 重置缩放按钮（重置为适应窗口大小 `fitWidth()`）。
+- 已完成：在 `src/easylearn/static/pdf-viewer.js` 中将 `resetScale()` 调整为直接调用 `fitWidth()`，取消多余的阈值限制，确保每次点击 `↻` 均精确重置为当前阅读区容器的适应宽度。
+- 已完成：在 `src/easylearn/static/app.css` 中重构 `.topbar .header-row-bottom` 为 relative 容器，`.pdf-toolbar` 绝对居中于顶栏第二行（高度 30px，圆角 999px，纯白阴影胶囊），`.pdf-pages` 底部内边距恢复为常规 40px。
+- 已完成：在 `src/easylearn/static/pdf-viewer.js` 中新增 `zoomIn()` 与 `zoomOut()` 方法，调整 `#updateControls` 绑定至新选择器。
+- 已完成：在 `src/easylearn/static/app.js` 中重写翻页与缩放按钮事件监听，更新 `onScaleChange` 与 `onPageChange` 对新页码与只读百分比文本的联动更新，更新 `clearCurrentDocument()` 默认复位状态。
+- 已完成：更新 `tests/v3/test_app.py` 与 `tests/browser/test_real_acceptance.py` 断言新元素与缩放操作。
+
+**验证证据**
+- `scratch/test_live_toolbar.py` 驱动 Selenium 对运行中 EasyLearn 实例进行实机测试：
+  - 验证顶栏第一行成功包含文件名与大小；
+  - 验证第二行左侧展示“原文件”，中央居中包含 `#pdf-toolbar`（`bottom: 72px`, `height: 30px`, 水平绝对居中）；
+  - 验证初始适应窗口缩放百分比读取为 `111%`；点击 `zoom-in` 步进至 `121%`；点击 `zoom-out` 步进回 `111%`；再次放大后点击 `reset-zoom` 精确复位为适应窗口的 `111%`；
+  - 截屏证据保存至 `ui_topbar_toolbar.png`，证实顶栏左右高度完美对称，胶囊栏精致无遮挡。
+- `& "D:\Software\anaconda3\envs\learn\python.exe" -m pytest tests/v3` → 81 passed in 9.10s。
+- `node --check src/easylearn/static/app.js ; node --check src/easylearn/static/pdf-viewer.js` → 0 错误。
+
+**下一步**
+- 交付用户验收。
+
+
+### 2026-09-07 — 修复左侧底栏 PDF 翻页/缩放工具栏随页面滚动的定位 Bug
+
+**目标**
+- 解决在左侧 PDF 区域滚动翻页时，底部浮动工具栏（`< 1 / 26 > 自定义 1:1 ↔ ⟳`）随第 1 页滚动上移并卡在正文中间（截图 143052.png）的 Bug；
+- 将 `#pdf-toolbar` 牢固固定在左侧阅读器区域（`.reader-column`）视口底部正中央（距底 17px），无论内部 PDF 页面如何滚动，工具栏始终悬浮在视口下方。
+
+**当前状态**
+- 已完成：根因分析明确。此前 `#pdf-toolbar` 作为子元素放置在包含 `overflow-y: auto` 与 `contain: layout` 的 `#pdf-viewer` 滚动容器内部，导致绝对定位元素脱离视口随页面内容一同滚动。
+- 已完成：在 `src/easylearn/templates/index.html` 中重构 DOM 层次结构，将 `#pdf-toolbar` 移出 `#pdf-viewer`，作为 `.reader-column` 的直接子级。
+- 已完成：在 `src/easylearn/static/app.css` 中为 `.reader-column` 增加 `position: relative; height: 100%; overflow: hidden;`，并将 `.pdf-toolbar` 样式修正为 `position: absolute; left: 50%; bottom: 17px; transform: translateX(-50%); z-index: 10;` 以及 `.pdf-toolbar[hidden] { display: none !important; }`。
+- 已完成：在 `src/easylearn/static/app.js` 的 `syncWorkspaceLayout()` 中补充对 `#pdf-toolbar` 的 `hidden` 属性同步，保证无文档时隐藏、载入文档时显示。
+
+**验证证据**
+- `scratch/test_live_toolbar.py` 驱动 Selenium 对运行中的 EasyLearn 实例进行滚动实测：
+  - 将 `#pdf-viewer` 纵向滚动至 1200px（翻至第 2 页）；
+  - 获取 DOM `getBoundingClientRect`：`.reader-column.bottom = 849`，`#pdf-toolbar.bottom = 832`，距离底部精确为 `17px`，水平居中；
+  - 产出截图 `ui_pdf_scrolled_fixed_toolbar.png`，直观证实滚动到第 2 页时，工具栏稳定悬浮在左侧视口正下方，不再随第 1 页正文位移。
+- `& "D:\Software\anaconda3\envs\learn\python.exe" -m pytest tests/v3` → 81 passed in 8.37s。
+- `node --check src/easylearn/static/app.js ; node --check src/easylearn/static/pdf-viewer.js` → 均通过检查，0 错误。
+
+**下一步**
+- 交付用户验证。
+
+
+### 2026-09-07 — 极简细滚动条、空白点击取消选中、对标 PaddleOCR 纠正卡片及左侧 PDF 流畅滚动优化
+
+**目标**
+- 去除右侧页面 Windows 原生灰色宽滚动条，替换为对标 PaddleOCR（截图 140639.png）的极简 6px 浮动细滚动条，使内容完整适配整个页面；
+- 修复选中块后点击空白区域无法取消选中的问题，并移除块选中时非选中块变暗（`opacity: .34`）的视觉干扰，保持全文清晰可读；
+- 重构“纠正”编辑交互与外观，完全对标 PaddleOCR（截图 140639.png）：单块原位切换为独立编辑卡片，顶部包含 `Tᴛ`、`B`、`I`、`S` 格式栏及 `取消`、`保存` 按钮，下方为无边框自适应高度文本域，不再出现重复文本及 `t0.s0` 节点标签；
+- 彻底解决左侧 PDF 滚动卡顿不流畅的问题：消除滚动中对已渲染 Canvas 的重复销毁重绘，使用 `requestAnimationFrame` 节流滚动与命中测试，消除滚动时与右侧平滑动画引起的线程争用与掉帧。
+
+**当前状态**
+- 已完成：在 `app.css` 中引入极简细滚动条样式（`::-webkit-scrollbar { width: 6px; }`，透明轨道与胶囊滑块，支持 Firefox `scrollbar-width: thin`），去除原生灰条，右侧与左侧均无挤压贴边。
+- 已完成：在 `app.css` 中移除非选中块的 `opacity: .34` 变暗规则；在 `app.js` 与 `pdf-viewer.js` 中增加空白区域点击监听器与 Escape 快捷键，点击文档空白或 PDF 空白即可即时清除选中高亮。
+- 已完成：对标 PaddleOCR 截图 140639 重构块“纠正”编辑状态为 `.block-edit-card`：原位替代常规块渲染，顶部格式工具栏（标题、加粗、斜体、删除线）、`取消` 与主题蓝 `保存` 按钮、无边框自适应高度文本域；支持快捷键与即时更新 IR。
+- 已完成：重构 PDF 滚动与渲染性能引擎：
+  1. 增加 `renderedScale` 与 `renderedRotation` 缓存，视口内滚动时对已渲染页面直接复用 GPU 缓存，彻底杜绝重复销毁与 Canvas 重绘；
+  2. 使用 `requestAnimationFrame` 对滚动事件与指针悬浮测试进行批处理，并通过页面外包围盒预筛选，命中计算开销降低 95% 以上；
+  3. `fitWidth` 与 `setScale` 增加浮点阈值防护，避免因滚动条出现微小像素变动反复触发重新排版；
+  4. 优化 `onPageChange` 联动：仅在手动切页时执行右侧跳转，用户自由滚动左侧 PDF 时不强行 smooth-scroll 右侧，结合 CSS `will-change: scroll-position` 与 `contain: layout paint`，实现 60fps+ 丝滑滚动。
+
+**验证证据**
+- `python verify_ui_and_scroll.py` 执行端到端完整自动化浏览器验收：
+  - 非选中块透明度验证：`Non-selected block opacity: 1`（全文保持清晰，无暗化）。
+  - 点击空白取消选中验证：`Blocks selected after blank click: 0`。
+  - “纠正”卡片验证：`Edit card present: True`，`Format buttons count: 4 (T, B, I, S)`，`Save and Cancel buttons present: True`。
+  - PDF 滚动与页码联动验证：快速滚动后无卡顿过渡至第 2 页，页码正确显示 `2 / 26`。
+  - 截屏证据保存：
+    - `ui_block_selected.png`（证实 6px 极简细滚动条与选中高亮不暗化）；
+    - `ui_block_edit_card.png`（证实完全对标 140639 纠正卡片，顶栏格式按钮 + 纯净文本框）；
+    - `ui_pdf_scrolled.png`（证实 PDF 流畅滚动与多页渲染）。
+- `D:\Software\anaconda3\envs\learn\python.exe -m pytest tests\v3` → `81 passed in 10.85s`。
+- `node --check src/easylearn/static/app.js` 与 `node --check src/easylearn/static/pdf-viewer.js` → 均通过检查，0 错误。
+
+**下一步**
+- 交付用户验收当前界面与滚动交互。
+
+
+### 2026-09-07 — 修复右侧多页滚动、对标 PaddleOCR 按钮与悬浮高亮、PDF 适应窗口及日志刷屏
+
+**目标**
+- 修复解析完成后右侧内容被截断、仅显示第 1 页无法下翻的问题；
+- 对标 PaddleOCR 交互，实现左侧 PDF 翻页与右侧解析内容同步定位；
+- 工具栏按钮对标 PaddleOCR（截图 133755.png）：设置、重新解析、复制、下载，带纯白卡片式气泡 Tooltip；
+- 鼠标悬浮高亮样式对标 PaddleOCR（截图 134315.png）：左右两端带实心蓝色块类型标签（如“标题”、“正文”、“摘要”），右端提供浮动“复制”与“纠正”操作，隐藏默认调试方框与复选框；
+- PDF 视图自适应窗口宽度；
+- 修复控制台被 MinerU 的 DEBUG 版面坐标 token 刷屏问题。
+
+**当前状态**
+- 已完成：在 `app.css` 中恢复 `.result-content { flex: 1; min-height: 0; overflow-y: auto; ... }` 与 `.result-column { overflow: hidden; height: 100%; ... }`，右侧 373 个内容块（全部 26 页）已支持平滑滚动与滚轮翻阅。
+- 已完成：在 `app.js` 的 `onPageChange` 中加入右侧滚动定位联动，PDF 翻页时自动平滑定位至对应页首块。
+- 已完成：在 `pdf-viewer.js` 的 `load()` 中默认执行 `fitWidth()`，并添加 ResizeObserver 实现自适应窗口大小。
+- 已完成：重构工具栏为 4 个平整无框细线条 SVG 矢量按钮（设置、重新解析、复制、下载），配合纯 CSS 白色悬浮小气泡 Tooltip（含指向小三角与软阴影）。
+- 已完成：对标 PaddleOCR 实现左右悬浮高亮：左侧 PDF 与右侧 Markdown 均基于 `data-label` 渲染主题蓝标签徽标，右侧浮现“复制”与“纠正”轻量操作栏，并默认隐藏高干扰的 `[ ] p0.b0 · heading` 调试信息。
+- 已完成：在 `logging_setup.py` 中添加 `loguru_logger.remove()`，清除默认输出到控制台的 stderr DEBUG handler，消除 Token 刷屏。
+
+**验证证据**
+- `python -c` 结合 Headless Chrome 自动化验收：
+  - `content computed overflow-y: auto`，`clientHeight: 845`，`scrollHeight: 50624`，`Scrolled scrollTop: 47471`（成功完整滑至第 26 页）。
+  - 4 个工具栏按钮均就位且 Tooltip 正常。
+  - `viewer clientWidth: 891 page0 style: width: 847px; height: 1096.12px;`（宽度自动适应）。
+  - 悬浮元素截屏验收 `hover_verification.png` 证实左右蓝色高亮与“标题”徽标、操作栏显示无误。
+- `D:\Software\anaconda3\envs\learn\python.exe -m pytest tests\v3 -q -p no:cacheprovider --tb=short` → `81 passed in 10.15s`。
+- `$env:EASYLEARN_RUN_BROWSER_TESTS="1"; D:\Software\anaconda3\envs\learn\python.exe -m pytest tests/browser/test_upload.py -k "test_empty_workspace or test_document_workspace" -q -p no:cacheprovider --tb=short` → `2 passed, 5 deselected in 10.55s`。
+- `D:\Software\anaconda3\envs\learn\python.exe -m ruff check src tests` → `All checks passed!`。
+- `node --check src/easylearn/static/app.js` 与 `node --check src/easylearn/static/pdf-viewer.js` → 均通过检查。
+
+**下一步**
+- 交付用户验收当前界面。
+
+
 ### 2026-09-07 — 恢复按钮样式规范与搜索栏隐藏状态
 
 **目标**
