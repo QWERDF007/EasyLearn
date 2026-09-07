@@ -65,12 +65,17 @@ def _open_app(driver: webdriver.Chrome, base_url: str) -> list[dict[str, object]
 
 
 def _wait_for_document(driver: webdriver.Chrome, name: str) -> None:
-    WebDriverWait(driver, 20).until(
-        lambda current: any(
-            item.text.splitlines()[0] == name
-            for item in current.find_elements(By.CSS_SELECTOR, "#document-list .document-item")
-        )
-    )
+    def predicate(current: webdriver.Chrome) -> bool:
+        for item in current.find_elements(By.CSS_SELECTOR, "#document-list .document-item"):
+            name_nodes = item.find_elements(By.CSS_SELECTOR, ".document-item-name")
+            if name_nodes and name_nodes[0].text == name:
+                return True
+            lines = item.text.splitlines()
+            if lines and (lines[0] == name or name in lines):
+                return True
+        return False
+
+    WebDriverWait(driver, 20, ignored_exceptions=(WebDriverException,)).until(predicate)
 
 
 @pytest.fixture
@@ -247,9 +252,17 @@ def test_document_actions_support_favorite_and_delete(server, browser, image_fil
     browser.find_element(By.ID, "file-input").send_keys(str(image_file))
     _wait_for_document(browser, image_file.name)
 
-    item = browser.find_element(By.CSS_SELECTOR, "#document-list .document-item")
-    document_id = item.get_attribute("data-document-id")
-    favorite = item.find_element(By.CSS_SELECTOR, ".favorite-action")
+    document_id = WebDriverWait(browser, 10, ignored_exceptions=(WebDriverException,)).until(
+        lambda current: current.find_element(
+            By.CSS_SELECTOR, "#document-list .document-item"
+        ).get_attribute("data-document-id")
+    )
+    favorite = WebDriverWait(browser, 10, ignored_exceptions=(WebDriverException,)).until(
+        lambda current: current.find_element(
+            By.CSS_SELECTOR,
+            f'#document-list .document-item[data-document-id="{document_id}"] .favorite-action',
+        )
+    )
     favorite.click()
     WebDriverWait(browser, 10).until(
         lambda current: current.find_element(

@@ -5,6 +5,27 @@ GlobalWorkerOptions.workerSrc = "/static/pdfjs/pdf.worker.min.mjs";
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 2;
 
+export function blockTypeLabel(type) {
+  const map = {
+    title: "标题",
+    heading: "标题",
+    header: "页眉",
+    footer: "页脚",
+    paragraph: "正文",
+    abstract: "摘要",
+    table: "表格",
+    table_cell: "单元格",
+    image: "图片",
+    figure: "图表",
+    equation: "公式",
+    formula: "公式",
+    code: "代码",
+    reference: "参考文献",
+    footnote: "脚注",
+  };
+  return map[type?.toLowerCase()] || type || "块";
+}
+
 export class PdfReader {
   constructor(
     container,
@@ -12,6 +33,7 @@ export class PdfReader {
       onPageChange = () => {},
       onError = () => {},
       onBlockClick = () => {},
+      onBlankClick = () => {},
       onBlockHover = () => {},
       onScaleChange = () => {},
     } = {},
@@ -21,6 +43,7 @@ export class PdfReader {
     this.onPageChange = onPageChange;
     this.onError = onError;
     this.onBlockClick = onBlockClick;
+    this.onBlankClick = onBlankClick;
     this.onBlockHover = onBlockHover;
     this.onScaleChange = onScaleChange;
     this.pdf = null;
@@ -31,14 +54,30 @@ export class PdfReader {
     this.hoveredBlock = null;
     this.selectedBlocks = new Set();
     this.scale = 1;
+    this.isFitWidth = true;
     this.rotation = 0;
     this.focusGeneration = 0;
     this.pointerStart = null;
+    this.currentPage = null;
+    this.scrollRafId = null;
+    this.pointerMoveRafId = null;
     this.intersectionObserver = new IntersectionObserver(
       (entries) => this.#observePages(entries),
       { root: container, rootMargin: "1200px 0px" },
     );
-    this.container.addEventListener("scroll", () => this.#updatePageCounter(), { passive: true });
+    this.resizeObserver = typeof ResizeObserver !== "undefined"
+      ? new ResizeObserver(() => {
+        if (this.pdf && this.isFitWidth) this.fitWidth();
+      })
+      : null;
+    this.resizeObserver?.observe(this.container);
+    this.container.addEventListener("scroll", () => {
+      if (this.scrollRafId) return;
+      this.scrollRafId = requestAnimationFrame(() => {
+        this.scrollRafId = null;
+        this.#updatePageCounter(null, true);
+      });
+    }, { passive: true });
     this.container.addEventListener("wheel", (event) => {
       if (
         !event.ctrlKey
@@ -85,8 +124,9 @@ export class PdfReader {
       }
       this.pdf = pdf;
       this.#createPageShells();
+      this.fitWidth();
       await this.#renderNearby(0);
-      this.#updatePageCounter();
+      this.#updatePageCounter(0, false);
     } catch (error) {
       if (generation === this.focusGeneration) this.onError(error);
     } finally {
@@ -96,28 +136,50 @@ export class PdfReader {
 
   destroy() {
     ++this.focusGeneration;
+    if (this.scrollRafId) {
+      cancelAnimationFrame(this.scrollRafId);
+      this.scrollRafId = null;
+    }
+    if (this.pointerMoveRafId) {
+      cancelAnimationFrame(this.pointerMoveRafId);
+      this.pointerMoveRafId = null;
+    }
     this.#disposeDocument();
-    this.intersectionObserver.disconnect();
+    this.intersectionObserver?.disconnect();
+    this.resizeObserver?.disconnect();
     this.pagesContainer.replaceChildren();
     this.pageStates = [];
+    this.currentPage = null;
     this.#updateControls(false);
   }
 
-  setScale(value) {
+  setScale(value, userManual = true) {
     if (value === "") return;
     const scale = Number(value);
     if (!Number.isFinite(scale)) return;
-    this.scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale));
+    if (userManual) this.isFitWidth = false;
+    const nextScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale));
+    if (Math.abs(nextScale - this.scale) < 0.001) return;
+    this.scale = nextScale;
     this.onScaleChange(this.scale);
     this.#resizeShells();
     void this.#rerenderVisible();
   }
 
+  zoomIn(step = 0.1) {
+    this.setScale(Math.round((this.scale + step) * 100) / 100);
+  }
+
+  zoomOut(step = 0.1) {
+    this.setScale(Math.round((this.scale - step) * 100) / 100);
+  }
+
   resetScale() {
-    this.setScale(1);
+    this.fitWidth();
   }
 
   fitWidth() {
+    this.isFitWidth = true;
     const first = this.pageStates[0];
     if (!first) return;
     const geometry = this.pageGeometries[0];
@@ -128,7 +190,8 @@ export class PdfReader {
         : geometry.crop_box[2] - geometry.crop_box[0]
       : sideways ? first.height : first.width;
     const available = Math.max(1, this.container.clientWidth - 44);
-    this.setScale(Math.min(MAX_SCALE, Math.max(MIN_SCALE, available / width)));
+    const targetScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, available / width));
+    this.setScale(targetScale, false);
   }
 
   rotate() {
@@ -144,7 +207,7 @@ export class PdfReader {
     state.shell.scrollIntoView({ block: "start", behavior: "auto" });
     await this.#renderPage(state);
     if (generation !== this.focusGeneration) return;
-    this.#updatePageCounter(pageIndex);
+    this.#updatePageCounter(pageIndex, false);
   }
 
   async focusBlock(blockId) {
@@ -163,7 +226,7 @@ export class PdfReader {
     if (generation !== this.focusGeneration) return;
     const target = state.regions.find((item) => item.dataset.blockId === blockId);
     target?.scrollIntoView({ block: "center", inline: "center", behavior: "auto" });
-    this.#updatePageCounter(region.page_index);
+    this.#updatePageCounter(region.page_index, false);
   }
 
   setHover(blockId) {
@@ -197,6 +260,8 @@ export class PdfReader {
         width,
         height,
         canvas: null,
+        renderedScale: 0,
+        renderedRotation: null,
         renderTask: null,
         renderPromise: null,
         renderGeneration: 0,
@@ -246,6 +311,13 @@ export class PdfReader {
 
   async #renderPage(state) {
     if (!state || !this.pdf) return;
+    if (
+      state.canvas &&
+      state.renderedScale === this.scale &&
+      state.renderedRotation === this.rotation
+    ) {
+      return;
+    }
     state.renderGeneration += 1;
     state.renderTask?.cancel();
     if (state.renderPromise) return state.renderPromise;
@@ -319,6 +391,8 @@ export class PdfReader {
       }
       if (pdf !== this.pdf) return;
       if (generation !== state.renderGeneration) continue;
+      state.renderedScale = this.scale;
+      state.renderedRotation = this.rotation;
       this.#renderRegions(state, viewport, regionLayer);
       return;
     }
@@ -336,7 +410,9 @@ export class PdfReader {
         regionElement.className = "pdf-region";
         regionElement.style.background = "transparent";
         regionElement.dataset.blockId = block.block_id;
-        regionElement.title = `定位到 ${block.block_id}`;
+        regionElement.dataset.blockType = block.block_type || "paragraph";
+        regionElement.dataset.label = blockTypeLabel(block.block_type);
+        regionElement.title = `${blockTypeLabel(block.block_type)} (${block.block_id})`;
         regionElement.style.left = `${left}px`;
         regionElement.style.top = `${top}px`;
         regionElement.style.width = `${Math.abs(rectangle[2] - rectangle[0])}px`;
@@ -351,6 +427,16 @@ export class PdfReader {
 
   #blockAtPoint(clientX, clientY) {
     for (const state of this.pageStates) {
+      if (!state.regions.length) continue;
+      const pageRect = state.shell.getBoundingClientRect();
+      if (
+        clientX < pageRect.left ||
+        clientX > pageRect.right ||
+        clientY < pageRect.top ||
+        clientY > pageRect.bottom
+      ) {
+        continue;
+      }
       for (const region of state.regions) {
         const rectangle = region.getBoundingClientRect();
         if (
@@ -367,14 +453,21 @@ export class PdfReader {
   }
 
   #handlePointerMove(event) {
-    const blockId = this.#blockAtPoint(event.clientX, event.clientY);
-    if (blockId === this.hoveredBlock) return;
-    this.setHover(blockId);
-    this.onBlockHover(blockId);
+    if (this.pointerMoveRafId) return;
+    const clientX = event.clientX;
+    const clientY = event.clientY;
+    this.pointerMoveRafId = requestAnimationFrame(() => {
+      this.pointerMoveRafId = null;
+      const blockId = this.#blockAtPoint(clientX, clientY);
+      if (blockId === this.hoveredBlock) return;
+      this.setHover(blockId);
+      this.onBlockHover(blockId);
+    });
   }
 
   #handleContainerClick(event) {
     const target = event.target;
+    if (target instanceof Element && target.closest("#pdf-toolbar, button, select, input")) return;
     if (target instanceof Element && target.closest(".pdf-region")) return;
     const selection = window.getSelection();
     if (selection && !selection.isCollapsed && selection.toString()) return;
@@ -387,7 +480,11 @@ export class PdfReader {
       if (distance > 5) return;
     }
     const blockId = this.#blockAtPoint(event.clientX, event.clientY);
-    if (blockId) this.onBlockClick(blockId);
+    if (blockId) {
+      this.onBlockClick(blockId);
+    } else {
+      this.onBlankClick();
+    }
   }
 
   #updateRegionClasses() {
@@ -395,30 +492,42 @@ export class PdfReader {
       for (const region of state.regions) {
         const active = region.dataset.blockId === this.hoveredBlock;
         const selected = this.selectedBlocks.has(region.dataset.blockId);
-        const dimmed = this.selectedBlocks.size > 0 && !selected;
         region.classList.toggle("is-hovered", active);
         region.classList.toggle("is-selected", selected);
-        region.classList.toggle("is-dimmed", dimmed);
       }
     }
   }
 
-  #updatePageCounter(forceIndex = null) {
+  #updatePageCounter(forceIndex = null, isUserScroll = true) {
     if (!this.pageStates.length) return;
     let index = forceIndex;
     if (index === null) {
-      const rootTop = this.container.getBoundingClientRect().top;
-      let distance = Number.POSITIVE_INFINITY;
-      for (const state of this.pageStates) {
-        const current = Math.abs(state.shell.getBoundingClientRect().top - rootTop);
-        if (current < distance) { distance = current; index = state.index; }
+      const containerTop = this.container.scrollTop;
+      const probeY = containerTop + this.container.clientHeight * 0.25;
+      let minDistance = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < this.pageStates.length; i++) {
+        const shell = this.pageStates[i].shell;
+        const top = shell.offsetTop;
+        const bottom = top + shell.offsetHeight;
+        if (probeY >= top && probeY <= bottom) {
+          index = i;
+          break;
+        }
+        const dist = Math.abs(top - probeY);
+        if (dist < minDistance) {
+          minDistance = dist;
+          index = i;
+        }
       }
     }
-    if (Number.isInteger(index)) this.onPageChange(index, this.pageStates.length);
+    if (Number.isInteger(index) && index !== this.currentPage) {
+      this.currentPage = index;
+      this.onPageChange(index, this.pageStates.length, isUserScroll);
+    }
   }
 
   #updateControls(enabled) {
-    for (const selector of ["#prev-page", "#next-page", "#zoom-select", "#reset-zoom", "#fit-width", "#rotate-page"]) {
+    for (const selector of ["#prev-page", "#next-page", "#zoom-out", "#zoom-in", "#reset-zoom"]) {
       const control = document.querySelector(selector);
       if (control) control.disabled = !enabled;
     }

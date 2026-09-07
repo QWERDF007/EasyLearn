@@ -10,7 +10,7 @@ from selenium.common.exceptions import StaleElementReferenceException, WebDriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import Select, WebDriverWait
+from selenium.webdriver.support.ui import WebDriverWait
 
 if os.environ.get("EASYLEARN_RUN_BROWSER_TESTS") != "1":
     pytest.skip(
@@ -153,17 +153,19 @@ def test_real_paper_covers_parse_progress_and_pdf_controls(browser):
         .get_attribute("textContent").strip().startswith("1 /")
     )
 
-    zoom_element = browser.find_element(By.ID, "zoom-select")
-    zoom = Select(zoom_element)
+    zoom_in = browser.find_element(By.ID, "zoom-in")
+    initial_scale = float(
+        browser.find_element(By.ID, "pdf-viewer").get_attribute("data-scale") or "1"
+    )
     browser.execute_script(
         "arguments[0].scrollIntoView({block: 'center', inline: 'center'});",
-        zoom_element,
+        zoom_in,
     )
-    zoom.select_by_value("1.5")
+    zoom_in.click()
     WebDriverWait(browser, 30).until(
         lambda current: float(
             current.find_element(By.ID, "pdf-viewer").get_attribute("data-scale")
-        ) == 1.5
+        ) > initial_scale
     )
     reset_zoom = browser.find_element(By.ID, "reset-zoom")
     browser.execute_script(
@@ -172,7 +174,8 @@ def test_real_paper_covers_parse_progress_and_pdf_controls(browser):
     )
     reset_zoom.click()
     WebDriverWait(browser, 30).until(
-        lambda current: float(
-            current.find_element(By.ID, "pdf-viewer").get_attribute("data-scale")
-        ) == 1
+        lambda current: abs(
+            float(current.find_element(By.ID, "pdf-viewer").get_attribute("data-scale"))
+            - initial_scale
+        ) < 0.01
     )

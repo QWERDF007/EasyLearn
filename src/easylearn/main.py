@@ -126,7 +126,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 max_upload_bytes=settings.max_upload_bytes,
                 cache=cache,
             )
-            http = httpx.AsyncClient(trust_env=False, follow_redirects=False)
+            http = httpx.AsyncClient(
+                trust_env=not settings.llm.local_only, follow_redirects=False
+            )
             parser = ParseService(database, files, documents, manager, settings)
             source_edits = SourceEditService(database, documents)
             translation = TranslationService(
@@ -243,7 +245,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "configured": _state(request).parser.mineru.configured,
                 "models": len(_state(request).parser.model_catalog.list()),
             },
-            "llm": {"configured": bool(settings.llm.model and settings.llm.base_url)},
+            "llm": {
+                "configured": bool(
+                    settings.llm.model and settings.llm.base_url and settings.llm_api_key
+                ),
+                "model": settings.llm.model,
+                "base_url": settings.llm.base_url,
+                "has_api_key": bool(settings.llm_api_key),
+            },
             "extensions": settings.extensions.model_dump(mode="json"),
         }
 
@@ -255,7 +264,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def list_documents(
         request: Request, favorite: bool | None = Query(default=None)
     ) -> tuple[DocumentView, ...]:
-        return await _state(request).documents.list(favorite=favorite)
+        state = _state(request)
+        documents = await state.documents.list(favorite=favorite)
+        items: list[DocumentView] = []
+        for doc in documents:
+            tasks = await state.tasks.active_for(doc.document_id)
+            items.append(doc.model_copy(update={"tasks": tasks}))
+        return tuple(items)
 
     @app.get("/api/mineru/models", response_model=tuple[MinerUModelView, ...])
     async def list_mineru_models(request: Request) -> tuple[MinerUModelView, ...]:
