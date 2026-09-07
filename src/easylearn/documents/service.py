@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 from pathlib import Path, PurePath
 from sqlite3 import Row
@@ -18,6 +19,8 @@ from easylearn.errors import DomainError
 from easylearn.files import DocumentFiles
 from easylearn.filetypes import INPUT_MIME, validate_input
 from easylearn.paths import validate_portable_path
+
+logger = logging.getLogger(__name__)
 
 
 class UploadSource(Protocol):
@@ -65,6 +68,12 @@ class DocumentService:
                     "VALUES (?, ?, ?, 0, ?)",
                     (str(document_id), filename, str(destination.relative_to(directory)), now),
                 )
+            logger.info(
+                "Document uploaded: filename=%s, id=%s, size=%d bytes",
+                filename,
+                document_id,
+                size,
+            )
             return await self.get(document_id)
         except BaseException:
             if self.cache is not None:
@@ -104,6 +113,7 @@ class DocumentService:
             )
             if cursor.rowcount != 1:
                 raise DomainError("DOCUMENT_NOT_FOUND", "Document not found", status=404)
+        logger.info("Document favorite changed: id=%s, favorite=%s", document_id, favorite)
         return await self.get(document_id)
 
     async def delete(self, document_id: UUID) -> None:
@@ -117,6 +127,7 @@ class DocumentService:
         if self.cache is not None:
             self.cache.invalidate(document_id)
         await self.files.remove_document(document_id)
+        logger.info("Document deleted: id=%s", document_id)
 
     async def parse_row(self, document_id: UUID, parse_id: UUID) -> Row:
         async with self.database.read() as connection:

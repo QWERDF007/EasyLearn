@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import posixpath
 import re
@@ -35,6 +36,8 @@ from easylearn.mineru.schema import MinerUOptions
 from easylearn.previews.pdf import PdfPreflight
 from easylearn.storage import LocalStorage, StoredObject
 from easylearn.tasks import TaskContext, TaskManager, TaskRecord
+
+logger = logging.getLogger(__name__)
 
 
 class OfficeSelection(BaseModel):
@@ -104,7 +107,7 @@ class ParseService:
         async def admit() -> None:
             await self.documents.get(document_id)
 
-        return await self.manager.submit(
+        task_view = await self.manager.submit(
             document_id,
             JobKind.PARSE,
             {
@@ -116,11 +119,24 @@ class ParseService:
             },
             admission=admit,
         )
+        logger.info(
+            "Parse task submitted: document_id=%s, task_id=%s, model_id=%s",
+            document_id,
+            task_view.task_id,
+            model_id,
+        )
+        return task_view
 
     async def execute(self, record: TaskRecord, context: TaskContext) -> dict[str, JsonValue]:
         parse_id = UUID(str(record.scope["parse_id"]))
         options = self.settings.mineru.parse.__class__.model_validate(record.scope["options"])
         office = _parse_office_scope(record.scope.get("office"))
+        logger.info(
+            "Parse started: document_id=%s, parse_id=%s, model=%s",
+            record.document_id,
+            parse_id,
+            record.scope.get("model_id"),
+        )
         task_directory = self.files.paths.task(record.task_id)
         task_directory.mkdir(parents=True, exist_ok=False)
         try:
@@ -132,6 +148,11 @@ class ParseService:
             report = await PdfPreflight(
                 self.settings.mineru.preview_limits, timeout=self.settings.mineru.timeout_seconds
             ).inspect(input_pdf, preview_sha256)
+            logger.info(
+                "PDF preflight completed: document_id=%s, pages=%d",
+                record.document_id,
+                len(report.pages),
+            )
             await context.progress(0.15, "Preview is ready")
             miner_options = MinerUOptions(
                 **options.model_dump(),
@@ -163,6 +184,11 @@ class ParseService:
                     preview_asset_id=uuid5(NAMESPACE_URL, f"{record.document_id}:preview"),
                     preview=preview_object,
                 ),
+            )
+            logger.info(
+                "MinerU parsing completed: document_id=%s, objects=%d",
+                record.document_id,
+                len(evidence.objects),
             )
             await context.progress(0.8, "Publishing parsed document")
             await context.check()
@@ -225,6 +251,12 @@ class ParseService:
                     )
 
             await context.publish(result_ref, publish)
+            logger.info(
+                "Parse published: document_id=%s, parse_id=%s, pages=%d",
+                record.document_id,
+                parse_id,
+                len(report.pages),
+            )
             if record.scope.get("auto_translate") is True:
                 await context.enqueue_after_success(
                     JobKind.TRANSLATE,
@@ -238,6 +270,14 @@ class ParseService:
                 # Cleanup cannot invalidate an already published parse.
                 pass
             return result_ref
+        except BaseException as exc:
+            logger.error(
+                "Parse failed: document_id=%s, parse_id=%s, error=%s",
+                record.document_id,
+                parse_id,
+                exc,
+            )
+            raise
         finally:
             await run_blocking(self.files.remove_task_directory, record.task_id)
 

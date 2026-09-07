@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -18,6 +19,8 @@ from easylearn.document_ir.schema import (
 )
 from easylearn.documents.service import DocumentService
 from easylearn.errors import DomainError
+
+logger = logging.getLogger(__name__)
 
 
 class SourceEditRequest(BaseModel):
@@ -126,6 +129,14 @@ class SourceEditService:
                     now,
                 ),
             )
+        logger.info(
+            "Source edit saved: document_id=%s, parse_id=%s, block_id=%s, node_id=%s, revision=%d",
+            document_id,
+            request.parse_id,
+            request.block_id,
+            request.node_id,
+            revision,
+        )
         return _view(
             request.parse_id,
             request.block_id,

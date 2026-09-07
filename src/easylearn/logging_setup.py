@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
@@ -62,11 +63,12 @@ class LoggingController:
     def __init__(
         self,
         loggers: tuple[logging.Logger, ...],
-        handler: DateFileHandler,
+        handlers: tuple[logging.Handler, ...],
         sink_id: int | None,
     ) -> None:
         self._loggers = loggers
-        self._handler = handler
+        self._handlers = handlers
+        self._handler = handlers[0] if handlers else None
         self._sink_id = sink_id
         self._closed = False
 
@@ -74,11 +76,20 @@ class LoggingController:
         if self._closed:
             return
         for logger in self._loggers:
-            logger.removeHandler(self._handler)
+            for handler in self._handlers:
+                if handler in logger.handlers:
+                    logger.removeHandler(handler)
         if self._sink_id is not None:
             loguru_logger.remove(self._sink_id)
-        self._handler.close()
+        for handler in self._handlers:
+            handler.close()
         self._closed = True
+
+
+def _is_console_handler(handler: logging.Handler) -> bool:
+    if handler.__class__.__module__.startswith(("_pytest", "pytest")):
+        return False
+    return isinstance(handler, logging.StreamHandler)
 
 
 def configure_logging(
@@ -86,28 +97,51 @@ def configure_logging(
 ) -> LoggingController:
     log_dir.mkdir(parents=True, exist_ok=True)
     root = logging.getLogger()
+    main_logger = logging.getLogger("easylearn.main")
     cleanup_loggers = (
         root,
         logging.getLogger(_LOGGER_NAME),
-        logging.getLogger("uvicorn"),
+        main_logger,
         logging.getLogger("uvicorn.access"),
+        logging.getLogger("mineru"),
     )
     for logger in cleanup_loggers:
         for handler in tuple(logger.handlers):
-            if getattr(handler, _HANDLER_MARKER, False):
+            if getattr(handler, _HANDLER_MARKER, False) or _is_console_handler(handler):
                 logger.removeHandler(handler)
-                handler.close()
+                if getattr(handler, _HANDLER_MARKER, False):
+                    handler.close()
 
-    handler = DateFileHandler(log_dir, date_provider=date_provider)
-    setattr(handler, _HANDLER_MARKER, True)
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
-    attached_loggers = (root, logging.getLogger("uvicorn"), logging.getLogger("uvicorn.access"))
+    file_handler = DateFileHandler(log_dir, date_provider=date_provider)
+    setattr(file_handler, _HANDLER_MARKER, True)
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    attached_loggers = (
+        root,
+        logging.getLogger("uvicorn"),
+        logging.getLogger("uvicorn.access"),
+        logging.getLogger("uvicorn.error"),
+    )
     for logger in attached_loggers:
-        logger.addHandler(handler)
+        logger.addHandler(file_handler)
     root.setLevel(logging.INFO)
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
+    # Console handler dedicated to service lifecycle (startup, shutdown)
+    console_handler = logging.StreamHandler(sys.stdout)
+    setattr(console_handler, _HANDLER_MARKER, True)
+    console_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
+    main_logger.addHandler(console_handler)
+
+    loguru_logger.remove()
     def forward_loguru(message: str) -> None:
         logging.getLogger("mineru").info(message.rstrip("\n"))
 
     sink_id = loguru_logger.add(forward_loguru, level="INFO", format="{message}")
-    return LoggingController(attached_loggers, handler, sink_id)
+    return LoggingController(
+        (*attached_loggers, main_logger),
+        (file_handler, console_handler),
+        sink_id,
+    )
+

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -23,6 +24,8 @@ from easylearn.jobs.schema import JobKind, TaskView
 from easylearn.rendering import render_markdown
 from easylearn.tasks import TaskContext, TaskManager, TaskRecord
 from easylearn.translation import translation_units
+
+logger = logging.getLogger(__name__)
 
 
 class ExportFormat(StrEnum):
@@ -60,7 +63,7 @@ class ExportService:
         async def admit() -> None:
             await self.documents.load_ir(document_id, request.parse_id)
 
-        return await self.manager.submit(
+        task_view = await self.manager.submit(
             document_id,
             JobKind.EXPORT,
             {
@@ -71,11 +74,24 @@ class ExportService:
             },
             admission=admit,
         )
+        logger.info(
+            "Export task submitted: document_id=%s, task_id=%s, format=%s",
+            document_id,
+            task_view.task_id,
+            request.format.value,
+        )
+        return task_view
 
     async def execute(self, record: TaskRecord, context: TaskContext) -> dict[str, JsonValue]:
         parse_id = UUID(str(record.scope["parse_id"]))
         export_id = UUID(str(record.scope["export_id"]))
         selected = ExportFormat(str(record.scope["format"]))
+        logger.info(
+            "Export started: document_id=%s, parse_id=%s, format=%s",
+            record.document_id,
+            parse_id,
+            selected.value,
+        )
         output = self.documents.files.paths.task(record.task_id) / "export"
         output.mkdir(parents=True, exist_ok=False)
         try:
@@ -132,7 +148,21 @@ class ExportService:
                 await run_blocking(self.documents.files.publish_directory, output, destination)
 
             await context.publish(result_ref, publish)
+            logger.info(
+                "Export published: document_id=%s, export_id=%s, file=%s",
+                record.document_id,
+                export_id,
+                file_name,
+            )
             return result_ref
+        except BaseException as exc:
+            logger.error(
+                "Export failed: document_id=%s, export_id=%s, error=%s",
+                record.document_id,
+                export_id,
+                exc,
+            )
+            raise
         finally:
             await run_blocking(self.documents.files.remove_task_directory, record.task_id)
 

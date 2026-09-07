@@ -113,6 +113,45 @@ def test_logging_splits_by_local_date_without_size_rotation(tmp_path: Path):
         controller.close()
 
 
+def test_logging_removes_console_handlers(tmp_path: Path):
+    root = logging.getLogger()
+    test_stream_handler = logging.StreamHandler()
+    root.addHandler(test_stream_handler)
+    assert test_stream_handler in root.handlers
+
+    controller = configure_logging(tmp_path / "logs")
+    try:
+        assert test_stream_handler not in root.handlers
+        assert not any(
+            isinstance(h, logging.StreamHandler)
+            and not h.__class__.__module__.startswith(("_pytest", "pytest"))
+            for h in root.handlers
+        )
+    finally:
+        controller.close()
+
+
+def test_lifecycle_logs_to_console_while_domain_logs_go_to_file(tmp_path: Path):
+    controller = configure_logging(tmp_path / "logs")
+    main_logger = logging.getLogger("easylearn.main")
+    trans_logger = logging.getLogger("easylearn.translation")
+    try:
+        # easylearn.main has a console handler for startup/shutdown
+        assert any(
+            isinstance(h, logging.StreamHandler)
+            and not h.__class__.__module__.startswith(("_pytest", "pytest"))
+            for h in main_logger.handlers
+        )
+        # domain loggers (easylearn.translation, parser, etc.) do NOT have a console handler
+        assert not any(
+            isinstance(h, logging.StreamHandler)
+            and not h.__class__.__module__.startswith(("_pytest", "pytest"))
+            for h in trans_logger.handlers
+        )
+    finally:
+        controller.close()
+
+
 def test_svg_is_decoded_as_a_safe_image():
     from io import BytesIO
 

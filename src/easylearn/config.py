@@ -26,6 +26,7 @@ class TaskSettings(_Config):
     queue_limit: int = Field(default=8, ge=1, le=1000)
     parse_concurrency: int = Field(default=1, ge=1, le=16)
     translation_requests: int = Field(default=1, ge=1, le=16)
+    translation_concurrency: int = Field(default=4, ge=1, le=16)
     qa_requests: int = Field(default=1, ge=1, le=16)
     finished_task_retention_minutes: int = Field(default=30, ge=1, le=1440)
 
@@ -71,10 +72,14 @@ class MinerUSettings(_Config):
 class LLMSettings(_Config):
     base_url: str = "http://127.0.0.1:8000/v1"
     model: str = ""
+    api_key: str | None = None
     api_key_env: str | None = None
     timeout_seconds: float = Field(default=600, gt=0)
     local_only: bool = True
     json_mode: bool = False
+    reasoning_effort: str | None = None
+    proxy: str | None = None
+    max_retries: int = Field(default=3, ge=0, le=10)
 
 
 class FileSettings(_Config):
@@ -124,6 +129,9 @@ class Settings(BaseModel):
             if os.environ.get("EASYLEARN_CONFIG")
             else Path("config.toml")
         )
+        dotenv_path = (configured.parent / ".env") if configured.is_file() else Path(".env")
+        if dotenv_path.is_file():
+            _load_dotenv(dotenv_path)
         if not configured.is_file():
             if explicit is not None or os.environ.get("EASYLEARN_CONFIG"):
                 raise FileNotFoundError(f"Configuration file does not exist: {configured}")
@@ -193,4 +201,27 @@ class Settings(BaseModel):
 
     @property
     def llm_api_key(self) -> str | None:
+        if self.llm.api_key:
+            return self.llm.api_key
         return os.environ.get(self.llm.api_key_env) if self.llm.api_key_env else None
+
+
+def _load_dotenv(path: Path) -> None:
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(path, override=True)
+    except ImportError:
+        try:
+            content = path.read_text(encoding="utf-8-sig")
+        except OSError:
+            return
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            key = key.strip()
+            val = val.strip().strip("'\"")
+            if key:
+                os.environ[key] = val

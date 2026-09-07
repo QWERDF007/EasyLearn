@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -19,6 +20,8 @@ from easylearn.errors import DomainError
 from easylearn.jobs.schema import JobKind, TaskView
 from easylearn.tasks import TaskContext, TaskManager, TaskRecord
 from easylearn.translation import LLMClient
+
+logger = logging.getLogger(__name__)
 
 
 class QARequest(BaseModel):
@@ -239,62 +242,84 @@ class QAService:
             raise DomainError("QA_SCOPE_INVALID", "Question scope is invalid")
         evidence = cast(list[dict[str, JsonValue]], evidence_value)
         prompt = _prompt(evidence)
-        await context.progress(0.1, "Generating answer")
-        async for chunk in self.llm.stream(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "Answer only from the supplied evidence. Cite supporting evidence with the "
-                        "exact bracket number such as [1]. If evidence is insufficient, "
-                        "say so plainly; "
-                        "never invent facts or citation numbers."
-                    ),
-                },
-                {"role": "user", "content": f"Question: {question}\n\n{prompt}"},
-            ]
-        ):
-            await context.append_answer(chunk)
-        await context.check()
-        answer = record.answer or ""
-        if not answer.strip():
-            raise DomainError("QA_EMPTY_ANSWER", "LLM returned an empty answer")
-        citations = _extract_citations(answer, len(evidence))
-        if citations is None:
-            raise DomainError(
-                "QA_CITATION_INVALID",
-                "The answer contains a citation outside the frozen evidence range",
-            )
-        qa_id = UUID(str(record.scope["qa_id"]))
         parse_id = UUID(str(record.scope["parse_id"]))
-        timestamp = _now()
-        citation_views = [evidence[index - 1] for index in citations]
-        result_ref: dict[str, JsonValue] = {
-            "qa_id": str(qa_id),
-            "citations": cast(JsonValue, citations),
-        }
-
-        async def publish() -> None:
-            async with self.database.transaction() as connection:
-                await connection.execute(
-                    "INSERT INTO qa_records "
-                    "(id, document_id, parse_id, question, answer, context_json, citations_json, "
-                    "created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        str(qa_id),
-                        str(record.document_id),
-                        str(parse_id),
-                        question,
-                        answer,
-                        json.dumps(evidence, ensure_ascii=False, separators=(",", ":")),
-                        json.dumps(citation_views, ensure_ascii=False, separators=(",", ":")),
-                        timestamp,
-                    ),
+        logger.info(
+            "QA started: document_id=%s, parse_id=%s, question=%.50r, context_blocks=%d",
+            record.document_id,
+            parse_id,
+            question,
+            len(evidence),
+        )
+        try:
+            await context.progress(0.1, "Generating answer")
+            async for chunk in self.llm.stream(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Answer only from the supplied evidence. "
+                            "Cite supporting evidence with the exact bracket number such as [1]. "
+                            "If evidence is insufficient, say so plainly; "
+                            "never invent facts or citation numbers."
+                        ),
+                    },
+                    {"role": "user", "content": f"Question: {question}\n\n{prompt}"},
+                ]
+            ):
+                await context.append_answer(chunk)
+            await context.check()
+            answer = record.answer or ""
+            if not answer.strip():
+                raise DomainError("QA_EMPTY_ANSWER", "LLM returned an empty answer")
+            citations = _extract_citations(answer, len(evidence))
+            if citations is None:
+                raise DomainError(
+                    "QA_CITATION_INVALID",
+                    "The answer contains a citation outside the frozen evidence range",
                 )
+            qa_id = UUID(str(record.scope["qa_id"]))
+            timestamp = _now()
+            citation_views = [evidence[index - 1] for index in citations]
+            result_ref: dict[str, JsonValue] = {
+                "qa_id": str(qa_id),
+                "citations": cast(JsonValue, citations),
+            }
 
-        await context.publish(result_ref, publish)
-        return result_ref
+            async def publish() -> None:
+                async with self.database.transaction() as connection:
+                    await connection.execute(
+                        "INSERT INTO qa_records "
+                        "(id, document_id, parse_id, question, answer, context_json, "
+                        "citations_json, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            str(qa_id),
+                            str(record.document_id),
+                            str(parse_id),
+                            question,
+                            answer,
+                            json.dumps(evidence, ensure_ascii=False, separators=(",", ":")),
+                            json.dumps(citation_views, ensure_ascii=False, separators=(",", ":")),
+                            timestamp,
+                        ),
+                    )
+
+            await context.publish(result_ref, publish)
+            logger.info(
+                "QA completed: document_id=%s, qa_id=%s, answer_length=%d, citations=%d",
+                record.document_id,
+                qa_id,
+                len(answer),
+                len(citations),
+            )
+            return result_ref
+        except BaseException as exc:
+            logger.error(
+                "QA failed: document_id=%s, error=%s",
+                record.document_id,
+                exc,
+            )
+            raise
 
     async def list(self, document_id: UUID) -> tuple[QARecordView, ...]:
         await self.documents.get(document_id)
