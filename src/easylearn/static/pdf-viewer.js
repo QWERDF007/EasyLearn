@@ -334,6 +334,7 @@ export class PdfReader {
         const regionElement = document.createElement("button");
         regionElement.type = "button";
         regionElement.className = "pdf-region";
+        regionElement.style.background = "transparent";
         regionElement.dataset.blockId = block.block_id;
         regionElement.title = `定位到 ${block.block_id}`;
         regionElement.style.left = `${left}px`;

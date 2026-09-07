@@ -83,7 +83,7 @@ def test_real_paper_covers_parse_progress_and_pdf_controls(browser):
             """
             const [path, done] = arguments;
             fetch(path)
-              .then(async (response) => done({status: response.status, payload: await response.json()}))
+              .then(async (res) => done({status: res.status, payload: await res.json()}))
               .catch((error) => done({error: String(error)}));
             """,
             path,
@@ -114,10 +114,15 @@ def test_real_paper_covers_parse_progress_and_pdf_controls(browser):
                 return False
             statuses = current.find_elements(By.CSS_SELECTOR, "#task-list .task-item")
             pages = current.find_elements(By.CSS_SELECTOR, "#pdf-pages .pdf-page canvas")
-            page_counter = current.find_element(By.ID, "page-count").get_attribute("textContent").strip()
+            counter_elem = current.find_element(By.ID, "page-count")
+            page_counter = counter_elem.get_attribute("textContent").strip()
         except StaleElementReferenceException:
             return False
-        return bool(statuses) and bool(pages) and re.fullmatch(r"\d+\s*/\s*\d+", page_counter) is not None
+        return (
+            bool(statuses)
+            and bool(pages)
+            and re.fullmatch(r"\d+\s*/\s*\d+", page_counter) is not None
+        )
 
     WebDriverWait(browser, 1200).until(result_ready)
     assert browser.find_element(By.ID, "empty-upload-state").get_attribute("hidden") == "true"

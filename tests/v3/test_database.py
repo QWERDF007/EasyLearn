@@ -17,12 +17,13 @@ async def test_database_initializes_the_v3_schema_without_external_services(tmp_
                     "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
                 )
             ).fetchall()
-        assert version[0] == 2
+        assert version[0] == 3
         assert {row[0] for row in tables} == {
             "documents",
             "parse_results",
             "translations",
             "translation_history",
+            "source_edits",
             "qa_records",
         }
     finally:

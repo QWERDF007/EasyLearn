@@ -4,6 +4,8 @@ const state = {
   documents: [],
   document: null,
   parse: null,
+  models: [],
+  selectedModelId: null,
   translations: new Map(),
   sourceEdits: new Map(),
   selectedBlocks: new Set(),
@@ -87,6 +89,53 @@ async function refreshHealth() {
   } catch (error) {
     notify(error.message);
   }
+}
+
+function formatFileSize(bytes) {
+  if (typeof bytes !== "number" || isNaN(bytes) || bytes < 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function refreshModels() {
+  try {
+    const models = await api("/api/mineru/models");
+    state.models = Array.isArray(models) ? models : [];
+    if (!state.selectedModelId) {
+      const defaultModel = state.models.find((m) => m.selected) || state.models[0];
+      state.selectedModelId = defaultModel?.model_id || null;
+    }
+    renderModelSelect();
+    syncToolbar();
+  } catch (error) {
+    console.warn("加载解析模型失败", error);
+  }
+}
+
+function renderModelSelect() {
+  const select = $("#model-select");
+  if (!select) return;
+  select.replaceChildren();
+  if (!state.models.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "默认解析器";
+    select.append(option);
+    select.disabled = true;
+    return;
+  }
+  for (const model of state.models) {
+    const option = document.createElement("option");
+    option.value = model.model_id;
+    option.textContent = model.name || model.model_id;
+    if (model.model_id === state.selectedModelId || (!state.selectedModelId && model.selected)) {
+      option.selected = true;
+      state.selectedModelId = model.model_id;
+    }
+    select.append(option);
+  }
+  select.disabled = false;
 }
 
 function selectedParseId() {
@@ -179,6 +228,8 @@ async function openDocument(documentId) {
     $("#stop-answer-button").hidden = true;
     $("#stop-answer-button").disabled = false;
     $("#document-name").textContent = loaded.name;
+    const sizeElem = $("#document-size");
+    if (sizeElem) sizeElem.textContent = formatFileSize(loaded.size_bytes);
     syncFavoriteButton();
     for (const task of loaded.tasks || []) {
       state.tasks.set(task.task_id, task);
@@ -251,6 +302,7 @@ function renderVersionSelect(activeId = selectedParseId()) {
 
 function syncFavoriteButton() {
   const button = $("#favorite-button");
+  if (!button) return;
   const favorite = state.document?.favorite === true;
   button.setAttribute("aria-label", favorite ? "取消收藏" : "收藏");
   button.title = favorite ? "取消收藏" : "收藏";
@@ -265,22 +317,45 @@ function syncToolbar() {
   const llmConfigured = state.health?.llm?.configured === true;
   const qaEnabled = state.health?.extensions?.qa_enabled === true;
   const officeEnabled = state.health?.extensions?.office_enabled === true;
-  $("#settings-button").disabled = !hasDocument;
-  $("#reparse-button").disabled = !hasDocument || state.busyButtons.has("reparse-button");
-  $("#download-button").disabled = !hasParse || state.busyButtons.has("download-button");
-  $("#translate-button").disabled = !hasParse || !llmConfigured || state.busyButtons.has("translate-button");
-  $("#qa-button").disabled = !hasParse || !qaEnabled || state.busyButtons.has("ask-button");
-  $("#favorite-button").disabled = !hasDocument;
-  $("#delete-button").disabled = !hasDocument;
+
+  const settingsBtn = $("#settings-button");
+  if (settingsBtn) settingsBtn.disabled = false;
+
+  const reparseBtn = $("#reparse-button");
+  if (reparseBtn) reparseBtn.disabled = !hasDocument || state.busyButtons.has("reparse-button");
+
+  const downloadBtn = $("#download-button");
+  if (downloadBtn) downloadBtn.disabled = !hasParse || state.busyButtons.has("download-button");
+
+  const modelSelect = $("#model-select");
+  if (modelSelect) modelSelect.disabled = !state.models.length || state.busyButtons.has("reparse-button");
+
+  const translateBtn = $("#translate-button");
+  if (translateBtn) translateBtn.disabled = !hasParse || !llmConfigured || state.busyButtons.has("translate-button");
+
+  const qaBtn = $("#qa-button");
+  if (qaBtn) qaBtn.disabled = !hasParse || !qaEnabled || state.busyButtons.has("ask-button");
+
+  const favoriteBtn = $("#favorite-button");
+  if (favoriteBtn) favoriteBtn.disabled = !hasDocument;
+
+  const deleteBtn = $("#delete-button");
+  if (deleteBtn) deleteBtn.disabled = !hasDocument;
+
   const isXlsx = Boolean(state.document?.name?.toLowerCase().endsWith(".xlsx"));
-  $("#office-options").hidden = !isXlsx || !officeEnabled;
-  $("#office-sheet").disabled = !isXlsx || !officeEnabled;
-  $("#office-print-range").disabled = !isXlsx || !officeEnabled;
-  $("#auto-translate").disabled = !hasDocument || !llmConfigured;
-  if (!hasDocument) {
-    $("#settings-panel").hidden = true;
-    $("#settings-button").setAttribute("aria-expanded", "false");
-  }
+  const officeOptions = $("#office-options");
+  if (officeOptions) officeOptions.hidden = !isXlsx || !officeEnabled;
+  const officeSheet = $("#office-sheet");
+  if (officeSheet) officeSheet.disabled = !isXlsx || !officeEnabled;
+  const officePrintRange = $("#office-print-range");
+  if (officePrintRange) officePrintRange.disabled = !isXlsx || !officeEnabled;
+
+  const autoTranslate = $("#auto-translate");
+  if (autoTranslate) autoTranslate.disabled = !llmConfigured;
+
+  const versionField = $("#version-setting-field");
+  if (versionField) versionField.hidden = !hasDocument;
+
   syncWorkspaceLayout();
 }
 
@@ -317,6 +392,9 @@ async function withButtonBusy(buttonId, busyLabel, work) {
 function parseRequestBody(scope = null) {
   const source = scope || {};
   const body = {};
+  const modelId = source.model_id || state.selectedModelId || $("#model-select")?.value || null;
+  if (modelId) body.model_id = modelId;
+
   if (source.options && typeof source.options === "object") {
     body.options = source.options;
   }
@@ -325,8 +403,8 @@ function parseRequestBody(scope = null) {
     ? { ...source.office }
     : {};
   if (!scope && state.document?.name?.toLowerCase().endsWith(".xlsx")) {
-    const sheet = $("#office-sheet").value.trim();
-    const printRange = $("#office-print-range").value.trim();
+    const sheet = $("#office-sheet")?.value?.trim();
+    const printRange = $("#office-print-range")?.value?.trim();
     if (sheet) office.sheet = sheet;
     if (printRange) office.print_range = printRange;
   }
@@ -334,7 +412,7 @@ function parseRequestBody(scope = null) {
 
   body.auto_translate = typeof source.auto_translate === "boolean"
     ? source.auto_translate
-    : $("#auto-translate").checked;
+    : Boolean($("#auto-translate")?.checked);
   return body;
 }
 
@@ -530,9 +608,12 @@ function renderResult() {
   content.replaceChildren();
   content.classList.toggle("has-selection", state.selectedBlocks.size > 0);
   syncResultTabs();
-  $("#selection-count").textContent = state.selectedBlocks.size
-    ? `已选 ${state.selectedBlocks.size} 块`
-    : "";
+  const selectionCount = $("#selection-count");
+  if (selectionCount) {
+    selectionCount.textContent = state.selectedBlocks.size
+      ? `已选 ${state.selectedBlocks.size} 块`
+      : "";
+  }
   if (!state.parse) {
     content.append(message("解析完成后，结果会显示在这里。"));
     return;
@@ -1374,11 +1455,27 @@ $("#parse-progress-cancel").addEventListener("click", () => {
   if (task) void cancelTask(task.task_id);
 });
 
-$("#settings-button").addEventListener("click", () => {
-  if ($("#settings-button").disabled) return;
+$("#settings-button")?.addEventListener("click", () => {
   const panel = $("#settings-panel");
+  if (!panel) return;
   panel.hidden = !panel.hidden;
   $("#settings-button").setAttribute("aria-expanded", String(!panel.hidden));
+});
+
+$("#close-settings-button")?.addEventListener("click", () => {
+  const panel = $("#settings-panel");
+  if (panel) panel.hidden = true;
+  $("#settings-button")?.setAttribute("aria-expanded", "false");
+});
+
+$("#settings-backdrop")?.addEventListener("click", () => {
+  const panel = $("#settings-panel");
+  if (panel) panel.hidden = true;
+  $("#settings-button")?.setAttribute("aria-expanded", "false");
+});
+
+$("#model-select")?.addEventListener("change", (event) => {
+  state.selectedModelId = event.target.value;
 });
 
 $("#reparse-button").addEventListener("click", async () => {
@@ -1398,7 +1495,7 @@ $("#reparse-button").addEventListener("click", async () => {
   });
 });
 
-$("#favorite-button").addEventListener("click", async () => {
+$("#favorite-button")?.addEventListener("click", async () => {
   if (!state.document || $("#favorite-button").disabled) return;
   $("#favorite-button").disabled = true;
   try {
@@ -1410,7 +1507,7 @@ $("#favorite-button").addEventListener("click", async () => {
   }
 });
 
-$("#delete-button").addEventListener("click", async () => {
+$("#delete-button")?.addEventListener("click", async () => {
   if (!state.document) return;
   openDeleteDialog(state.document.document_id, state.document.name);
 });
@@ -1457,6 +1554,8 @@ function clearCurrentDocument() {
   $("#stop-answer-button").disabled = false;
   pdfReader.destroy();
   $("#document-name").textContent = "选择一个文档";
+  const sizeElem = $("#document-size");
+  if (sizeElem) sizeElem.textContent = "";
   $("#document-status").textContent = "上传后开始解析";
   $("#page-count").textContent = "0 / 0";
   renderVersionSelect();
@@ -1478,8 +1577,8 @@ $("#close-delete-button").addEventListener("click", () => {
   $("#document-delete-dialog").close();
 });
 
-$("#translate-button").addEventListener("click", async () => {
-  if (!state.document || !state.parse || $("#translate-button").disabled) return;
+$("#translate-button")?.addEventListener("click", async () => {
+  if (!state.document || !state.parse || $("#translate-button")?.disabled) return;
   const documentId = state.document.document_id;
   const parseId = state.parse.parse_run_id;
   const blockIds = state.selectedBlocks.size ? [...state.selectedBlocks] : null;
@@ -1515,7 +1614,7 @@ $("#download-button").addEventListener("click", async () => {
   });
 });
 
-$("#qa-button").addEventListener("click", () => {
+$("#qa-button")?.addEventListener("click", () => {
   if (!state.document || !state.parse || $("#qa-button").disabled) return;
   $("#qa-anchor").textContent = state.selectedBlocks.size
     ? `已固定 ${state.selectedBlocks.size} 个块作为问题锚点。`
@@ -1610,7 +1709,7 @@ $("#delete-qa-button").addEventListener("click", async () => {
   }
 });
 
-$("#search-toggle").addEventListener("click", () => {
+$("#search-toggle")?.addEventListener("click", () => {
   const search = $("#result-search");
   const hidden = !search.hidden;
   search.hidden = hidden;
@@ -1634,4 +1733,4 @@ for (const tab of document.querySelectorAll(".result-tab")) {
 }
 
 syncWorkspaceLayout();
-void Promise.all([refreshHealth(), refreshDocuments()]).catch((error) => notify(error.message));
+void Promise.all([refreshHealth(), refreshModels(), refreshDocuments()]).catch((error) => notify(error.message));

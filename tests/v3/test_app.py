@@ -261,12 +261,11 @@ async def test_page_exposes_full_result_and_question_history_controls(client):
     for element_id in (
         "result-search-input",
         "qa-history-select",
-        "source-markdown-tab",
-        "bilingual-tab",
         "empty-upload-state",
         "empty-upload-dropzone",
         "settings-button",
         "settings-panel",
+        "model-select",
         "reparse-button",
         "download-button",
         "parse-progress",
@@ -278,7 +277,6 @@ async def test_page_exposes_full_result_and_question_history_controls(client):
         "reset-zoom",
     ):
         assert f'id="{element_id}"' in response.text
-    assert 'id="model-select"' not in response.text
     assert "点击上传或者拖入文件开始解析" in response.text
 
 

@@ -220,7 +220,7 @@ def test_empty_workspace_exposes_upload_dropzone_without_model_selector(server, 
     empty = browser.find_element(By.ID, "empty-upload-state")
     assert empty.is_displayed()
     assert "点击上传或者拖入文件开始解析" in empty.text
-    assert browser.find_elements(By.ID, "model-select") == []
+    assert not browser.find_element(By.ID, "model-select").is_displayed()
 
 
 def test_document_workspace_exposes_actions_and_settings(server, browser, image_file):
@@ -228,7 +228,9 @@ def test_document_workspace_exposes_actions_and_settings(server, browser, image_
     browser.find_element(By.ID, "file-input").send_keys(str(image_file))
     _wait_for_document(browser, image_file.name)
 
-    for element_id in ("settings-button", "reparse-button", "download-button"):
+    assert not browser.find_element(By.ID, "empty-upload-state").is_displayed()
+
+    for element_id in ("settings-button", "reparse-button", "download-button", "model-select"):
         assert browser.find_element(By.ID, element_id).is_displayed()
 
     settings = browser.find_element(By.ID, "settings-button")

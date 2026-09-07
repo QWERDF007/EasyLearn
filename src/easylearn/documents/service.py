@@ -263,12 +263,23 @@ class DocumentService:
             )
             for parse_row in parse_rows
         )
+        original_size: int | None = None
+        try:
+            original_file = self.files.original_path(
+                UUID(row["id"]), PurePath(row["original_path"]).suffix
+            )
+            if original_file.is_file():
+                original_size = original_file.stat().st_size
+        except Exception:
+            original_size = None
+
         return DocumentView(
             document_id=UUID(row["id"]),
             name=row["name"],
             favorite=bool(row["favorite"]),
             created_at=datetime.fromisoformat(row["created_at"]),
             active_parse_id=UUID(row["active_parse_id"]) if row["active_parse_id"] else None,
+            size_bytes=original_size,
             parse_results=results,
         )
 

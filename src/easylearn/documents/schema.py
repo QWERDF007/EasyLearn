@@ -25,6 +25,7 @@ class DocumentView(BaseModel):
     created_at: datetime
     active_parse_id: UUID | None = None
     original_file_id: str = "original"
+    size_bytes: int | None = None
     parse_results: tuple[ParseResultView, ...] = ()
     tasks: tuple[TaskView, ...] = ()
 

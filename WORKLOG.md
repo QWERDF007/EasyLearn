@@ -7,6 +7,32 @@
 - 无。
 
 
+### 2026-09-07 — 修复工作区上传区隐藏、左右栏对齐、顶部布局及 PDF 块白色遮挡
+
+**目标**
+- 修复上传后 `#empty-upload-state` 未隐藏问题；
+- 左右文档区域布局对齐，顶部对齐为双行结构（左：源文件标签 + 文件信息与大小；右：MinerU解析后端下拉 + 结果标签页 + 重新解析/下载）；
+- 移除中英对照、源码标签页及右侧多余操作按钮；
+- 系统设置移至左侧边栏独立弹窗入口；
+- 解决默认未选中块时 PDF 区域图层全是白块遮挡内容的问题。
+
+**当前状态**
+- 已完成：修复 `.pdf-region` 因 `<button>` 原生背景色在未选中（无 `.is-selected` / `.is-dimmed`）时全白遮挡 PDF 内容的问题，添加 `background: transparent; appearance: none;`，并同步在 `pdf-viewer.js` 设为透明背景。
+- 已完成：添加 `.empty-upload-state[hidden], .app-shell:not(.no-document) .empty-upload-state { display: none !important; }`，文档加载后彻底隐藏空上传拖拽区。
+- 已完成：重构阅读区与结果区顶部两栏对齐（统一 84px 高度与双行结构）：左栏第一行为“源文件”徽标，第二行为 PDF 图标、文件名与文件大小（`size_bytes`）；右栏第一行为“解析模型”与后端下拉列表（来自 `/api/mineru/models`），第二行为“中文 Markdown”、“原文 Markdown”、“JSON”标签页，右侧仅保留“重新解析”与“下载”。
+- 已完成：将系统设置移动到左侧文档栏（`+ 新解析` 下方），提供独立模态弹窗与遮罩层，解耦文档生命周期。
+- 已完成：更新 `tests/v3/test_app.py`、`tests/v3/test_database.py` 与 `tests/browser/test_upload.py`，全量测试与代码检查全部通过。
+
+**验证证据**
+- `D:\Software\anaconda3\envs\learn\python.exe -m pytest tests\v3 tests\document_ir tests\mineru -q -p no:cacheprovider --tb=short` → `381 passed, 5 skipped in 51.73s`。
+- `$env:EASYLEARN_RUN_BROWSER_TESTS="1"; D:\Software\anaconda3\envs\learn\python.exe -m pytest tests/browser/test_upload.py -k "test_empty_workspace or test_document_workspace" -q -p no:cacheprovider --tb=short` → `2 passed, 5 deselected in 12.57s`（包含验证上传后上传区域不可见、模型选择器可见、设置按钮可见并可点击展开设置模态框）。
+- `D:\Software\anaconda3\envs\learn\python.exe -m ruff check src tests` → `All checks passed!`。
+- `node --check src/easylearn/static/app.js` 与 `node --check src/easylearn/static/pdf-viewer.js` → 均通过检查，0 错误。
+
+**下一步**
+- 保持当前轻量架构，若需扩充解析后端或进行翻译联调，可直接通过模型下拉选择与统一的任务流水线运行。
+
+
 ### 2026-09-07 — MinerU 真实论文与阅读器验收
 
 **目标**
