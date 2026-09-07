@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import os
 import re
+import time
+import urllib.request
 from collections import Counter
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -28,12 +33,15 @@ from easylearn.errors import DomainError
 from easylearn.jobs.schema import JobKind, TaskView
 from easylearn.tasks import TaskContext, TaskManager, TaskRecord
 
+logger = logging.getLogger(__name__)
+
 
 class TranslateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     parse_id: UUID
     block_ids: tuple[str, ...] | None = None
+    force: bool = False
 
 
 class EditTranslationRequest(BaseModel):
@@ -144,26 +152,82 @@ class LLMClient:
             "messages": messages,
             "temperature": 0.2,
         }
+        if configuration.reasoning_effort:
+            payload["reasoning_effort"] = configuration.reasoning_effort
         if configuration.json_mode:
             payload["response_format"] = {"type": "json_object"}
-        try:
-            async with self._client() as http:
-                response = await http.post(
-                    f"{configuration.base_url.rstrip('/')}/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=configuration.timeout_seconds,
+        max_retries = getattr(self.settings.llm, "max_retries", 3)
+        response: httpx.Response | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                async with self._client() as http:
+                    response = await http.post(
+                        f"{configuration.base_url.rstrip('/')}/chat/completions",
+                        headers=headers,
+                        json=payload,
+                        timeout=configuration.timeout_seconds,
+                    )
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                exc_name = type(exc).__name__
+                if attempt < max_retries:
+                    delay = 2**attempt
+                    logger.warning(
+                        "LLM request error (%s: %s) on attempt %d/%d; retrying in %ds...",
+                        exc_name,
+                        exc,
+                        attempt + 1,
+                        max_retries + 1,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                if isinstance(exc, httpx.TimeoutException):
+                    logger.error(
+                        "LLM request timed out after %d attempts: %s", max_retries + 1, exc
+                    )
+                    raise DomainError(
+                        "LLM_TIMEOUT", "LLM request timed out", retryable=True
+                    ) from exc
+                logger.error(
+                    "LLM transport error after %d attempts: %s (%s)",
+                    max_retries + 1,
+                    exc,
+                    exc_name,
                 )
-        except httpx.TimeoutException:
-            raise DomainError("LLM_TIMEOUT", "LLM request timed out", retryable=True) from None
-        except httpx.TransportError:
-            raise DomainError(
-                "LLM_UNAVAILABLE", "LLM could not be reached", retryable=True
-            ) from None
-        if response.status_code >= 500 or response.status_code == 429:
-            raise DomainError("LLM_UNAVAILABLE", "LLM is temporarily unavailable", retryable=True)
-        if response.status_code >= 400:
-            raise DomainError("LLM_REQUEST_REJECTED", "LLM rejected the request")
+                detail = (
+                    f"LLM connection error ({exc_name}): {exc}"
+                    if str(exc)
+                    else f"LLM connection error: {exc_name}"
+                )
+                raise DomainError("LLM_UNAVAILABLE", detail, retryable=True) from exc
+
+            if response.status_code >= 500 or response.status_code == 429:
+                if attempt < max_retries:
+                    delay = 2**attempt
+                    logger.warning(
+                        "LLM returned HTTP %d on attempt %d/%d; retrying in %ds...",
+                        response.status_code,
+                        attempt + 1,
+                        max_retries + 1,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                raise DomainError(
+                    "LLM_UNAVAILABLE",
+                    f"LLM is temporarily unavailable (HTTP {response.status_code})",
+                    retryable=True,
+                )
+            if response.status_code >= 400:
+                body_snippet = response.text[:200]
+                logger.error(
+                    "LLM rejected request: HTTP %d, body=%s", response.status_code, body_snippet
+                )
+                raise DomainError(
+                    "LLM_REQUEST_REJECTED",
+                    f"LLM rejected the request (HTTP {response.status_code}): {body_snippet}",
+                )
+            break
         try:
             value = response.json()
             content = value["choices"][0]["message"]["content"]
@@ -187,12 +251,14 @@ class LLMClient:
             if self.settings.llm_api_key
             else {}
         )
-        payload = {
+        payload: dict[str, Any] = {
             "model": configuration.model,
             "messages": messages,
             "temperature": 0.2,
             "stream": True,
         }
+        if configuration.reasoning_effort:
+            payload["reasoning_effort"] = configuration.reasoning_effort
         try:
             async with (
                 self._client() as http,
@@ -218,7 +284,8 @@ class LLMClient:
                         return
                     try:
                         payload_value = json.loads(data)
-                        delta = payload_value["choices"][0]["delta"].get("content", "")
+                        choices = payload_value.get("choices") or []
+                        delta = choices[0]["delta"].get("content", "") if choices else ""
                     except (ValueError, KeyError, IndexError, TypeError):
                         raise DomainError(
                             "LLM_PROTOCOL_INVALID", "LLM returned an invalid stream event"
@@ -227,19 +294,51 @@ class LLMClient:
                         yield delta
         except DomainError:
             raise
-        except httpx.TimeoutException:
-            raise DomainError("LLM_TIMEOUT", "LLM request timed out", retryable=True) from None
-        except httpx.TransportError:
-            raise DomainError(
-                "LLM_UNAVAILABLE", "LLM could not be reached", retryable=True
-            ) from None
+        except httpx.TimeoutException as exc:
+            logger.error("LLM stream timed out: %s", exc)
+            raise DomainError("LLM_TIMEOUT", "LLM request timed out", retryable=True) from exc
+        except httpx.TransportError as exc:
+            exc_name = type(exc).__name__
+            logger.error("LLM stream transport error: %s (%s)", exc, exc_name)
+            detail = (
+                f"LLM connection error ({exc_name}): {exc}"
+                if str(exc)
+                else f"LLM connection error: {exc_name}"
+            )
+            raise DomainError("LLM_UNAVAILABLE", detail, retryable=True) from exc
+
+    def _resolve_proxy(self) -> str | None:
+        explicit = getattr(self.settings.llm, "proxy", None)
+        if explicit is not None:
+            explicit = explicit.strip()
+            if not explicit or explicit.lower() in ("none", "false", "off", "direct"):
+                return None
+            return explicit
+        if not self.settings.llm.local_only:
+            env_proxy = (
+                os.environ.get("HTTPS_PROXY")
+                or os.environ.get("HTTP_PROXY")
+                or os.environ.get("ALL_PROXY")
+            )
+            if env_proxy:
+                return env_proxy
+            try:
+                system_proxies = urllib.request.getproxies()
+                return system_proxies.get("https") or system_proxies.get("http")
+            except Exception:
+                return None
+        return None
 
     @asynccontextmanager
     async def _client(self) -> AsyncIterator[httpx.AsyncClient]:
         if self.http is not None:
             yield self.http
         else:
-            async with httpx.AsyncClient(trust_env=False, follow_redirects=False) as client:
+            trust_env = not self.settings.llm.local_only
+            proxy = self._resolve_proxy()
+            async with httpx.AsyncClient(
+                trust_env=trust_env, proxy=proxy, follow_redirects=False
+            ) as client:
                 yield client
 
 
@@ -274,19 +373,28 @@ class TranslationService:
         async def admit() -> None:
             await self.documents.load_ir(document_id, request.parse_id)
 
-        return await self.manager.submit(
+        task_view = await self.manager.submit(
             document_id,
             JobKind.TRANSLATE,
             {
                 "parse_id": str(request.parse_id),
                 "block_ids": list(request.block_ids) if request.block_ids is not None else None,
+                "force": request.force,
             },
             admission=admit,
         )
+        logger.info(
+            "Translation task submitted: document_id=%s, task_id=%s, parse_id=%s",
+            document_id,
+            task_view.task_id,
+            request.parse_id,
+        )
+        return task_view
 
     async def execute(self, record: TaskRecord, context: TaskContext) -> dict[str, JsonValue]:
         parse_id = UUID(str(record.scope["parse_id"]))
         raw_ids = record.scope.get("block_ids")
+        force = bool(record.scope.get("force", False))
         if raw_ids is None:
             selected = None
         elif isinstance(raw_ids, list):
@@ -305,34 +413,88 @@ class TranslationService:
         async with self.database.read() as connection:
             rows = await (
                 await connection.execute(
-                    "SELECT block_id, unit_id, revision, manual_text, use_manual, locked "
-                    "FROM translations WHERE parse_id = ?",
+                    "SELECT block_id, unit_id, revision, manual_text, use_manual, "
+                    "locked, auto_text FROM translations WHERE parse_id = ?",
                     (str(parse_id),),
                 )
             ).fetchall()
         snapshots = {row[1]: (row[2], row[3], bool(row[4]), bool(row[5])) for row in rows}
-        result: dict[str, str] = {}
-        conflict_count = 0
-        batches = _batches(units)
-        for index, batch in enumerate(batches):
-            await context.check()
-            await context.progress(
-                index / len(batches), f"Translating {index}/{len(batches)} batches"
-            )
-            result.update(await self._translate_batch(batch))
-        await context.check()
-        timestamp = _now()
-        result_ref: dict[str, JsonValue] = {
-            "parse_id": str(parse_id),
-            "translated_units": len(units),
-            "conflicted_units": 0,
-        }
+        existing_auto = {row[1]: row[6] for row in rows if row[6] is not None}
 
-        async def publish() -> None:
+        if force:
+            units_to_translate = units
+        else:
+            units_to_translate = tuple(u for u in units if u.unit_id not in existing_auto)
+
+        conflict_count = 0
+        total_units = len(units)
+        already_completed = total_units - len(units_to_translate)
+
+        if not units_to_translate:
+            logger.info(
+                "Translation already up-to-date: document_id=%s, parse_id=%s, units=%d",
+                record.document_id,
+                parse_id,
+                total_units,
+            )
+            await context.progress(1.0, f"已翻译 {total_units}/{total_units} 单元 (100%)")
+            result_ref: dict[str, JsonValue] = {
+                "parse_id": str(parse_id),
+                "translated_units": total_units,
+                "conflicted_units": 0,
+            }
+
+            async def noop_publish() -> None:
+                pass
+
+            await context.publish(result_ref, noop_publish)
+            return result_ref
+
+        batches = [b for b in _batches(units_to_translate) if b]
+        if not batches:
+            logger.info(
+                "Translation already up-to-date: document_id=%s, parse_id=%s, units=%d",
+                record.document_id,
+                parse_id,
+                total_units,
+            )
+            await context.progress(1.0, f"已翻译 {total_units}/{total_units} 单元 (100%)")
+            result_ref: dict[str, JsonValue] = {
+                "parse_id": str(parse_id),
+                "translated_units": total_units,
+                "conflicted_units": 0,
+            }
+
+            async def noop_publish() -> None:
+                pass
+
+            await context.publish(result_ref, noop_publish)
+            return result_ref
+        concurrency = max(1, self.settings.tasks.translation_concurrency)
+        logger.info(
+            "Translation started: document_id=%s, parse_id=%s, total_units=%d, "
+            "to_translate=%d, batches=%d, concurrency=%d",
+            record.document_id,
+            parse_id,
+            total_units,
+            len(units_to_translate),
+            len(batches),
+            concurrency,
+        )
+        semaphore = asyncio.Semaphore(concurrency)
+        completed_batches = 0
+        completed_units = already_completed
+        progress_lock = asyncio.Lock()
+        start_time = time.monotonic()
+
+        async def publish_batch(
+            batch: tuple[TranslationUnit, ...], batch_result: dict[str, str]
+        ) -> None:
             nonlocal conflict_count
+            timestamp = _now()
             async with self.database.transaction() as connection:
-                for unit in units:
-                    value = result[unit.unit_id]
+                for unit in batch:
+                    value = batch_result[unit.unit_id]
                     row = await (
                         await connection.execute(
                             "SELECT auto_text, manual_text, use_manual, locked, revision "
@@ -344,8 +506,7 @@ class TranslationService:
                         await connection.execute(
                             "INSERT INTO translations "
                             "(parse_id, block_id, unit_id, auto_text, manual_text, use_manual, "
-                            "locked, "
-                            "revision, updated_at) "
+                            "locked, revision, updated_at) "
                             "VALUES (?, ?, ?, ?, NULL, 0, 0, 0, ?)",
                             (str(parse_id), unit.block_id, unit.unit_id, value, timestamp),
                         )
@@ -380,9 +541,75 @@ class TranslationService:
                         unit.unit_id,
                         self.settings.files.revision_history_limit,
                     )
-            result_ref["conflicted_units"] = conflict_count
 
-        await context.publish(result_ref, publish)
+        async def translate_worker(
+            index: int, batch: tuple[TranslationUnit, ...]
+        ) -> dict[str, str]:
+            nonlocal completed_batches, completed_units
+            async with semaphore:
+                await context.check()
+                t0 = time.monotonic()
+                batch_result = await self._translate_batch(batch)
+                elapsed = time.monotonic() - t0
+                await publish_batch(batch, batch_result)
+                async with progress_lock:
+                    completed_batches += 1
+                    completed_units += len(batch)
+                    curr_completed_units = completed_units
+                logger.info(
+                    "Translation batch %d/%d completed (%d units, %.2fs, progress %d/%d units)",
+                    index + 1,
+                    len(batches),
+                    len(batch),
+                    elapsed,
+                    curr_completed_units,
+                    total_units,
+                )
+                fraction = curr_completed_units / total_units
+                percent = int(fraction * 100)
+                await context.progress(
+                    fraction,
+                    f"已翻译 {curr_completed_units}/{total_units} 单元 ({percent}%)",
+                )
+                return batch_result
+
+        tasks = [
+            asyncio.create_task(translate_worker(index, batch))
+            for index, batch in enumerate(batches)
+        ]
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException as exc:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            logger.error(
+                "Translation failed: document_id=%s, parse_id=%s, error=%s",
+                record.document_id,
+                parse_id,
+                exc,
+            )
+            raise
+
+        total_elapsed = time.monotonic() - start_time
+        logger.info(
+            "Translation completed: document_id=%s, parse_id=%s, units=%d, elapsed=%.2fs",
+            record.document_id,
+            parse_id,
+            total_units,
+            total_elapsed,
+        )
+        await context.check()
+        result_ref = {
+            "parse_id": str(parse_id),
+            "translated_units": total_units,
+            "conflicted_units": conflict_count,
+        }
+
+        async def finalize_publish() -> None:
+            pass
+
+        await context.publish(result_ref, finalize_publish)
         return result_ref
 
     async def list(self, document_id: UUID, parse_id: UUID) -> tuple[TranslationUnitView, ...]:
@@ -527,7 +754,15 @@ class TranslationService:
                 self.settings.files.revision_history_limit,
             )
         values = await self.list(document_id, request.parse_id)
-        return next(item for item in values if item.unit_id == unit_id)
+        result = next(item for item in values if item.unit_id == unit_id)
+        logger.info(
+            "Translation edited: document_id=%s, parse_id=%s, unit_id=%s, revision=%d",
+            document_id,
+            request.parse_id,
+            unit_id,
+            new_revision,
+        )
+        return result
 
     async def restore(
         self,
@@ -636,7 +871,15 @@ class TranslationService:
                 self.settings.files.revision_history_limit,
             )
         values = await self.list(document_id, request.parse_id)
-        return next(item for item in values if item.unit_id == unit_id)
+        result = next(item for item in values if item.unit_id == unit_id)
+        logger.info(
+            "Translation restored: document_id=%s, parse_id=%s, unit_id=%s, revision=%d",
+            document_id,
+            request.parse_id,
+            unit_id,
+            revision,
+        )
+        return result
 
     async def history(
         self, document_id: UUID, parse_id: UUID, unit_id: str
@@ -666,47 +909,126 @@ class TranslationService:
         )
 
     async def _translate_batch(self, units: tuple[TranslationUnit, ...]) -> dict[str, str]:
-        payload = {unit.unit_id: unit.source_text for unit in units}
-        content = await self.llm.complete_json(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "Translate English document text into Simplified Chinese. "
-                        "Return only a JSON object mapping every supplied unit_id to one "
-                        "non-empty string. Do not add, remove, or rename IDs. Preserve "
-                        "numbers, URLs, paths, and {{PLACEHOLDER}} tokens."
-                    ),
-                },
-                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-            ]
-        )
-        content = _strip_code_fence(content)
-        try:
-            value = json.loads(content, object_pairs_hook=_unique_json_object)
-        except (ValueError, TypeError):
+        completed_results: dict[str, str] = {}
+        pending_units: list[TranslationUnit] = list(units)
+        max_attempts = 1 + max(0, getattr(self.settings.llm, "max_retries", 2))
+        last_structure_error: str | None = None
+        last_json_error: bool = False
+        last_empty_error: bool = False
+
+        for attempt in range(max_attempts):
+            payload = {unit.unit_id: unit.source_text for unit in pending_units}
+            content = await self.llm.complete_json(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Translate English document text into Simplified Chinese. "
+                            "Return only a JSON object mapping every supplied unit_id to one "
+                            "non-empty string. Do not add, remove, or rename IDs. Preserve "
+                            "numbers, URLs, paths, and {{PLACEHOLDER}} tokens."
+                        ),
+                    },
+                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                ]
+            )
+            content = _strip_code_fence(content)
+            try:
+                raw_value = json.loads(content, object_pairs_hook=_unique_json_object)
+            except (ValueError, TypeError):
+                last_json_error = True
+                logger.warning(
+                    "LLM returned invalid JSON on attempt %d/%d for %d units: %s",
+                    attempt + 1,
+                    max_attempts,
+                    len(pending_units),
+                    content[:200],
+                )
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(0.1 * (attempt + 1))
+                continue
+
+            if not isinstance(raw_value, dict):
+                last_json_error = True
+                logger.warning(
+                    "LLM did not return a JSON object on attempt %d/%d: %s",
+                    attempt + 1,
+                    max_attempts,
+                    content[:200],
+                )
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(0.1 * (attempt + 1))
+                continue
+
+            cleaned_value: dict[str, Any] = {
+                k.strip(): v for k, v in raw_value.items() if isinstance(k, str)
+            }
+
+            for unit in list(pending_units):
+                if unit.unit_id not in cleaned_value:
+                    continue
+                text = cleaned_value[unit.unit_id]
+                if not isinstance(text, str) or not text.strip():
+                    last_empty_error = True
+                    logger.warning(
+                        "LLM returned empty translation for %s on attempt %d/%d",
+                        unit.unit_id,
+                        attempt + 1,
+                        max_attempts,
+                    )
+                    continue
+
+                expected_tokens = _protected_tokens(unit.source_text)
+                actual_tokens = _protected_tokens(text)
+                if expected_tokens != actual_tokens:
+                    logger.warning(
+                        "Translation structure invalid for %s on attempt %d/%d: "
+                        "expected=%s, actual=%s",
+                        unit.unit_id,
+                        attempt + 1,
+                        max_attempts,
+                        expected_tokens,
+                        actual_tokens,
+                    )
+                    last_structure_error = f"Protected tokens changed for {unit.unit_id}"
+                    continue
+
+                completed_results[unit.unit_id] = text
+
+            pending_units = [u for u in units if u.unit_id not in completed_results]
+            if not pending_units:
+                return completed_results
+
+            missing_ids = [u.unit_id for u in pending_units]
+            extra_ids = [k for k in cleaned_value if k not in {u.unit_id for u in units}]
+            logger.warning(
+                "LLM batch translation incomplete (attempt %d/%d): %d/%d resolved, "
+                "missing=%s, extra=%s",
+                attempt + 1,
+                max_attempts,
+                len(completed_results),
+                len(units),
+                missing_ids,
+                extra_ids,
+            )
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(0.1 * (attempt + 1))
+
+        if last_structure_error is not None:
+            raise DomainError("TRANSLATION_STRUCTURE_INVALID", last_structure_error)
+        if last_json_error and not completed_results:
             raise DomainError(
                 "TRANSLATION_PROTOCOL_INVALID", "LLM did not return a JSON object"
-            ) from None
-        if not isinstance(value, dict) or set(value) != set(payload):
-            raise DomainError(
-                "TRANSLATION_PROTOCOL_INVALID",
-                "LLM returned missing or extra translation IDs",
             )
-        result: dict[str, str] = {}
-        for unit in units:
-            text = value[unit.unit_id]
-            if not isinstance(text, str) or not text.strip():
-                raise DomainError(
-                    "TRANSLATION_PROTOCOL_INVALID", "LLM returned empty translation text"
-                )
-            if _protected_tokens(unit.source_text) != _protected_tokens(text):
-                raise DomainError(
-                    "TRANSLATION_STRUCTURE_INVALID",
-                    f"Protected tokens changed for {unit.unit_id}",
-                )
-            result[unit.unit_id] = text
-        return result
+        if last_empty_error and not completed_results:
+            raise DomainError(
+                "TRANSLATION_PROTOCOL_INVALID", "LLM returned empty translation text"
+            )
+        missing_ids = [u.unit_id for u in pending_units]
+        raise DomainError(
+            "TRANSLATION_PROTOCOL_INVALID",
+            f"LLM returned missing translation IDs: {missing_ids}",
+        )
 
 
 def _batches(units: tuple[TranslationUnit, ...]) -> list[tuple[TranslationUnit, ...]]:
@@ -725,8 +1047,16 @@ def _batches(units: tuple[TranslationUnit, ...]) -> list[tuple[TranslationUnit, 
     return batches
 
 
+_TRAILING_URL_PUNCT = (
+    r"[\.,;:!\?\)>\"'\]\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\u300b\u201d\u2019]+"
+)
+
+
 def _protected_tokens(text: str) -> Counter[str]:
-    return Counter(re.findall(r"\{\{[^{}]+\}\}|https?://\S+|(?<![A-Za-z])\d+(?:\.\d+)?%?", text))
+    placeholders = re.findall(r"\{\{[^{}]+\}\}", text)
+    raw_urls = re.findall(r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'*+,;=%]+", text)
+    urls = [re.sub(f"{_TRAILING_URL_PUNCT}$", "", u) for u in raw_urls]
+    return Counter(placeholders + urls)
 
 
 def _strip_code_fence(text: str) -> str:

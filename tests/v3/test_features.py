@@ -70,6 +70,69 @@ class DuplicateKeyTranslationLLM(FakeLLM):
         return json.dumps({unit_id: "first 42%"})[:-1] + f',"{unit_id}":"second 42%"}}'
 
 
+class DropKeyOnceTranslationLLM(FakeLLM):
+    def __init__(self):
+        self.call_count = 0
+        self.requested_keys = []
+
+    async def complete_json(self, messages: list[dict[str, str]]) -> str:
+        self.call_count += 1
+        payload = json.loads(messages[-1]["content"])
+        self.requested_keys.append(list(payload.keys()))
+        items = list(payload.items())
+        if self.call_count == 1 and len(items) > 1:
+            items = items[:-1]
+        return json.dumps({unit_id: f"译：{text}" for unit_id, text in items}, ensure_ascii=False)
+
+
+class WhitespaceKeyTranslationLLM(FakeLLM):
+    async def complete_json(self, messages: list[dict[str, str]]) -> str:
+        payload = json.loads(messages[-1]["content"])
+        return json.dumps(
+            {f" {unit_id} \n": f"译：{text}" for unit_id, text in payload.items()},
+            ensure_ascii=False,
+        )
+
+
+class FailSecondBatchThenResumeLLM(FakeLLM):
+    def __init__(self):
+        self.call_history: list[list[str]] = []
+        self.should_fail_b2 = True
+
+    async def complete_json(self, messages: list[dict[str, str]]) -> str:
+        payload = json.loads(messages[-1]["content"])
+        self.call_history.append(list(payload.keys()))
+        if any("b2" in k for k in payload) and self.should_fail_b2:
+            await asyncio.sleep(0.05)
+            raise DomainError("LLM_UNAVAILABLE", "Transient network drop", retryable=True)
+        return await super().complete_json(messages)
+
+
+class MissingPlaceholderTranslationLLM(FakeLLM):
+    async def complete_json(self, messages: list[dict[str, str]]) -> str:
+        payload = json.loads(messages[-1]["content"])
+        return json.dumps({unit_id: "缺少占位符的译文" for unit_id in payload})
+
+
+class ConcurrentBatchTrackingLLM(FakeLLM):
+    def __init__(self):
+        self.active = 0
+        self.max_active = 0
+        self.lock = asyncio.Lock()
+
+    async def complete_json(self, messages: list[dict[str, str]]) -> str:
+        async with self.lock:
+            self.active += 1
+            if self.active > self.max_active:
+                self.max_active = self.active
+        try:
+            await asyncio.sleep(0.05)
+            return await super().complete_json(messages)
+        finally:
+            async with self.lock:
+                self.active -= 1
+
+
 class CapturingQALLM(FakeLLM):
     def __init__(self):
         self.messages = []
@@ -436,6 +499,96 @@ async def test_translation_rejects_duplicate_json_ids(feature_context):
     assert task["failure"]["code"] == "TRANSLATION_PROTOCOL_INVALID"
 
 
+def test_protected_tokens_normalizes_urls_and_preserves_placeholders():
+    from easylearn.translation import _protected_tokens
+
+    source = (
+        "Available at https://github.com/org/repo. Appendix A.1 with {{IMG_0}} "
+        "and (https://site.com/doc,). "
+        "Ross Wightman. Pytorch image models. "
+        "https://github.com/rwightman/pytorch-image-models, 2019."
+    )
+    translated = (
+        "可在 https://github.com/org/repo 获取。附录 A.1 包含 {{IMG_0}} "
+        "以及 (https://site.com/doc，)。"
+        "Ross Wightman。Pytorch 图像模型。https://github.com/rwightman/pytorch-image-models，2019年。"
+    )
+    assert _protected_tokens(source) == _protected_tokens(translated)
+
+
+@pytest.mark.asyncio
+async def test_translation_rejects_mismatched_placeholders(feature_context):
+    client, document_id, parse_id = feature_context
+    # Replace block b1 source with one having a placeholder
+    services = client._transport.app.state.services
+    ir = await services.documents.load_ir(document_id, parse_id)
+    new_blocks = list(ir.blocks)
+    new_blocks[0] = Block(
+        block_id="b1",
+        block_type="paragraph",
+        order_index=0,
+        source_nodes=(TextNode(node_id="n1", text="See figure {{IMG_0}}."),),
+    )
+    ir = ir.model_copy(update={"blocks": tuple(new_blocks)})
+    if services.documents.cache is not None:
+        services.documents.cache.put(document_id, parse_id, ir)
+    parse_directory = services.files.paths.parse(document_id, parse_id)
+    (parse_directory / "document.json").write_bytes(
+        ir.model_dump_json(exclude_computed_fields=True).encode("utf-8")
+    )
+
+    services.translation.llm = MissingPlaceholderTranslationLLM()
+    accepted = await client.post(
+        f"/api/documents/{document_id}/translate",
+        json={"parse_id": str(parse_id), "block_ids": ["b1"]},
+    )
+    assert accepted.status_code == 202, accepted.text
+    task = await wait_for_task(client, accepted.json()["task_id"])
+    assert task["status"] == "failed", task
+    assert task["failure"]["code"] == "TRANSLATION_STRUCTURE_INVALID"
+
+
+@pytest.mark.asyncio
+async def test_translation_repairs_missing_keys_incrementally(feature_context):
+    client, document_id, parse_id = feature_context
+    llm = DropKeyOnceTranslationLLM()
+    client._transport.app.state.services.translation.llm = llm
+    accepted = await client.post(
+        f"/api/documents/{document_id}/translate",
+        json={"parse_id": str(parse_id)},
+    )
+    assert accepted.status_code == 202, accepted.text
+    task = await wait_for_task(client, accepted.json()["task_id"])
+    assert task["status"] == "succeeded", task
+    assert llm.call_count == 2
+    # Verify that the second call requested only the missing key
+    assert len(llm.requested_keys[0]) == 2
+    assert len(llm.requested_keys[1]) == 1
+    units = (
+        await client.get(f"/api/documents/{document_id}/translations?parse_id={parse_id}")
+    ).json()
+    assert len(units) == 2
+    assert all(unit["auto_text"].startswith("译：") for unit in units)
+
+
+@pytest.mark.asyncio
+async def test_translation_normalizes_whitespace_in_keys(feature_context):
+    client, document_id, parse_id = feature_context
+    client._transport.app.state.services.translation.llm = WhitespaceKeyTranslationLLM()
+    accepted = await client.post(
+        f"/api/documents/{document_id}/translate",
+        json={"parse_id": str(parse_id)},
+    )
+    assert accepted.status_code == 202, accepted.text
+    task = await wait_for_task(client, accepted.json()["task_id"])
+    assert task["status"] == "succeeded", task
+    units = (
+        await client.get(f"/api/documents/{document_id}/translations?parse_id={parse_id}")
+    ).json()
+    assert len(units) == 2
+    assert all(unit["auto_text"].startswith("译：") for unit in units)
+
+
 @pytest.mark.asyncio
 async def test_translation_keeps_a_concurrent_locked_edit_and_publishes_new_auto_text(
     feature_context,
@@ -477,6 +630,25 @@ async def test_translation_keeps_a_concurrent_locked_edit_and_publishes_new_auto
     assert latest["auto_text"] == "译：The value is 42%."
     assert latest["effective_text"] == "人工锁定译文"
     assert latest["locked"] is True
+
+
+@pytest.mark.asyncio
+async def test_translation_executes_batches_concurrently(feature_context, monkeypatch):
+    client, document_id, parse_id = feature_context
+    application = client._transport.app
+    llm = ConcurrentBatchTrackingLLM()
+    application.state.services.translation.llm = llm
+
+    monkeypatch.setattr("easylearn.translation._batches", lambda units: [units[:1], units[1:]])
+
+    accepted = await client.post(
+        f"/api/documents/{document_id}/translate",
+        json={"parse_id": str(parse_id)},
+    )
+    assert accepted.status_code == 202, accepted.text
+    task = await wait_for_task(client, accepted.json()["task_id"])
+    assert task["status"] == "succeeded", task
+    assert llm.max_active == 2
 
 
 @pytest.mark.asyncio
@@ -812,3 +984,96 @@ async def test_local_only_blocks_an_external_llm_before_network_access():
     client = LLMClient(settings)
     with pytest.raises(DomainError, match="local_only blocks"):
         await client.complete_json([{"role": "user", "content": "hello"}])
+
+
+@pytest.mark.asyncio
+async def test_translation_saves_batches_incrementally_and_resumes_on_retry(
+    feature_context, monkeypatch
+):
+    client, document_id, parse_id = feature_context
+    application = client._transport.app
+    llm = FailSecondBatchThenResumeLLM()
+    application.state.services.translation.llm = llm
+
+    # Split the 2 units (b1 and b2) into 2 batches
+    monkeypatch.setattr(
+        "easylearn.translation._batches",
+        lambda units: [b for b in [units[:1], units[1:]] if b],
+    )
+
+    # Run 1: first batch (b1) succeeds, second batch (b2) fails
+    accepted1 = await client.post(
+        f"/api/documents/{document_id}/translate",
+        json={"parse_id": str(parse_id)},
+    )
+    assert accepted1.status_code == 202
+    task1 = await wait_for_task(client, accepted1.json()["task_id"])
+    assert task1["status"] == "failed"
+
+    # Verify incremental persistence: b1 was saved, b2 was not
+    units_after_fail = (
+        await client.get(f"/api/documents/{document_id}/translations?parse_id={parse_id}")
+    ).json()
+    b1_unit = next(u for u in units_after_fail if u["block_id"] == "b1")
+    b2_unit = next(u for u in units_after_fail if u["block_id"] == "b2")
+    assert b1_unit["auto_text"] is not None
+    assert b2_unit["auto_text"] is None
+
+    # Run 2: allow b2 to succeed, retry translation
+    llm.should_fail_b2 = False
+    llm.call_history.clear()
+    accepted2 = await client.post(
+        f"/api/documents/{document_id}/translate",
+        json={"parse_id": str(parse_id)},
+    )
+    assert accepted2.status_code == 202
+    task2 = await wait_for_task(client, accepted2.json()["task_id"])
+    assert task2["status"] == "succeeded"
+
+    # Verify that only b2 was sent to LLM on the retry (b1 was skipped!)
+    assert len(llm.call_history) == 1
+    assert not any("b1" in k for k in llm.call_history[0])
+    assert any("b2" in k for k in llm.call_history[0])
+
+    # Verify both are now completed
+    final_units = (
+        await client.get(f"/api/documents/{document_id}/translations?parse_id={parse_id}")
+    ).json()
+    assert all(u["auto_text"] is not None for u in final_units)
+
+
+@pytest.mark.asyncio
+async def test_translation_force_retranslates_all_units(feature_context):
+    client, document_id, parse_id = feature_context
+    accepted1 = await client.post(
+        f"/api/documents/{document_id}/translate",
+        json={"parse_id": str(parse_id)},
+    )
+    assert accepted1.status_code == 202
+    task1 = await wait_for_task(client, accepted1.json()["task_id"])
+    assert task1["status"] == "succeeded"
+
+    # Default translate without force: skips all, completes immediately without LLM call
+    tracking_llm = FailSecondBatchThenResumeLLM()
+    tracking_llm.should_fail_b2 = False
+    client._transport.app.state.services.translation.llm = tracking_llm
+
+    accepted2 = await client.post(
+        f"/api/documents/{document_id}/translate",
+        json={"parse_id": str(parse_id)},
+    )
+    assert accepted2.status_code == 202
+    task2 = await wait_for_task(client, accepted2.json()["task_id"])
+    assert task2["status"] == "succeeded"
+    assert len(tracking_llm.call_history) == 0
+
+    # Force translate: calls LLM for all units
+    accepted3 = await client.post(
+        f"/api/documents/{document_id}/translate",
+        json={"parse_id": str(parse_id), "force": True},
+    )
+    assert accepted3.status_code == 202
+    task3 = await wait_for_task(client, accepted3.json()["task_id"])
+    assert task3["status"] == "succeeded"
+    assert len(tracking_llm.call_history) > 0
+
