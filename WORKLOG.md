@@ -7,6 +7,28 @@
 - 无。
 
 
+### 2026-09-07 — 恢复按钮样式规范与搜索栏隐藏状态
+
+**目标**
+- 修复按钮在截图 131523 中退化为浏览器默认带灰框原生外观的问题；
+- 恢复侧边栏主操作按钮的蓝色实心样式与系统设置次级样式；
+- 修复搜索栏在未激活时默认展示的问题。
+
+**当前状态**
+- 已完成：补充 `.icon-button` 基础样式（`border: 0; background: transparent; line-height: 1; border-radius: 7px;`）及禁用样式，恢复平整无框图标按钮与柔和蓝色悬浮高亮（如重新解析、下载、关闭与翻页按钮）。
+- 已完成：恢复侧边栏 `+ 新解析` 为与原 `+ 上传文档` 一致的实心蓝底按钮样式（`.sidebar-btn-primary`），`⚙ 系统设置` 为轻量卡片式次级按钮。
+- 已完成：添加 `.result-search[hidden] { display: none !important; }`，防止 CSS flex 规则覆盖 HTML `hidden` 属性导致搜索行未激活时挤占垂直对齐空间。
+
+**验证证据**
+- `D:\Software\anaconda3\envs\learn\python.exe -m pytest tests\v3 -q -p no:cacheprovider --tb=short` → `81 passed in 10.27s`。
+- `$env:EASYLEARN_RUN_BROWSER_TESTS="1"; D:\Software\anaconda3\envs\learn\python.exe -m pytest tests/browser/test_upload.py -k "test_empty_workspace or test_document_workspace" -q -p no:cacheprovider --tb=short` → `2 passed, 5 deselected in 10.43s`。
+- `D:\Software\anaconda3\envs\learn\python.exe -m ruff check src tests` → `All checks passed!`。
+- `node --check src/easylearn/static/app.js` 与 `node --check src/easylearn/static/pdf-viewer.js` → 均通过检查。
+
+**下一步**
+- 交付用户验收当前界面。
+
+
 ### 2026-09-07 — 修复工作区上传区隐藏、左右栏对齐、顶部布局及 PDF 块白色遮挡
 
 **目标**
