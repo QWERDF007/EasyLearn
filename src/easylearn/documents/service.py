@@ -256,8 +256,17 @@ class DocumentService:
     async def _view(self, row: Row) -> DocumentView:
         async with self.database.read() as connection:
             cursor = await connection.execute(
-                "SELECT * FROM parse_results WHERE document_id = ? "
-                "ORDER BY created_at DESC, id DESC",
+                "SELECT p.*, "
+                "EXISTS("
+                "  SELECT 1 FROM translations t "
+                "  WHERE t.parse_id = p.id "
+                "  AND ("
+                "    (t.auto_text IS NOT NULL AND t.auto_text != '') "
+                "    OR (t.manual_text IS NOT NULL AND t.manual_text != '')"
+                "  )"
+                ") AS has_translation "
+                "FROM parse_results p WHERE p.document_id = ? "
+                "ORDER BY p.created_at DESC, p.id DESC",
                 (row["id"],),
             )
             parse_rows = await cursor.fetchall()
@@ -271,6 +280,7 @@ class DocumentService:
                 ir_file_id=f"ir:{parse_row['id']}",
                 raw_file_id=(f"raw:{parse_row['id']}" if parse_row["raw_path"] else None),
                 metadata=json.loads(parse_row["metadata_json"]),
+                has_translation=bool(parse_row["has_translation"]),
             )
             for parse_row in parse_rows
         )
@@ -284,14 +294,23 @@ class DocumentService:
         except Exception:
             original_size = None
 
+        active_parse_id = UUID(row["active_parse_id"]) if row["active_parse_id"] else None
+        active_parse = (
+            next((r for r in results if r.parse_id == active_parse_id), None)
+            if active_parse_id
+            else (results[0] if results else None)
+        )
+        doc_has_translation = bool(active_parse.has_translation) if active_parse else False
+
         return DocumentView(
             document_id=UUID(row["id"]),
             name=row["name"],
             favorite=bool(row["favorite"]),
             created_at=datetime.fromisoformat(row["created_at"]),
-            active_parse_id=UUID(row["active_parse_id"]) if row["active_parse_id"] else None,
+            active_parse_id=active_parse_id,
             size_bytes=original_size,
             parse_results=results,
+            has_translation=doc_has_translation,
         )
 
 

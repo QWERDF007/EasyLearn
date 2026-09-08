@@ -476,3 +476,87 @@ async def test_katex_assets_and_layout_served(client):
     assert app_css.status_code == 200
     assert "result-formula-container" in app_css.text
     assert 'data-block-type="formula"' in app_css.text
+
+
+@pytest.mark.asyncio
+async def test_document_and_parse_result_has_translation_status(client, pdf_bytes):
+    created = await client.post(
+        "/api/documents", files={"file": ("paper.pdf", pdf_bytes, "application/pdf")}
+    )
+    assert created.status_code == 201
+    document_id = UUID(created.json()["document_id"])
+    parse_id = uuid4()
+    services = client._transport.app.state.services
+    parse_directory = services.files.paths.parse(document_id, parse_id)
+    parse_directory.mkdir(parents=True)
+    shutil.copyfile(
+        await services.documents.file_path(document_id, "original"),
+        parse_directory / "preview.pdf",
+    )
+    ir = DocumentIR(
+        document_id=document_id,
+        parse_run_id=parse_id,
+        preview_asset_id=uuid4(),
+        preview_sha256="0" * 64,
+        mineru_version="3.4.5",
+        adapter_version="3.0.0",
+        pages=(
+            PageGeometry(
+                page_index=0,
+                media_box=(0, 0, 600, 800),
+                crop_box=(0, 0, 600, 800),
+            ),
+        ),
+        blocks=(),
+    )
+    (parse_directory / "document.json").write_bytes(
+        ir.model_dump_json(exclude_computed_fields=True).encode("utf-8")
+    )
+    async with services.database.transaction() as connection:
+        await connection.execute(
+            "INSERT INTO parse_results "
+            "(id, document_id, preview_path, ir_path, raw_path, pages, metadata_json, created_at) "
+            "VALUES (?, ?, ?, ?, NULL, 1, '{}', ?)",
+            (
+                str(parse_id),
+                str(document_id),
+                f"parses/{parse_id}/preview.pdf",
+                f"parses/{parse_id}/document.json",
+                "2026-01-01T00:00:00+00:00",
+            ),
+        )
+        await connection.execute(
+            "UPDATE documents SET active_parse_id = ? WHERE id = ?",
+            (str(parse_id), str(document_id)),
+        )
+
+    # Initially has_translation is False
+    doc_res = await client.get(f"/api/documents/{document_id}")
+    assert doc_res.status_code == 200
+    doc_data = doc_res.json()
+    assert doc_data["has_translation"] is False
+    assert doc_data["parse_results"][0]["has_translation"] is False
+
+    # Insert a translation row
+    async with services.database.transaction() as connection:
+        await connection.execute(
+            "INSERT INTO translations (parse_id, block_id, unit_id, auto_text, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (str(parse_id), "b1", "u1", "译文", "2026-01-01T00:00:00+00:00"),
+        )
+
+    # Now has_translation is True
+    doc_res = await client.get(f"/api/documents/{document_id}")
+    assert doc_res.status_code == 200
+    doc_data = doc_res.json()
+    assert doc_data["has_translation"] is True
+    assert doc_data["parse_results"][0]["has_translation"] is True
+
+    # Also check list documents
+    list_res = await client.get("/api/documents")
+    assert list_res.status_code == 200
+    list_data = list_res.json()
+    doc_item = next(d for d in list_data if d["document_id"] == str(document_id))
+    assert doc_item["has_translation"] is True
+    assert doc_item["parse_results"][0]["has_translation"] is True
+

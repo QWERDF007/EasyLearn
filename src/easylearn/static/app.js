@@ -286,7 +286,13 @@ function createDocumentItemElement(item) {
     } else if (item.active_parse_id || (item.parse_results && item.parse_results.length > 0)) {
       const activeRes = item.parse_results?.find((p) => p.parse_id === item.active_parse_id) || item.parse_results?.[0];
       const pages = activeRes?.pages;
-      statusText = pages ? `✓ 解析完成 · ${pages}页` : "✓ 解析完成";
+      const isTranslated = Boolean(
+        activeRes?.has_translation ||
+        item.has_translation ||
+        (state.document?.document_id === item.document_id && hasDocumentTranslation())
+      );
+      const actionName = isTranslated ? "翻译完成" : "解析完成";
+      statusText = pages ? `✓ ${actionName} · ${pages}页` : `✓ ${actionName}`;
       statusClass = "is-success";
       showRing = true;
       ringVariant = "is-success";
@@ -520,8 +526,10 @@ async function openDocument(documentId) {
     if (sizeElem) sizeElem.textContent = formatFileSize(loaded.size_bytes);
     syncFavoriteButton();
     for (const task of loaded.tasks || []) {
-      state.tasks.set(task.task_id, task);
-      watchTask(task);
+      if (task.status !== "succeeded") {
+        state.tasks.set(task.task_id, task);
+        watchTask(task);
+      }
     }
     renderTasks();
     const parseId = selectedParseId();
@@ -1771,9 +1779,12 @@ async function runTask(path, body, successMessage) {
   state.tasks.set(task.task_id, task);
   renderTasks();
   const finished = await waitTask(task.task_id);
+  state.tasks.delete(task.task_id);
+  renderTasks();
   if (finished.status !== "succeeded") {
     throw new Error(finished.failure?.message || finished.message || "任务失败");
   }
+  await refreshDocuments();
   const followUpIds = Array.isArray(finished.result_ref?.follow_up_task_ids)
     ? finished.result_ref.follow_up_task_ids
     : finished.result_ref?.follow_up_task_id
@@ -1787,7 +1798,10 @@ async function runTask(path, body, successMessage) {
       message: "等待解析发布",
     });
     renderTasks();
-    void waitTask(followUpId).then((followUp) => {
+    void waitTask(followUpId).then(async (followUp) => {
+      state.tasks.delete(followUpId);
+      renderTasks();
+      await refreshDocuments();
       if (followUp.status === "succeeded" && state.document?.document_id === finished.document_id) {
         void openParse(finished.result_ref.parse_id);
       }
@@ -1829,7 +1843,11 @@ async function pollTask(taskId) {
         },
       };
     }
-    state.tasks.set(taskId, task);
+    if (task.status === "succeeded") {
+      state.tasks.delete(taskId);
+    } else {
+      state.tasks.set(taskId, task);
+    }
     renderTasks();
     if (terminalStatuses.has(task.status)) return task;
     await new Promise((resolve) => window.setTimeout(resolve, delay));
@@ -1925,6 +1943,7 @@ function renderTasks() {
   const list = $("#task-list");
   list.replaceChildren();
   for (const task of state.tasks.values()) {
+    if (task.status === "succeeded") continue;
     const item = document.createElement("div");
     item.className = "task-item";
     item.textContent = `${task.kind} · ${task.status}`;
@@ -2524,6 +2543,8 @@ $("#qa-form").addEventListener("submit", async (event) => {
         if (answerState) answerState.textContent = "未完成";
         return;
       }
+      state.tasks.delete(taskId);
+      renderTasks();
       if (answerState) answerState.textContent = "已完成";
       state.selectedQaId = finished.result_ref?.qa_id || null;
       await loadQaRecords();

@@ -14,6 +14,7 @@ class ParseResultView(BaseModel):
     ir_file_id: str
     raw_file_id: str | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
+    has_translation: bool = False
 
 
 class DocumentView(BaseModel):
@@ -28,6 +29,7 @@ class DocumentView(BaseModel):
     size_bytes: int | None = None
     parse_results: tuple[ParseResultView, ...] = ()
     tasks: tuple[TaskView, ...] = ()
+    has_translation: bool = False
 
 
 class DocumentListView(BaseModel):

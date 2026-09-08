@@ -7,6 +7,43 @@
 - 无。
 
 
+### 2026-09-08 — 文档列表状态增加“翻译完成”并实现任务完成后即时清空
+
+**目标**
+1. 文档列表中，已存在翻译结果的文档状态呈现为 `✓ 翻译完成 · XX页`（或 `✓ 翻译完成`），保持绿色成功状态进度环，不再单一硬编码为“解析完成”；
+2. 侧边栏任务区域（`#task-list`）在任务完成后清空，不再在列表中保留 `parse · succeeded 100% · Completed` 等历史完成任务；
+3. 保证单一真相源（SSOT），在数据模型 `ParseResultView` 与 `DocumentView` 增加 `has_translation` 字段并由数据库事务准确高效计算；
+4. TDD 编写自动化单元测试并通过 `pytest tests/v3` 与 `ruff check`，使用真实服务通过 Selenium 截图验证。
+
+**当前状态**
+- 已完成：更新 `src/easylearn/documents/schema.py`：在 `ParseResultView` 与 `DocumentView` 增加 `has_translation: bool = False` 强类型字段；
+- 已完成：更新 `src/easylearn/documents/service.py`：在 `_view` 查询中使用 SQL `EXISTS` 子查询精准判断解析结果是否存在有效翻译，并据此计算文档级的 `has_translation`；
+- 已完成：更新 `src/easylearn/static/app.js`：
+  - `createDocumentItemElement`: 识别文档或当前激活解析的翻译状态，已翻译文档显示 `✓ 翻译完成 · XX页`；
+  - `openDocument`: 载入任务时过滤掉已完成态任务（`status === 'succeeded'`），避免文档切换带入历史任务；
+  - `pollTask` / `runTask` / QA 流式处理: 任务状态变为 `succeeded` 时即从 `state.tasks` 中移除并刷新文档列表；
+  - `renderTasks`: 渲染任务列表时跳过已完成任务，任务完成后即时清空；
+- 已完成：在 `tests/v3/test_app.py` 中编写 TDD 测试 `test_document_and_parse_result_has_translation_status`，涵盖初始解析未翻译与插入翻译后的状态校验；
+- 已验证：
+  1. `pytest tests/v3/test_app.py -k test_document_and_parse_result_has_translation_status`：通过；
+  2. `pytest tests/v3`：95 个单元测试全绿（95 passed in 16.03s）；
+  3. `ruff check src tests`：All checks passed!；
+  4. 真实环境 Selenium 自动化截屏测试（真实数据含 2 个文档，均已翻译）：
+     - 文档列表分别准确显示 `✓ 翻译完成 · 18页` 与 `✓ 翻译完成 · 26页`，绿环与对勾正常展示；
+     - 侧边栏任务区域（`#task-list`）显示 0 个任务项，完全清空，无残留 `parse · succeeded 100% · Completed`。
+
+**验证证据**
+- `pytest tests/v3`：95 passed in 16.03s
+- `ruff check src tests`：All checks passed!
+- Selenium 真实浏览器验证：
+  - `[0] 2607.02252v2.pdf -> status: ✓ 翻译完成 · 18页`
+  - `[1] HOW DO VISION TRANSFORMERS WORK.pdf -> status: ✓ 翻译完成 · 26页`
+  - `#task-list` 中 task items 计数为 0。
+
+**下一步**
+- 保持文档与代码同步，后续工作按需求持续迭代。
+
+
 ### 2026-09-08 — 清理 docs 过时历史包袱与冗余文件，更新单一真相源文档索引
 
 **目标**
