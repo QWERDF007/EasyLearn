@@ -194,24 +194,30 @@ function getDocumentTask(documentId, item) {
   return null;
 }
 
-function getFileIconSvg(filename = "") {
+function getFileBadgeInfo(filename = "") {
   const ext = (filename.split(".").pop() || "").toLowerCase();
   if (ext === "pdf") {
-    return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M8.27 14.75c-1.14 2.1-2.18 3.03-3.08 3.03-.68 0-1.19-.52-1.19-1.25 0-1.4 1.62-3.6 4.27-5.06l-.01.03c.51-1.3 1.05-2.92 1.4-4.27C9.37 5.75 9.77 4 10.96 4c.83 0 1.25.56 1.25 1.34 0 1.53-1.07 3.96-2.22 6.55.77.46 1.66.95 2.62 1.43 1.93-.72 3.64-1.07 4.66-1.07.96 0 1.43.43 1.43 1.07 0 1.28-1.71 2.24-4.22 2.24-1.31 0-2.88-.3-4.47-.94-.58.85-1.17 1.68-1.74 2.37zm-.26-1.31c-.53.69-1.07 1.33-1.57 1.89-1.58.91-2.43 1.69-2.43 2.45 0 .28.18.45.45.45.49 0 1.3-.64 2.16-2.13.47-.73.94-1.59 1.39-2.66zm2.34-4.81c.64-1.53 1.15-2.99 1.15-3.83 0-.31-.13-.48-.36-.48-.51 0-.91 1.08-1.26 2.57-.17.76-.38 1.63-.64 2.6 1.04-.52 2.06-1.02 1.11-.86zm3.32 4.19c1.07.39 2.11.58 3.04.58 1.45 0 2.26-.47 2.26-1.07 0-.25-.17-.4-.48-.4-.73 0-2.02.26-3.82.89-.35.12-.69.25-1 .39z" fill="#DC2626"/></svg>`;
+    return { className: "badge-pdf", html: "PDF" };
   }
   if (["ppt", "pptx"].includes(ext)) {
-    return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><text x="12" y="12" font-size="14" font-weight="800" fill="#EA580C" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif">P</text></svg>`;
+    return { className: "badge-pptx", html: "P" };
   }
   if (["doc", "docx", "word"].includes(ext)) {
-    return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><text x="12" y="12" font-size="13" font-weight="800" fill="#2563eb" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif">W</text></svg>`;
+    return { className: "badge-docx", html: "W" };
   }
   if (["xls", "xlsx", "csv"].includes(ext)) {
-    return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><text x="12" y="12" font-size="13" font-weight="800" fill="#16a34a" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif">X</text></svg>`;
+    return { className: "badge-xlsx", html: "X" };
   }
   if (["png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "jp2"].includes(ext)) {
-    return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3" ry="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>`;
+    return {
+      className: "badge-img",
+      html: `<svg width="14" height="14" viewBox="0 0 24 24" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="3" ry="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>`,
+    };
   }
-  return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
+  return {
+    className: "badge-file",
+    html: `<svg width="14" height="14" viewBox="0 0 24 24" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`,
+  };
 }
 
 function createDocumentItemElement(item) {
@@ -222,33 +228,37 @@ function createDocumentItemElement(item) {
   let progress = null;
   let isSpinning = false;
   let hasActiveTask = false;
-  let runningTask = null;
-  let failedTask = null;
+  let ringVariant = "is-parsing";
+  let showRing = false;
 
   if (isUploading) {
     hasActiveTask = true;
+    showRing = true;
     statusClass = "is-running";
+    ringVariant = "is-uploading";
     const pct = Math.round((item.uploadProgress || 0) * 100);
-    statusText = `上传中 ${pct}%`;
+    statusText = `↑ 上传中 ${pct}%`;
     progress = item.uploadProgress || 0;
   } else {
     const task = getDocumentTask(item.document_id, item);
     if (task && (task.status === "queued" || task.status === "running")) {
       hasActiveTask = true;
-      runningTask = task;
+      showRing = true;
       statusClass = "is-running";
       if (task.status === "queued") {
-        statusText = task.kind === "translate" ? "排队翻译" : "排队中";
+        statusText = task.kind === "translate" ? "⌛ 排队翻译" : "⌛ 排队中";
         isSpinning = true;
+        ringVariant = "is-queued";
       } else {
+        ringVariant = "is-parsing";
         const known = typeof task.progress === "number";
         const pct = known ? Math.round(task.progress * 100) : null;
         if (task.kind === "parse") {
-          statusText = pct !== null ? `解析中 ${pct}%` : (task.message || "解析中");
+          statusText = pct !== null ? `⚡ 解析中 ${pct}%` : (task.message || "⚡ 解析中");
         } else if (task.kind === "translate") {
-          statusText = pct !== null ? `翻译中 ${pct}%` : (task.message || "翻译中");
+          statusText = pct !== null ? `⚡ 翻译中 ${pct}%` : (task.message || "⚡ 翻译中");
         } else {
-          statusText = pct !== null ? `处理中 ${pct}%` : (task.message || "处理中");
+          statusText = pct !== null ? `⚡ 处理中 ${pct}%` : (task.message || "⚡ 处理中");
         }
         if (pct !== null) {
           progress = pct / 100;
@@ -257,17 +267,19 @@ function createDocumentItemElement(item) {
         }
       }
     } else if (task && task.status === "failed") {
-      failedTask = task;
-      statusText = "解析失败";
+      statusText = "✕ 解析失败";
       statusClass = "is-failed";
-      statusIcon = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" fill="#dc2626"/><path d="M5.5 5.5L10.5 10.5M10.5 5.5L5.5 10.5" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg>`;
     } else if (task && task.status === "cancelled") {
       statusText = "已取消";
       statusClass = "is-muted";
     } else if (item.active_parse_id || (item.parse_results && item.parse_results.length > 0)) {
-      statusText = "解析完成";
+      const activeRes = item.parse_results?.find((p) => p.parse_id === item.active_parse_id) || item.parse_results?.[0];
+      const pages = activeRes?.pages;
+      statusText = pages ? `✓ 解析完成 · ${pages}页` : "✓ 解析完成";
       statusClass = "is-success";
-      statusIcon = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" fill="#16a34a"/><path d="M5 8L7.2 10.2L11 6" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+      showRing = true;
+      ringVariant = "is-success";
+      progress = 1.0;
     } else {
       statusText = "待解析";
       statusClass = "is-muted";
@@ -294,7 +306,7 @@ function createDocumentItemElement(item) {
   const iconContainer = document.createElement("div");
   iconContainer.className = "doc-icon-container";
 
-  if (hasActiveTask) {
+  if (showRing) {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("class", `doc-ring-svg ${isSpinning ? "is-spinning" : ""}`);
     svg.setAttribute("viewBox", "0 0 36 36");
@@ -307,7 +319,7 @@ function createDocumentItemElement(item) {
     track.setAttribute("r", "15.5");
 
     const progCircle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-    progCircle.setAttribute("class", "ring-progress");
+    progCircle.setAttribute("class", `ring-progress ${ringVariant}`);
     progCircle.setAttribute("fill", "none");
     progCircle.setAttribute("cx", "18");
     progCircle.setAttribute("cy", "18");
@@ -324,9 +336,10 @@ function createDocumentItemElement(item) {
     iconContainer.append(svg);
   }
 
+  const badgeInfo = getFileBadgeInfo(item.name);
   const badge = document.createElement("div");
-  badge.className = "doc-badge";
-  badge.innerHTML = getFileIconSvg(item.name);
+  badge.className = `doc-badge ${badgeInfo.className}`;
+  badge.innerHTML = badgeInfo.html;
   iconContainer.append(badge);
 
   const info = document.createElement("div");

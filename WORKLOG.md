@@ -7,6 +7,34 @@
 - 无。
 
 
+### 2026-09-08 — 侧边栏实心徽标与环形进度条集成、重塑 v3 交互原型与技术方案（严格对齐现有代码真相源）
+
+**目标**
+1. 将用户认可的侧边栏文档项实心彩色徽标与环形 SVG 进度条样式（截图 094530）落地到项目真实工程代码（`src/easylearn/static/app.css` 与 `app.js`）；
+2. 彻底重新整理 `docs/FastAPI_MinerU方案与交互示例_v3/` 下的原型与规格文档：
+   - 根除历史原型中捏造的“双语阅读”分叉 Tab，严格对齐真实工作台的三大视图 Tab（`中文 Markdown`、`原文 Markdown`、`JSON`）；
+   - 严格对齐两栏的高度 84px 双行顶部栏（左栏 `source-file-info` + `pdf-toolbar` 阅读控制栏；右栏 `model-select-group` + 结果 Tab 与快捷操作工具栏）；
+   - 集成 AI 解读抽屉、系统设置抽屉与 KaTeX 离线公式色彩规范；
+3. 清理 `tests/v3/test_app.py` 中的重复定义，确保单测与代码检查 100% 绿色。
+
+**当前状态**
+- 已完成：更新 `src/easylearn/static/app.css`，新增 `.doc-badge.badge-pdf`、`.badge-docx`、`.badge-pptx`、`.badge-xlsx`、`.badge-img` 实心徽标样式及 `.ring-progress.is-success/is-uploading/is-parsing/is-queued` 状态环样式；
+- 已完成：更新 `src/easylearn/static/app.js`，实现 `getFileBadgeInfo` 并重构 `createDocumentItemElement`：解析完成显示翡翠绿整环和页数（`✓ 解析完成 · 26页`），解析/上传中显示环形百分比（`⚡ 解析中 72%` / `↑ 上传中 50%`），排队中显示旋转环（`⌛ 排队中`），失败显示红叉（`✕ 解析失败`）；
+- 已完成：完全重构 `docs/FastAPI_MinerU方案与交互示例_v3/FastAPI_MinerU工作台交互示例_v3.html`，100% 对齐现有 `index.html` 布局、顶栏双行、真实 Tab 与操作栏；
+- 已完成：更新 `docs/FastAPI_MinerU方案与交互示例_v3/FastAPI_MinerU完整开发方案_v3.md` 与 `FastAPI_MinerU交互示例_v3_说明.md`，纠正架构图与章节中所有关于结果栏 Tab、顶栏 toolbar 的描述；
+- 已完成：清理 `tests/v3/test_app.py` 中重复定义的测试用例；
+- 已验证：
+  1. `pytest tests/v3`：94 个单元测试全绿（94 passed in 12.43s）；
+  2. `ruff check src tests`：全部通过（All checks passed）。
+
+**验证证据**
+- `pytest tests/v3`：94 passed in 12.43s
+- `ruff check src tests`：All checks passed!
+
+**下一步**
+- 继续响应用户对工作台功能与交互的后续优化需求。
+
+
 ### 2026-09-07 — 修复公式 KaTeX 离线渲染、点击左侧原文平滑跳转联动、根除页面外层多余滚动条与重塑公式粉红色系规范
 
 **目标**

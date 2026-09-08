@@ -27,7 +27,7 @@ flowchart TD
     subgraph Frontend["前端工作台 (Browser)"]
         UI_SIDEBAR["侧边栏 (文档列表/环形进度/任务)"]
         UI_PDF["PDF 阅读器 (选框图层/缩放/翻页)"]
-        UI_RESULT["双语阅读区 (Markdown/译文/KaTeX公式)"]
+        UI_RESULT["结果呈现区 (中文/原文Markdown/JSON)"]
         UI_DRAWER["AI 解读抽屉 (上下文锚点/流式问答/溯源)"]
     end
 
@@ -124,14 +124,18 @@ flowchart TD
 ### 4.1 三栏式自适应布局
 - **实现代码**：[`src/easylearn/templates/index.html`](../../src/easylearn/templates/index.html)、[`src/easylearn/static/app.css`](../../src/easylearn/static/app.css)。
 - **窗口自适应**：设置 `html, body { height: 100%; overflow: hidden; margin: 0; }`，根除浏览器最右侧全局多余滚动条，全应用高度 100% 贴合视口；
-- **自适应三栏**：
-  1. **左侧栏（232px）**：文档树、SVG 环形进度条、圆形文件徽标与统一操作按钮；
-  2. **中栏（PDF 阅读器，1.15fr）**：浮动操作条（翻页/缩放/适宽/旋转/选框开关）、自适应缩放画布与几何选框图层；
-  3. **右栏（双语结果面板，0.95fr）**：Markdown、中文译文、JSON 与源码，独立内部平滑滚动。
+- **自适应三栏与顶栏结构**：
+  1. **左侧栏（232px）**：文档树、SVG 环形进度条、圆形实心文件徽标与统一操作按钮；
+  2. **中栏（PDF 阅读器，1.15fr）**：高度 84px 的两行结构顶栏（`.topbar`）：
+     - 上行（`.header-row-top`）：文件图标、文件名（`#document-name`）、文件大小（`#document-size`）与状态；
+     - 下行（`.header-row-bottom`）：左侧为“原文件”视图标签（`.reader-tabs`），右侧为阅读控制工具栏（`#pdf-toolbar`，包含上一页、当前页/总页数、下一页、缩小、缩放百分比、放大、重置 1:1 等紧凑按钮）；下方为自适应渲染的页面画布与几何选框图层；
+  3. **右栏（结果面板，0.95fr）**：高度 84px 的两行结构顶栏（`.result-header`）：
+     - 上行（`.header-row-top`）：包含解析模型下拉选择器（`.model-select-group`，选择 MinerU 权重）；
+     - 下行（`.header-row-bottom`）：左侧为三大真实视图切换 Tab（`中文 Markdown`、`原文 Markdown`、`JSON`，无独立“双语”Tab，双语比对由左侧原文 PDF 与右侧“中文 Markdown”自然形成），右侧为快捷操作按钮栏（`.result-actions`：AI 解读、翻译全文、设置、重新解析、复制、下载）；下方容器根据选中的 Tab 独立平滑滚动。
 
 ### 4.2 侧边栏任务与进度感知
-- **环形 SVG 进度条**：外圈包裹高分辨率 SVG 环（`r=15.5`，`stroke-width=2.2`），结合 `stroke-dashoffset` 动画精确呈现 `上传中 XX%`、`解析中 XX%`，排队中呈现旋转动效，完成呈现翡翠绿对勾；
-- **文件类型徽标**：区分 PDF（红）、PPT（橙）、DOCX（蓝）、XLSX（绿）、图片（蓝灰）等矢量圆形标牌；
+- **环形 SVG 进度条**：外圈包裹高分辨率 SVG 环（`r=15.5`，`stroke-width=2.2`），结合 `stroke-dashoffset` 动画精确呈现 `上传中 XX%`、`解析中 XX%`，排队中呈现顺时针旋转动效（`.doc-ring-spin`），失败呈现红叉警示，完成呈现翡翠绿对勾（`.doc-ring-complete`）；
+- **实心文件类型徽标**：采用现代化饱满色彩与圆角阴影（`.doc-badge`），区分 PDF（`.badge-pdf` 珊瑚红）、DOCX（`.badge-docx` 宝石蓝）、PPTX（`.badge-pptx` 琥珀橙）、XLSX（`.badge-xlsx` 翡翠绿）、图片（`.badge-img` 靛蓝）；
 - **统一交互按钮**：统一使用 26x26px 现代化矢量 SVG 图标按钮，配备 Tooltip 提示，并从文档卡片移除易混淆的取消按钮，统一在任务面板处理。
 
 ### 4.3 KaTeX 离线数学排版与色彩规范
