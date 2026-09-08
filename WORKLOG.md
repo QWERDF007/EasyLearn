@@ -7,6 +7,41 @@
 - 无。
 
 
+### 2026-09-08 — 侧边栏品牌标升级为原文面板可视切换按钮（支持一键折叠原文并铺满右侧结果区）
+
+**目标**
+1. 将侧边栏标题旁的蓝色 `EL` 徽标升级为“可视切换按钮”（`#toggle-reader-button`），支持在“可视”（眼睛开）与“不可视”（眼睛关/闭合）状态间平滑切换；
+2. 切换为“不可视”状态时，隐藏中间左侧原文面板（`reader-column`），并让右侧结果面板（`result-column`）铺满整个右侧视口窗口（`grid-column: 2 / -1`）；
+3. 再次点击可即时恢复双栏对照布局；
+4. 同步更新 `FastAPI_MinerU工作台交互示例_v3.html` 与相关规格文档，确保单真相源不分叉；
+5. 通过 Selenium 实机截图验证与全量单元测试。
+
+**当前状态**
+- 已完成：更新 `src/easylearn/templates/index.html`，将 `brand-row` 中的 `<span class="brand-mark">EL</span>` 替换为带有眼睛（可视）/闭眼（不可视）矢量图标的按钮 `#toggle-reader-button`；
+- 已完成：更新 `src/easylearn/static/app.css`：
+  - 增加 `.brand-toggle-btn` 悬浮、激活与 `.is-off` 切换状态样式；
+  - 增加 `.app-shell:not(.no-document).is-reader-hidden` 布局规则（隐藏 `.reader-column`，让 `.result-column` 占满剩余栅格 `grid-column: 2 / -1`），并同步配置媒体查询；
+- 已完成：更新 `src/easylearn/static/app.js`：
+  - 在 `state` 中维护 `readerHidden: false`；
+  - 实现 `updateReaderVisibility()`、`toggleReaderView()`、`setReaderHidden()` 方法，绑定点击事件并导出至 `window.__easyLearn`；
+- 已完成：同步更新原型 `docs/FastAPI_MinerU方案与交互示例_v3/FastAPI_MinerU工作台交互示例_v3.html` 与 `FastAPI_MinerU交互示例_v3_说明.md`；
+- 已验证：
+  1. 真实运行中服务（8765 端口）经 Selenium 自动化验证：
+     - 初始状态：按钮展示睁眼图标，原文面板与结果面板正常双栏并排（结果区宽 612px）；
+     - 点击切换后：按钮平滑切换为闭眼图标及淡灰状态，原文面板 `is_displayed = False`，结果区自适应扩展至 1352px 铺满窗口；
+     - 再次点击：双栏对照完整恢复；
+  2. `pytest tests/v3`：94 个单元测试全绿（94 passed in 16.63s）；
+  3. `ruff check src tests`：全部通过（All checks passed!）。
+
+**验证证据**
+- Selenium 截图验证：`scratch/test_state1_reader_visible.png`、`scratch/test_state2_reader_hidden.png`、`scratch/test_state3_reader_restored.png`
+- `pytest tests/v3`：94 passed in 16.63s
+- `ruff check src tests`：All checks passed!
+
+**下一步**
+- 交付用户查验可视按钮与全宽沉浸式阅读布局。
+
+
 ### 2026-09-08 — 侧边栏全面支持五种任务状态环形进度显示与重试交互（严格对齐设计原型）
 
 **目标**

@@ -48,6 +48,17 @@
       max-height: 100%;
       overflow: hidden;
     }
+    .app-shell.is-reader-hidden {
+      grid-template-columns: 232px minmax(0, 1fr);
+    }
+    .app-shell.is-reader-hidden .reader-column {
+      display: none !important;
+    }
+    .app-shell.is-reader-hidden .result-column {
+      grid-column: 2 / -1;
+      width: 100%;
+      min-width: 0;
+    }
 
     /* 1. 侧边栏 */
     .sidebar {
@@ -75,7 +86,36 @@
       background: #1d4ed8;
       font-size: 10px;
       font-weight: 700;
+      border: 0;
+      padding: 0;
     }
+    .brand-toggle-btn {
+      cursor: pointer;
+      transition: background-color .15s, color .15s, border-color .15s, transform .1s, box-shadow .15s;
+      box-shadow: 0 1px 2px rgba(29, 78, 216, 0.2);
+    }
+    .brand-toggle-btn:hover:not(:disabled) {
+      background: #2563eb;
+      box-shadow: 0 2px 6px rgba(37, 99, 235, 0.28);
+    }
+    .brand-toggle-btn:active:not(:disabled) {
+      transform: scale(0.94);
+    }
+    .brand-toggle-btn .icon-eye-open { display: block; }
+    .brand-toggle-btn .icon-eye-off { display: none; }
+    .brand-toggle-btn.is-off {
+      background: #f1f5f9;
+      color: #64748b;
+      border: 1px solid #cbd5e1;
+      box-shadow: none;
+    }
+    .brand-toggle-btn.is-off:hover:not(:disabled) {
+      background: #e2e8f0;
+      color: #1e293b;
+      border-color: #94a3b8;
+    }
+    .brand-toggle-btn.is-off .icon-eye-open { display: none; }
+    .brand-toggle-btn.is-off .icon-eye-off { display: block; }
 
     .sidebar-top-actions {
       display: flex;
@@ -730,7 +770,16 @@
   <aside class="sidebar" aria-label="文档导航">
     <div class="brand-row">
       <div class="brand">EasyLearn</div>
-      <span class="brand-mark" aria-hidden="true">EL</span>
+      <button id="toggle-reader-button" class="brand-mark brand-toggle-btn" type="button" title="隐藏原文面板" aria-label="隐藏原文面板" aria-pressed="false">
+        <svg class="icon-eye-open" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+          <circle cx="12" cy="12" r="3"/>
+        </svg>
+        <svg class="icon-eye-off" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+          <line x1="1" y1="1" x2="23" y2="23"/>
+        </svg>
+      </button>
     </div>
 
     <div class="sidebar-top-actions">
@@ -1363,6 +1412,17 @@ max_retries = 3</code></pre>
     btn.addEventListener('click', () => {
       document.getElementById('question-input').value = btn.dataset.prompt;
     });
+  });
+
+  // 8. 切换原文面板可视状态 (折叠/展开中间原文，右侧铺满)
+  const toggleBtn = document.getElementById('toggle-reader-button');
+  toggleBtn?.addEventListener('click', () => {
+    const shell = document.querySelector('.app-shell');
+    const isHidden = shell.classList.toggle('is-reader-hidden');
+    toggleBtn.classList.toggle('is-off', isHidden);
+    toggleBtn.title = isHidden ? '显示原文面板' : '隐藏原文面板';
+    toggleBtn.setAttribute('aria-label', toggleBtn.title);
+    toggleBtn.setAttribute('aria-pressed', String(isHidden));
   });
 </script>
 </body>

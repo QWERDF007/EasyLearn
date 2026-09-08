@@ -35,6 +35,7 @@ const state = {
   parseProgressTimer: null,
   documentLoadGeneration: 0,
   parseLoadGeneration: 0,
+  readerHidden: false,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -666,6 +667,44 @@ function syncWorkspaceLayout() {
   $("#pdf-viewer").hidden = !hasDocument;
   const pdfToolbar = $("#pdf-toolbar");
   if (pdfToolbar) pdfToolbar.hidden = !hasDocument;
+  updateReaderVisibility();
+}
+
+function updateReaderVisibility() {
+  const toggleBtn = $("#toggle-reader-button");
+  const shell = document.querySelector(".app-shell");
+  const hasDocument = Boolean(state.document);
+  const isHidden = Boolean(state.readerHidden && hasDocument);
+
+  if (shell) {
+    shell.classList.toggle("is-reader-hidden", isHidden);
+  }
+
+  if (toggleBtn) {
+    toggleBtn.disabled = !hasDocument;
+    toggleBtn.classList.toggle("is-off", isHidden);
+    toggleBtn.setAttribute("aria-pressed", String(isHidden));
+    const titleText = !hasDocument
+      ? "打开文档后可切换原文面板"
+      : (isHidden ? "显示原文面板" : "隐藏原文面板");
+    toggleBtn.title = titleText;
+    toggleBtn.setAttribute("aria-label", titleText);
+    toggleBtn.dataset.tooltip = titleText;
+  }
+}
+
+function setReaderHidden(hidden) {
+  state.readerHidden = Boolean(hidden);
+  updateReaderVisibility();
+}
+
+function toggleReaderView(force) {
+  if (!state.document) {
+    notify("打开文档后可折叠/展开原文面板");
+    return;
+  }
+  state.readerHidden = typeof force === "boolean" ? force : !state.readerHidden;
+  updateReaderVisibility();
 }
 
 async function withButtonBusy(buttonId, busyLabel, work) {
@@ -2580,6 +2619,10 @@ window.addEventListener("keydown", (event) => {
   }
 });
 
+$("#toggle-reader-button")?.addEventListener("click", () => {
+  toggleReaderView();
+});
+
 for (const tab of document.querySelectorAll(".result-tab")) {
   tab.addEventListener("click", () => {
     if (tab.disabled) return;
@@ -2595,4 +2638,7 @@ window.__easyLearn = {
   renderDocumentList,
   createDocumentItemElement,
   refreshDocuments,
+  updateReaderVisibility,
+  setReaderHidden,
+  toggleReaderView,
 };
