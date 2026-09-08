@@ -79,7 +79,9 @@ class LLMSettings(_Config):
     json_mode: bool = False
     reasoning_effort: str | None = None
     proxy: str | None = None
-    max_retries: int = Field(default=3, ge=0, le=10)
+    max_retries: int = Field(default=5, ge=0, le=10)
+    retry_min_delay: float = Field(default=2.0, ge=0.0, le=60.0)
+    retry_max_delay: float = Field(default=30.0, ge=0.0, le=300.0)
 
 
 class FileSettings(_Config):

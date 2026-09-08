@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import re
 import time
 import urllib.request
@@ -128,6 +129,39 @@ def translation_units(
     return tuple(result)
 
 
+def compute_retry_delay(
+    attempt: int,
+    min_delay: float = 2.0,
+    max_delay: float = 30.0,
+    *,
+    retry_after: float | None = None,
+    jitter: bool = True,
+) -> float:
+    """Calculate exponential backoff delay with full jitter and Retry-After support."""
+    if min_delay <= 0 and max_delay <= 0:
+        return 0.0
+    ceiling = min(max_delay, max(min_delay, min_delay * (2**attempt)))
+    if jitter and min_delay > 0:
+        lower = min_delay * 0.5
+        calculated = random.uniform(lower, ceiling)
+    else:
+        calculated = ceiling
+    if retry_after is not None and retry_after > 0:
+        return min(max_delay, max(calculated, retry_after))
+    return calculated
+
+
+def _parse_retry_after(response: httpx.Response) -> float | None:
+    header = response.headers.get("Retry-After")
+    if not header:
+        return None
+    try:
+        val = float(header.strip())
+        return val if val >= 0 else None
+    except ValueError:
+        return None
+
+
 class LLMClient:
     """Small OpenAI-compatible HTTP adapter; prompts and structure stay in this module."""
 
@@ -156,7 +190,9 @@ class LLMClient:
             payload["reasoning_effort"] = configuration.reasoning_effort
         if configuration.json_mode:
             payload["response_format"] = {"type": "json_object"}
-        max_retries = getattr(self.settings.llm, "max_retries", 3)
+        max_retries = getattr(self.settings.llm, "max_retries", 5)
+        min_delay = getattr(self.settings.llm, "retry_min_delay", 2.0)
+        max_delay = getattr(self.settings.llm, "retry_max_delay", 30.0)
         response: httpx.Response | None = None
         for attempt in range(max_retries + 1):
             try:
@@ -170,9 +206,9 @@ class LLMClient:
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 exc_name = type(exc).__name__
                 if attempt < max_retries:
-                    delay = 2**attempt
+                    delay = compute_retry_delay(attempt, min_delay, max_delay)
                     logger.warning(
-                        "LLM request error (%s: %s) on attempt %d/%d; retrying in %ds...",
+                        "LLM request error (%s: %s) on attempt %d/%d; retrying in %.1fs...",
                         exc_name,
                         exc,
                         attempt + 1,
@@ -203,9 +239,12 @@ class LLMClient:
 
             if response.status_code >= 500 or response.status_code == 429:
                 if attempt < max_retries:
-                    delay = 2**attempt
+                    retry_after = _parse_retry_after(response)
+                    delay = compute_retry_delay(
+                        attempt, min_delay, max_delay, retry_after=retry_after
+                    )
                     logger.warning(
-                        "LLM returned HTTP %d on attempt %d/%d; retrying in %ds...",
+                        "LLM returned HTTP %d on attempt %d/%d; retrying in %.1fs...",
                         response.status_code,
                         attempt + 1,
                         max_retries + 1,
@@ -259,53 +298,96 @@ class LLMClient:
         }
         if configuration.reasoning_effort:
             payload["reasoning_effort"] = configuration.reasoning_effort
-        try:
-            async with (
-                self._client() as http,
-                http.stream(
-                    "POST",
-                    f"{configuration.base_url.rstrip('/')}/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=configuration.timeout_seconds,
-                ) as response,
-            ):
-                if response.status_code >= 500 or response.status_code == 429:
-                    raise DomainError(
-                        "LLM_UNAVAILABLE", "LLM is temporarily unavailable", retryable=True
-                    )
-                if response.status_code >= 400:
-                    raise DomainError("LLM_REQUEST_REJECTED", "LLM rejected the request")
-                async for line in response.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if data == "[DONE]":
-                        return
-                    try:
-                        payload_value = json.loads(data)
-                        choices = payload_value.get("choices") or []
-                        delta = choices[0]["delta"].get("content", "") if choices else ""
-                    except (ValueError, KeyError, IndexError, TypeError):
+        max_retries = getattr(self.settings.llm, "max_retries", 5)
+        min_delay = getattr(self.settings.llm, "retry_min_delay", 2.0)
+        max_delay = getattr(self.settings.llm, "retry_max_delay", 30.0)
+        for attempt in range(max_retries + 1):
+            try:
+                async with (
+                    self._client() as http,
+                    http.stream(
+                        "POST",
+                        f"{configuration.base_url.rstrip('/')}/chat/completions",
+                        headers=headers,
+                        json=payload,
+                        timeout=configuration.timeout_seconds,
+                    ) as response,
+                ):
+                    if response.status_code >= 500 or response.status_code == 429:
+                        if attempt < max_retries:
+                            retry_after = _parse_retry_after(response)
+                            delay = compute_retry_delay(
+                                attempt, min_delay, max_delay, retry_after=retry_after
+                            )
+                            logger.warning(
+                                "LLM stream returned HTTP %d on attempt %d/%d; "
+                                "retrying in %.1fs...",
+                                response.status_code,
+                                attempt + 1,
+                                max_retries + 1,
+                                delay,
+                            )
+                            await asyncio.sleep(delay)
+                            continue
                         raise DomainError(
-                            "LLM_PROTOCOL_INVALID", "LLM returned an invalid stream event"
-                        ) from None
-                    if isinstance(delta, str) and delta:
-                        yield delta
-        except DomainError:
-            raise
-        except httpx.TimeoutException as exc:
-            logger.error("LLM stream timed out: %s", exc)
-            raise DomainError("LLM_TIMEOUT", "LLM request timed out", retryable=True) from exc
-        except httpx.TransportError as exc:
-            exc_name = type(exc).__name__
-            logger.error("LLM stream transport error: %s (%s)", exc, exc_name)
-            detail = (
-                f"LLM connection error ({exc_name}): {exc}"
-                if str(exc)
-                else f"LLM connection error: {exc_name}"
-            )
-            raise DomainError("LLM_UNAVAILABLE", detail, retryable=True) from exc
+                            "LLM_UNAVAILABLE",
+                            f"LLM is temporarily unavailable (HTTP {response.status_code})",
+                            retryable=True,
+                        )
+                    if response.status_code >= 400:
+                        raise DomainError("LLM_REQUEST_REJECTED", "LLM rejected the request")
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            return
+                        try:
+                            payload_value = json.loads(data)
+                            choices = payload_value.get("choices") or []
+                            delta = choices[0]["delta"].get("content", "") if choices else ""
+                        except (ValueError, KeyError, IndexError, TypeError):
+                            raise DomainError(
+                                "LLM_PROTOCOL_INVALID", "LLM returned an invalid stream event"
+                            ) from None
+                        if isinstance(delta, str) and delta:
+                            yield delta
+                    return
+            except DomainError:
+                raise
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                exc_name = type(exc).__name__
+                if attempt < max_retries:
+                    delay = compute_retry_delay(attempt, min_delay, max_delay)
+                    logger.warning(
+                        "LLM stream error (%s: %s) on attempt %d/%d; retrying in %.1fs...",
+                        exc_name,
+                        exc,
+                        attempt + 1,
+                        max_retries + 1,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                if isinstance(exc, httpx.TimeoutException):
+                    logger.error(
+                        "LLM stream timed out after %d attempts: %s", max_retries + 1, exc
+                    )
+                    raise DomainError(
+                        "LLM_TIMEOUT", "LLM request timed out", retryable=True
+                    ) from exc
+                logger.error(
+                    "LLM stream transport error after %d attempts: %s (%s)",
+                    max_retries + 1,
+                    exc,
+                    exc_name,
+                )
+                detail = (
+                    f"LLM connection error ({exc_name}): {exc}"
+                    if str(exc)
+                    else f"LLM connection error: {exc_name}"
+                )
+                raise DomainError("LLM_UNAVAILABLE", detail, retryable=True) from exc
 
     def _resolve_proxy(self) -> str | None:
         explicit = getattr(self.settings.llm, "proxy", None)

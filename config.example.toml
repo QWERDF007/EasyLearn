@@ -59,6 +59,7 @@ max_svg_elements = 10000
 [mineru.preview_limits]
 max_pages = 2000
 max_page_points = 14400
+
 render_edge_pixels = 1024
 
 [llm]
@@ -69,6 +70,9 @@ model = ""
 timeout_seconds = 600
 local_only = true
 json_mode = false
+max_retries = 5
+retry_min_delay = 2.0
+retry_max_delay = 30.0
 
 [files]
 max_upload_mb = 100

@@ -7,6 +7,33 @@
 - 无。
 
 
+### 2026-09-08 — 增强 LLMClient 指数退避与 Jitter 重试机制以容忍瞬态 503/网络中断
+
+**目标**
+1. 解决批量翻译或 QA 过程中大模型服务商（如 HTTP 502/503 短暂抖动、限流 429、超时）导致全量翻译任务失败中断的问题；
+2. 为 `LLMClient.complete_json` 和 `LLMClient.stream` 引入带有 Full Jitter（全随机抖动）的指数退避重试算法，支持遵循服务端的 `Retry-After` 响应头；
+3. 将可重试最大次数 `max_retries` 默认值提升至 5 次，并在配置项中新增 `retry_min_delay` (默认 2.0s) 与 `retry_max_delay` (默认 30.0s) 支持灵活微调；
+4. TDD 编写完整覆盖退避计算、重试恢复、耗尽报错的单元测试，保持全量测试与代码格式校验全绿。
+
+**当前状态**
+- 已完成：在 `src/easylearn/config.py` 中拓展 `LLMSettings`：添加 `retry_min_delay`（默认 2.0s）、`retry_max_delay`（默认 30.0s），并将 `max_retries` 默认由 3 提升至 5；同步更新 `config.example.toml`；
+- 已完成：在 `src/easylearn/translation.py` 中实现 `compute_retry_delay`（支持 Full Jitter 与 `Retry-After` 解析）；重构 `LLMClient.complete_json` 和 `LLMClient.stream`，对 HTTP 5xx/429 及网络超时/传输异常执行稳健的带抖动指数重试；
+- 已完成：在 `tests/v3/test_features.py` 中新增 3 个单元测试：
+  - `test_llm_client_retries_transient_503_and_recovers`
+  - `test_llm_client_exhausts_retries_and_raises_domain_error`
+  - `test_llm_client_stream_retries_transient_503_and_recovers`
+- 已验证：
+  1. `pytest tests/v3`：98 个单元测试全部通过（98 passed in 15.16s）；
+  2. `ruff check src tests`：All checks passed!。
+
+**验证证据**
+- `pytest tests/v3`：98 passed in 15.16s
+- `ruff check src tests`：All checks passed!
+
+**下一步**
+- 启动服务后，用户可在 UI 点击任务失败卡片上的“重试任务”继续翻译未完成单元（已翻译完成单元已入库不会重复请求）。
+
+
 ### 2026-09-08 — 文档列表状态增加“翻译完成”并实现任务完成后即时清空
 
 **目标**

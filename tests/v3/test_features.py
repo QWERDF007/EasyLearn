@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 from zipfile import ZipFile
 
+import httpx
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -1076,4 +1077,113 @@ async def test_translation_force_retranslates_all_units(feature_context):
     task3 = await wait_for_task(client, accepted3.json()["task_id"])
     assert task3["status"] == "succeeded"
     assert len(tracking_llm.call_history) > 0
+
+
+@pytest.mark.asyncio
+async def test_llm_client_retries_transient_503_and_recovers():
+    from easylearn.translation import compute_retry_delay
+
+    # Test compute_retry_delay properties
+    d0 = compute_retry_delay(0, min_delay=2.0, max_delay=30.0, jitter=False)
+    assert d0 == 2.0
+    d1 = compute_retry_delay(1, min_delay=2.0, max_delay=30.0, jitter=False)
+    assert d1 == 4.0
+    d4 = compute_retry_delay(4, min_delay=2.0, max_delay=30.0, jitter=False)
+    assert d4 == 30.0  # capped at max_delay
+
+    # Retry-After header override
+    d_after = compute_retry_delay(0, min_delay=2.0, max_delay=30.0, retry_after=10.0, jitter=False)
+    assert d_after == 10.0
+
+    # Test LLMClient with mock transport
+    calls = 0
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(503, text="Service Unavailable")
+        if calls == 2:
+            return httpx.Response(502, text="Bad Gateway")
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": json.dumps({"test": "ok"})}}]},
+        )
+
+    transport = httpx.MockTransport(mock_handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        settings = Settings(
+            llm=LLMSettings(
+                base_url="https://llm.example.test/v1",
+                model="test-model",
+                local_only=False,
+                max_retries=3,
+                retry_min_delay=0.0,
+                retry_max_delay=0.0,
+            )
+        )
+        llm = LLMClient(settings, http=http_client)
+        result = await llm.complete_json([{"role": "user", "content": "hello"}])
+        assert json.loads(result) == {"test": "ok"}
+        assert calls == 3
+
+
+@pytest.mark.asyncio
+async def test_llm_client_exhausts_retries_and_raises_domain_error():
+    calls = 0
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(503, text="Service Unavailable")
+
+    transport = httpx.MockTransport(mock_handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        settings = Settings(
+            llm=LLMSettings(
+                base_url="https://llm.example.test/v1",
+                model="test-model",
+                local_only=False,
+                max_retries=2,
+                retry_min_delay=0.0,
+                retry_max_delay=0.0,
+            )
+        )
+        llm = LLMClient(settings, http=http_client)
+        with pytest.raises(DomainError) as exc_info:
+            await llm.complete_json([{"role": "user", "content": "hello"}])
+        assert exc_info.value.code == "LLM_UNAVAILABLE"
+        assert exc_info.value.retryable is True
+        assert calls == 3  # 1 initial + 2 retries
+
+
+@pytest.mark.asyncio
+async def test_llm_client_stream_retries_transient_503_and_recovers():
+    calls = 0
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(503, text="Service Unavailable")
+        sse_data = 'data: {"choices": [{"delta": {"content": "Hello"}}]}\n\ndata: [DONE]\n\n'
+        return httpx.Response(200, text=sse_data)
+
+    transport = httpx.MockTransport(mock_handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        settings = Settings(
+            llm=LLMSettings(
+                base_url="https://llm.example.test/v1",
+                model="test-model",
+                local_only=False,
+                max_retries=2,
+                retry_min_delay=0.0,
+                retry_max_delay=0.0,
+            )
+        )
+        llm = LLMClient(settings, http=http_client)
+        chunks = [chunk async for chunk in llm.stream([{"role": "user", "content": "hi"}])]
+        assert "".join(chunks) == "Hello"
+        assert calls == 2
+
 
