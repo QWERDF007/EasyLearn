@@ -1,6 +1,7 @@
 # 文档与实现索引
 
-- [轻量完整开发方案 v3](FastAPI_MinerU轻量完整开发方案_v3.md)：产品边界、接口和验收标准。
+- [FastAPI + MinerU 完整方案与交互示例 v3](FastAPI_MinerU方案与交互示例_v3/FastAPI_MinerU完整开发方案_v3.md)：基于当前代码整理的系统架构方案与独立 HTML 交互原型。
+- [轻量完整开发方案 v3 (早期规格)](FastAPI_MinerU轻量完整开发方案_v3.md)：产品边界、接口和验收标准。
 - [本机启动](native.md)：`learn` 环境、配置和 Python 入口。
 - [当前状态、目标与计划](CURRENT.md)：当前可用能力和下一阶段工作入口。
 - [协议实现索引](protocols.md)：DocumentIR、MinerU 归档和坐标相关实现。

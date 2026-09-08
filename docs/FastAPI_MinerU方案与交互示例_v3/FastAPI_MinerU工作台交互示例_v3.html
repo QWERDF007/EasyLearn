@@ -1,0 +1,1247 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EasyLearn 工作台 · 交互原型与设计示例 v3</title>
+  <style>
+    :root {
+      --primary: #3860f4;
+      --primary-hover: #244bdf;
+      --primary-soft: #eff4ff;
+      --pink: #f43f5e;
+      --pink-soft: #fff1f2;
+      --pink-border: #fbcfe8;
+      --green: #10b981;
+      --green-soft: #ecfdf5;
+      --amber: #f59e0b;
+      --red: #ef4444;
+      --ink: #0f172a;
+      --ink-soft: #475569;
+      --muted: #94a3b8;
+      --line: #e2e8f0;
+      --surface: #ffffff;
+      --bg: #f8fafc;
+    }
+
+    * {
+      box-sizing: border-box;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(0, 0, 0, 0.18) transparent;
+    }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.18); border-radius: 999px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.35); }
+
+    html, body {
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-size: 13px;
+      color: var(--ink);
+      background: var(--bg);
+    }
+
+    /* 整体三栏布局 */
+    .app-shell {
+      display: grid;
+      grid-template-columns: 240px minmax(480px, 1.15fr) minmax(420px, 0.95fr);
+      height: 100%;
+      max-height: 100%;
+      overflow: hidden;
+    }
+
+    /* 左侧边栏 */
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      background: var(--surface);
+      border-right: 1px solid var(--line);
+      overflow: hidden;
+    }
+
+    .sidebar-header {
+      padding: 16px 14px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .brand-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .brand-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--primary);
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .brand-title svg { width: 20px; height: 20px; fill: currentColor; }
+    .header-actions { display: flex; align-items: center; gap: 6px; }
+
+    .action-icon-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--ink-soft);
+      cursor: pointer;
+      transition: all .15s ease;
+    }
+    .action-icon-btn:hover {
+      background: var(--bg);
+      color: var(--ink);
+      border-color: #cbd5e1;
+    }
+    .action-icon-btn.primary {
+      background: var(--primary-soft);
+      border-color: #bfdbfe;
+      color: var(--primary);
+    }
+    .action-icon-btn.primary:hover {
+      background: var(--primary);
+      color: #fff;
+    }
+
+    .search-box {
+      position: relative;
+      margin-top: 4px;
+    }
+    .search-box input {
+      width: 100%;
+      height: 30px;
+      padding: 0 10px 0 28px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--bg);
+      font-size: 12px;
+      outline: none;
+      transition: border-color .15s;
+    }
+    .search-box input:focus { border-color: var(--primary); background: #fff; }
+    .search-box svg {
+      position: absolute;
+      left: 8px;
+      top: 7px;
+      width: 15px;
+      height: 15px;
+      fill: var(--muted);
+    }
+
+    .sidebar-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px 8px;
+    }
+
+    .section-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      padding: 6px 8px 4px;
+    }
+
+    .document-list {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .document-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background-color .15s;
+      position: relative;
+    }
+    .document-item:hover { background: #f1f5f9; }
+    .document-item.is-active { background: var(--primary-soft); }
+
+    .doc-icon-container {
+      position: relative;
+      width: 32px;
+      height: 32px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .doc-badge {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      font-weight: 700;
+      color: #fff;
+    }
+    .badge-pdf { background: #ef4444; }
+    .badge-docx { background: #2563eb; }
+    .badge-pptx { background: #f97316; }
+    .badge-xlsx { background: #10b981; }
+
+    .doc-ring-svg {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 32px;
+      height: 32px;
+      transform: rotate(-90deg);
+    }
+    .doc-ring-svg circle {
+      fill: none;
+      stroke-linecap: round;
+    }
+    .doc-ring-track { stroke: #e2e8f0; stroke-width: 2.2; }
+    .doc-ring-fill {
+      stroke-width: 2.2;
+      transition: stroke-dashoffset .3s ease;
+    }
+    .doc-ring-spin {
+      animation: ringSpin 1.4s linear infinite;
+      transform-origin: center;
+    }
+    @keyframes ringSpin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .doc-info {
+      flex: 1;
+      min-width: 0;
+    }
+    .doc-name {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--ink);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .doc-status {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 2px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .doc-status.running { color: var(--primary); font-weight: 500; }
+    .doc-status.success { color: var(--green); }
+    .doc-status.failed { color: var(--red); }
+
+    .doc-actions {
+      display: none;
+      align-items: center;
+      gap: 4px;
+    }
+    .document-item:hover .doc-actions { display: flex; }
+    .star-btn.is-active svg { fill: #f59e0b; color: #f59e0b; }
+
+    /* 中间阅读器栏 */
+    .reader-column {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      background: #e5e9f0;
+      border-right: 1px solid var(--line);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .reader-header {
+      height: 48px;
+      padding: 0 16px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      user-select: none;
+      z-index: 10;
+    }
+    .reader-title-box {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+    .reader-doc-name {
+      font-weight: 600;
+      font-size: 13px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .reader-tag {
+      font-size: 11px;
+      padding: 2px 7px;
+      border-radius: 4px;
+      background: #f1f5f9;
+      color: var(--ink-soft);
+    }
+
+    .reader-viewport {
+      flex: 1;
+      overflow: auto;
+      padding: 28px 16px 60px;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      background: #e2e8f0;
+    }
+
+    /* 模拟 PDF 纸张 */
+    .pdf-paper {
+      position: relative;
+      width: 580px;
+      min-height: 820px;
+      background: #ffffff;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
+      border-radius: 4px;
+      padding: 44px 40px;
+      box-sizing: border-box;
+      transform-origin: top center;
+      transition: transform .2s ease;
+    }
+    .paper-title {
+      font-size: 20px;
+      font-weight: 700;
+      text-align: center;
+      line-height: 1.35;
+      margin-bottom: 12px;
+      color: #0f172a;
+    }
+    .paper-authors {
+      text-align: center;
+      font-size: 11px;
+      color: #64748b;
+      margin-bottom: 24px;
+    }
+
+    /* PDF 选框图层与高亮 */
+    .pdf-region {
+      position: relative;
+      margin-bottom: 16px;
+      padding: 6px 8px;
+      border: 1px solid transparent;
+      border-radius: 3px;
+      cursor: pointer;
+      transition: all .15s ease;
+    }
+    .pdf-region:hover, .pdf-region.is-hovered {
+      border-color: var(--primary);
+      background: rgba(56, 96, 244, 0.06);
+    }
+    .pdf-region.is-selected {
+      border-color: var(--primary);
+      background: rgba(56, 96, 244, 0.12);
+      box-shadow: 0 0 0 1px var(--primary);
+    }
+    .pdf-region::before {
+      content: attr(data-label);
+      position: absolute;
+      left: -1px;
+      top: -1px;
+      font-size: 9px;
+      padding: 1px 5px;
+      background: var(--primary);
+      color: #fff;
+      border-radius: 2px 0 2px 0;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .15s;
+    }
+    .pdf-region:hover::before, .pdf-region.is-hovered::before, .pdf-region.is-selected::before {
+      opacity: 1;
+    }
+
+    /* 公式选框：专属粉红色系 */
+    .pdf-region[data-block-type="formula"]:hover,
+    .pdf-region[data-block-type="formula"].is-hovered {
+      border-color: var(--pink);
+      background: rgba(244, 63, 94, 0.06);
+    }
+    .pdf-region[data-block-type="formula"].is-selected {
+      border-color: var(--pink);
+      background: rgba(244, 63, 94, 0.12);
+      box-shadow: 0 0 0 1px var(--pink);
+    }
+    .pdf-region[data-block-type="formula"]::before {
+      background: var(--pink);
+    }
+
+    .paper-p {
+      margin: 0;
+      font-size: 12.5px;
+      line-height: 1.75;
+      color: #334155;
+      text-align: justify;
+    }
+    .paper-heading {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 700;
+      color: #0f172a;
+    }
+    .paper-formula {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 12px;
+      font-family: "Cambria Math", "Times New Roman", serif;
+      font-size: 14px;
+      color: #0f172a;
+    }
+
+    /* 浮动阅读工具栏 */
+    .floating-pdf-toolbar {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(255, 255, 255, 0.96);
+      backdrop-filter: blur(10px);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: 0 4px 18px rgba(0, 0, 0, 0.1);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      z-index: 20;
+    }
+    .toolbar-tool-btn {
+      width: 26px;
+      height: 26px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 0;
+      background: transparent;
+      border-radius: 4px;
+      cursor: pointer;
+      color: var(--ink-soft);
+      font-size: 12px;
+    }
+    .toolbar-tool-btn:hover { background: #f1f5f9; color: var(--ink); }
+    .toolbar-divider { width: 1px; height: 16px; background: var(--line); margin: 0 2px; }
+    .toolbar-page-info { font-size: 11px; color: var(--ink-soft); font-weight: 500; min-width: 44px; text-align: center; }
+
+    /* 右侧双语结果面板 */
+    .result-column {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      background: var(--surface);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .result-header {
+      height: 48px;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .tab-group {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .tab-btn {
+      padding: 5px 12px;
+      border-radius: 6px;
+      border: 0;
+      background: transparent;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--ink-soft);
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .tab-btn:hover { background: #f1f5f9; color: var(--ink); }
+    .tab-btn.is-active {
+      background: var(--primary-soft);
+      color: var(--primary);
+    }
+
+    .top-action-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .ai-trigger-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 5px 11px;
+      border-radius: 6px;
+      border: 1px solid #c7d2fe;
+      background: #eef2ff;
+      color: #4338ca;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .ai-trigger-btn:hover {
+      background: #e0e7ff;
+      border-color: #a5b4fc;
+    }
+    .ai-trigger-btn svg { width: 14px; height: 14px; fill: currentColor; }
+
+    .result-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 18px 22px 50px;
+      scroll-behavior: smooth;
+    }
+
+    /* 结果卡片 */
+    .result-block {
+      position: relative;
+      margin-bottom: 16px;
+      padding: 10px 14px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      background: transparent;
+      transition: border-color .15s, background-color .15s, box-shadow .15s;
+    }
+    .result-block.is-hovered, .result-block.is-selected {
+      border-color: var(--primary);
+      background: #ffffff;
+      box-shadow: 0 3px 12px rgba(56, 96, 244, 0.08);
+    }
+    .result-block.is-hovered::before, .result-block.is-selected::before {
+      content: attr(data-label);
+      position: absolute;
+      left: -1px;
+      top: -1px;
+      padding: 1px 7px;
+      background: var(--primary);
+      color: #ffffff;
+      font-size: 10px;
+      font-weight: 500;
+      border-radius: 4px 0 4px 0;
+      z-index: 2;
+    }
+
+    /* 公式专属样式：常态完全透明与普通段落一致；仅悬浮或选中时激活粉红框 */
+    .result-block[data-block-type="formula"].is-hovered,
+    .result-block[data-block-type="formula"].is-selected {
+      border-color: var(--pink);
+      background: var(--pink-soft);
+      box-shadow: 0 3px 12px rgba(244, 63, 94, 0.12);
+    }
+    .result-block[data-block-type="formula"].is-hovered::before,
+    .result-block[data-block-type="formula"].is-selected::before {
+      background: var(--pink);
+    }
+
+    .result-formula-container {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      padding: 8px 0;
+      font-family: "Cambria Math", "Times New Roman", serif;
+      font-size: 15px;
+      color: #0f172a;
+    }
+
+    .block-orig-text {
+      color: #64748b;
+      font-size: 12px;
+      line-height: 1.65;
+      margin-bottom: 6px;
+    }
+    .block-trans-text {
+      color: #1e293b;
+      font-size: 13.5px;
+      line-height: 1.7;
+      font-weight: 400;
+    }
+    .block-meta-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 8px;
+      padding-top: 6px;
+      border-top: 1px dashed #f1f5f9;
+      font-size: 11px;
+      color: var(--muted);
+      opacity: 0;
+      transition: opacity .15s;
+    }
+    .result-block:hover .block-meta-row, .result-block.is-selected .block-meta-row {
+      opacity: 1;
+    }
+    .lock-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    /* 跳转聚焦闪烁动画 */
+    @keyframes targetFlash {
+      0% { box-shadow: 0 0 0 5px rgba(56, 96, 244, 0.35); transform: scale(1.008); }
+      50% { box-shadow: 0 0 0 2px rgba(56, 96, 244, 0.2); }
+      100% { box-shadow: none; transform: scale(1); }
+    }
+    .result-block.is-target-flash {
+      animation: targetFlash 0.9s cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+
+    /* 右上角滑出式抽屉 */
+    .drawer {
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: 440px;
+      max-width: 90%;
+      background: #ffffff;
+      border-left: 1px solid var(--line);
+      box-shadow: -8px 0 30px rgba(0, 0, 0, 0.1);
+      display: flex;
+      flex-direction: column;
+      z-index: 50;
+      transform: translateX(100%);
+      transition: transform .25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .drawer.is-open {
+      transform: translateX(0);
+    }
+
+    .drawer-header {
+      height: 48px;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .drawer-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--ink);
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .drawer-close {
+      border: 0;
+      background: transparent;
+      font-size: 18px;
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .drawer-close:hover { color: var(--ink); }
+
+    .drawer-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    /* 锚点证据框 */
+    .anchor-box {
+      border: 1px solid #d4c4f0;
+      border-radius: 8px;
+      background: #fbf9ff;
+      padding: 10px 12px;
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .anchor-box:hover {
+      background: #f5edff;
+      border-color: #a855f7;
+    }
+    .anchor-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 4px;
+    }
+    .anchor-tag {
+      font-size: 11px;
+      font-weight: 600;
+      color: #7c3aed;
+    }
+    .anchor-locate-badge {
+      font-size: 10px;
+      background: #ede9fe;
+      color: #7c3aed;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .anchor-text {
+      font-size: 12px;
+      color: #475569;
+      line-height: 1.5;
+    }
+
+    .quick-prompts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .quick-pill {
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: var(--bg);
+      color: var(--ink-soft);
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .quick-pill:hover {
+      background: var(--primary-soft);
+      border-color: #bfdbfe;
+      color: var(--primary);
+    }
+
+    .answer-card {
+      background: #f8fafc;
+      border-left: 3px solid #8b5cf6;
+      border-radius: 0 8px 8px 0;
+      padding: 12px 14px;
+      font-size: 12.5px;
+      line-height: 1.75;
+      color: #1e293b;
+    }
+    .citation-pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: #ede9fe;
+      color: #6b21a8;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      margin: 0 2px;
+      transition: all .15s;
+    }
+    .citation-pill:hover {
+      background: #8b5cf6;
+      color: #fff;
+    }
+
+    .drawer-footer {
+      padding: 12px 18px 16px;
+      border-top: 1px solid var(--line);
+      background: var(--surface);
+    }
+    .drawer-compose-box {
+      width: 100%;
+      height: 60px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 12px;
+      outline: none;
+      resize: none;
+    }
+    .drawer-compose-box:focus { border-color: var(--primary); }
+    .drawer-footer-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 8px;
+    }
+
+    /* 设置抽屉 */
+    .settings-card {
+      background: #f8fafc;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      font-size: 12px;
+    }
+    .code-block {
+      background: #1e293b;
+      color: #e2e8f0;
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-family: Consolas, monospace;
+      font-size: 11px;
+      overflow-x: auto;
+    }
+  </style>
+</head>
+<body>
+
+<div class="app-shell">
+  <!-- 1. 左侧边栏 -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <div class="brand-row">
+        <div class="brand-title">
+          <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+          EasyLearn
+        </div>
+        <div class="header-actions">
+          <button class="action-icon-btn primary" title="新解析 (上传 PDF/Word/PPT)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+          <button class="action-icon-btn" id="open-settings-btn" title="系统设置">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="search-box">
+        <svg viewBox="0 0 24 24"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+        <input type="text" placeholder="搜索文档...">
+      </div>
+    </div>
+
+    <div class="sidebar-content">
+      <div class="section-title">文档列表</div>
+      <div class="document-list">
+        <!-- 活跃文档 -->
+        <div class="document-item is-active" data-doc-id="doc-1">
+          <div class="doc-icon-container">
+            <svg class="doc-ring-svg"><circle cx="16" cy="16" r="14.5" class="doc-ring-track"/><circle cx="16" cy="16" r="14.5" class="doc-ring-fill" stroke="#10b981" stroke-dasharray="91.1" stroke-dashoffset="0"/></svg>
+            <div class="doc-badge badge-pdf">PDF</div>
+          </div>
+          <div class="doc-info">
+            <div class="doc-name" title="HOW DO VISION TRANSFORMERS WORK.pdf">HOW DO VISION TRANSFORMERS WORK.pdf</div>
+            <div class="doc-status success">✓ 解析完成 · 26页</div>
+          </div>
+          <div class="doc-actions">
+            <button class="action-icon-btn star-btn is-active" title="已收藏"><svg width="12" height="12" viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg></button>
+          </div>
+        </div>
+
+        <!-- 解析中文档 -->
+        <div class="document-item" data-doc-id="doc-2">
+          <div class="doc-icon-container">
+            <svg class="doc-ring-svg"><circle cx="16" cy="16" r="14.5" class="doc-ring-track"/><circle cx="16" cy="16" r="14.5" class="doc-ring-fill" stroke="#3860f4" stroke-dasharray="91.1" stroke-dashoffset="25.5"/></svg>
+            <div class="doc-badge badge-pdf">PDF</div>
+          </div>
+          <div class="doc-info">
+            <div class="doc-name">Attention Is All You Need.pdf</div>
+            <div class="doc-status running">⚡ 解析中 72%</div>
+          </div>
+        </div>
+
+        <!-- 上传中文档 -->
+        <div class="document-item" data-doc-id="doc-3">
+          <div class="doc-icon-container">
+            <svg class="doc-ring-svg"><circle cx="16" cy="16" r="14.5" class="doc-ring-track"/><circle cx="16" cy="16" r="14.5" class="doc-ring-fill" stroke="#2563eb" stroke-dasharray="91.1" stroke-dashoffset="45.5"/></svg>
+            <div class="doc-badge badge-docx">W</div>
+          </div>
+          <div class="doc-info">
+            <div class="doc-name">Deep Residual Learning.docx</div>
+            <div class="doc-status running">↑ 上传中 50%</div>
+          </div>
+        </div>
+
+        <!-- 排队中文档 -->
+        <div class="document-item" data-doc-id="doc-4">
+          <div class="doc-icon-container">
+            <svg class="doc-ring-svg doc-ring-spin"><circle cx="16" cy="16" r="14.5" class="doc-ring-track"/><circle cx="16" cy="16" r="14.5" stroke="#f97316" stroke-width="2.2" stroke-dasharray="91.1" stroke-dashoffset="68"/></svg>
+            <div class="doc-badge badge-pptx">P</div>
+          </div>
+          <div class="doc-info">
+            <div class="doc-name">Diffusion Models Overview.pptx</div>
+            <div class="doc-status">⌛ 排队中</div>
+          </div>
+        </div>
+
+        <!-- 失败文档 -->
+        <div class="document-item" data-doc-id="doc-5">
+          <div class="doc-icon-container">
+            <div class="doc-badge badge-xlsx">X</div>
+          </div>
+          <div class="doc-info">
+            <div class="doc-name">Vision Benchmark Results.xlsx</div>
+            <div class="doc-status failed">✕ 解析失败</div>
+          </div>
+          <div class="doc-actions">
+            <button class="action-icon-btn" title="重试"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 2. 中间 PDF 原文阅读器 -->
+  <main class="reader-column">
+    <div class="reader-header">
+      <div class="reader-title-box">
+        <span class="reader-doc-name">HOW DO VISION TRANSFORMERS WORK.pdf</span>
+        <span class="reader-tag">MinerU 2.5-1.2B</span>
+        <span class="reader-tag">Page 1 / 26</span>
+      </div>
+      <div class="header-actions">
+        <button class="action-icon-btn" id="toggle-overlay-btn" title="选框图层开关">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="reader-viewport" id="reader-viewport">
+      <div class="pdf-paper" id="pdf-paper">
+        <div class="paper-title">How Do Vision Transformers Work?</div>
+        <div class="paper-authors">Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, et al.</div>
+
+        <!-- 块 1: 摘要段落 -->
+        <div class="pdf-region is-selected" data-block-id="b1" data-block-type="paragraph" data-label="段落">
+          <p class="paper-p">While the Transformer architecture has become the de-facto standard for natural language processing tasks, its applications to computer vision remain limited. In vision, attention is either applied in conjunction with convolutional networks, or used to replace certain components of convolutions.</p>
+        </div>
+
+        <!-- 块 2: 一级标题 -->
+        <div class="pdf-region" data-block-id="b2" data-block-type="heading" data-label="标题">
+          <h2 class="paper-heading">1. Introduction & Method</h2>
+        </div>
+
+        <!-- 块 3: 正文引入公式 -->
+        <div class="pdf-region" data-block-id="b3" data-block-type="paragraph" data-label="段落">
+          <p class="paper-p">To handle 2D images, we reshape the image into a sequence of flattened 2D patches. The Vision Transformer (ViT) feeds these flattened patches into a standard Transformer encoder with position embeddings:</p>
+        </div>
+
+        <!-- 块 4: 块级公式 1 -->
+        <div class="pdf-region" data-block-id="b4" data-block-type="formula" data-label="公式">
+          <div class="paper-formula">
+            <b>z</b><sub>0</sub> = [<b>x</b><sub>class</sub>; <b>x</b><sub>p</sub><sup>1</sup><b>E</b>; <b>x</b><sub>p</sub><sup>2</sup><b>E</b>; ...; <b>x</b><sub>p</sub><sup>N</sup><b>E</b>] + <b>E</b><sub>pos</sub> &nbsp;&nbsp;&nbsp;&nbsp;(1)
+          </div>
+        </div>
+
+        <!-- 块 5: 说明段落 -->
+        <div class="pdf-region" data-block-id="b5" data-block-type="paragraph" data-label="段落">
+          <p class="paper-p">The Transformer encoder consists of alternating layers of Multi-Head Self-Attention (MSA) and Multi-Layer Perceptron (MLP) blocks. Layernorm (LN) is applied before every block, and residual connections after every block:</p>
+        </div>
+
+        <!-- 块 6: 块级公式 2 -->
+        <div class="pdf-region" data-block-id="b6" data-block-type="formula" data-label="公式">
+          <div class="paper-formula">
+            Attention(<i>Q, K, V</i>) = softmax( <i>Q K</i><sup>T</sup> / &radic;<span style="border-top:1px solid"><i>d</i><sub>k</sub></span> ) <i>V</i> &nbsp;&nbsp;&nbsp;&nbsp;(2)
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 浮动缩放工具栏 -->
+    <div class="floating-pdf-toolbar">
+      <button class="toolbar-tool-btn" title="上一页">◀</button>
+      <span class="toolbar-page-info">1 / 26</span>
+      <button class="toolbar-tool-btn" title="下一页">▶</button>
+      <div class="toolbar-divider"></div>
+      <button class="toolbar-tool-btn" id="zoom-out-btn" title="缩小">-</button>
+      <span class="toolbar-page-info" id="zoom-text">100%</span>
+      <button class="toolbar-tool-btn" id="zoom-in-btn" title="放大">+</button>
+      <button class="toolbar-tool-btn" id="zoom-reset-btn" title="重置比例">1:1</button>
+      <button class="toolbar-tool-btn" title="适应宽度">⛶</button>
+      <button class="toolbar-tool-btn" title="旋转">↻</button>
+    </div>
+  </main>
+
+  <!-- 3. 右侧双语结果面板 -->
+  <section class="result-column">
+    <div class="result-header">
+      <div class="tab-group">
+        <button class="tab-btn is-active">双语阅读</button>
+        <button class="tab-btn">Markdown</button>
+        <button class="tab-btn">JSON 结构</button>
+        <button class="tab-btn">源码</button>
+      </div>
+      <div class="top-action-group">
+        <button class="ai-trigger-btn" id="open-ai-btn">
+          <svg viewBox="0 0 24 24"><path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8L12 2z"/></svg>
+          AI 解读
+        </button>
+        <button class="action-icon-btn" title="重新全量翻译">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+        </button>
+        <button class="action-icon-btn" title="导出 ZIP / Markdown">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="result-content" id="result-content">
+      <!-- 块 1: 摘要 -->
+      <article class="result-block is-selected" data-block-id="b1" data-block-type="paragraph" data-label="段落">
+        <div class="block-orig-text">While the Transformer architecture has become the de-facto standard for natural language processing tasks, its applications to computer vision remain limited...</div>
+        <div class="block-trans-text">尽管 Transformer 架构已成为自然语言处理任务的事实标准，但其在计算机视觉领域的应用仍然相对有限。在视觉领域中，注意力机制通常与卷积神经网络结合使用，或者用于替换卷积网络的某些组件。</div>
+        <div class="block-meta-row">
+          <span>修订版本: rev.1 · 单元 ID: p1.b1:n1</span>
+          <label class="lock-label"><input type="checkbox" checked> 锁定人工译文</label>
+        </div>
+      </article>
+
+      <!-- 块 2: 标题 -->
+      <article class="result-block" data-block-id="b2" data-block-type="heading" data-label="标题">
+        <div class="block-orig-text">1. Introduction & Method</div>
+        <div class="block-trans-text" style="font-weight:700; font-size:15px;">1. 引言与方法</div>
+      </article>
+
+      <!-- 块 3: 正文引入 -->
+      <article class="result-block" data-block-id="b3" data-block-type="paragraph" data-label="段落">
+        <div class="block-orig-text">To handle 2D images, we reshape the image into a sequence of flattened 2D patches. The Vision Transformer (ViT) feeds these flattened patches into a standard Transformer encoder...</div>
+        <div class="block-trans-text">为了处理二维图像，我们首先将图像重塑为一系列扁平化的二维补丁序列。Vision Transformer (ViT) 将这些展平的图像块连同位置嵌入一同输入到标准的 Transformer 编码器中：</div>
+        <div class="block-meta-row">
+          <span>修订版本: rev.1 · 单元 ID: p1.b3:n1</span>
+          <label class="lock-label"><input type="checkbox"> 锁定人工译文</label>
+        </div>
+      </article>
+
+      <!-- 块 4: 公式 1 (常态完全透明，选中/悬浮粉红高亮) -->
+      <article class="result-block" data-block-id="b4" data-block-type="formula" data-label="公式">
+        <div class="result-formula-container">
+          <b>z</b><sub>0</sub> = [<b>x</b><sub>class</sub>; <b>x</b><sub>p</sub><sup>1</sup><b>E</b>; <b>x</b><sub>p</sub><sup>2</sup><b>E</b>; ...; <b>x</b><sub>p</sub><sup>N</sup><b>E</b>] + <b>E</b><sub>pos</sub> &nbsp;&nbsp;&nbsp;&nbsp;(1)
+        </div>
+        <div class="block-meta-row">
+          <span>数学公式块 · LaTeX ID: p1.b4</span>
+          <span style="color:var(--pink); font-weight:500;">KaTeX Display Mode</span>
+        </div>
+      </article>
+
+      <!-- 块 5: 说明段落 -->
+      <article class="result-block" data-block-id="b5" data-block-type="paragraph" data-label="段落">
+        <div class="block-orig-text">The Transformer encoder consists of alternating layers of Multi-Head Self-Attention (MSA) and Multi-Layer Perceptron (MLP) blocks...</div>
+        <div class="block-trans-text">Transformer 编码器由多头自注意力（MSA）层与多层感知机（MLP）交替堆叠组成。在每个模块之前应用层归一化（Layernorm），并在每个模块之后应用残差连接：</div>
+        <div class="block-meta-row">
+          <span>修订版本: rev.1 · 单元 ID: p1.b5:n1</span>
+          <label class="lock-label"><input type="checkbox"> 锁定人工译文</label>
+        </div>
+      </article>
+
+      <!-- 块 6: 公式 2 (常态完全透明，选中/悬浮粉红高亮) -->
+      <article class="result-block" data-block-id="b6" data-block-type="formula" data-label="公式">
+        <div class="result-formula-container">
+          Attention(<i>Q, K, V</i>) = softmax( <i>Q K</i><sup>T</sup> / &radic;<span style="border-top:1px solid"><i>d</i><sub>k</sub></span> ) <i>V</i> &nbsp;&nbsp;&nbsp;&nbsp;(2)
+        </div>
+        <div class="block-meta-row">
+          <span>数学公式块 · LaTeX ID: p1.b6</span>
+          <span style="color:var(--pink); font-weight:500;">KaTeX Display Mode</span>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <!-- 4. 右上角 AI 解读抽屉 -->
+  <aside class="drawer" id="ai-drawer">
+    <div class="drawer-header">
+      <div class="drawer-title">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="#6366f1"><path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8L12 2z"/></svg>
+        AI 解读与深度溯源
+      </div>
+      <button class="drawer-close" id="close-ai-btn">&times;</button>
+    </div>
+
+    <div class="drawer-body">
+      <!-- 动态锚点 -->
+      <div class="anchor-box" id="ai-anchor" title="点击在原文与结果中平滑定位该段落">
+        <div class="anchor-header">
+          <span class="anchor-tag">📍 当前所选锚点 (p1.b1)</span>
+          <span class="anchor-locate-badge">点击聚焦定位 ⮑</span>
+        </div>
+        <div class="anchor-text">While the Transformer architecture has become the de-facto standard for natural language processing...</div>
+      </div>
+
+      <!-- 快捷提示词 -->
+      <div class="quick-prompts">
+        <button class="quick-pill" data-prompt="解释这段的核心概念与创新点">💡 解释核心概念</button>
+        <button class="quick-pill" data-prompt="详细说明公式(1)中各项的数学与物理意义">📐 公式推导说明</button>
+        <button class="quick-pill" data-prompt="请总结段落主旨并提炼3个关键术语">📝 提炼主旨术语</button>
+        <button class="quick-pill" data-prompt="这段翻译是否有生硬处？请给出优化建议">🔍 译文审校分析</button>
+      </div>
+
+      <!-- 模拟打字生成的回答 -->
+      <div class="answer-card">
+        <div style="font-weight:600; margin-bottom:6px; color:#4338ca;">🤖 结构化解读结果：</div>
+        本段指出了论文的核心出发点<span class="citation-pill" data-cite="b1">[1]</span>：在计算机视觉领域长期依赖卷积架构（CNN），而该工作首次探究纯 Transformer 架构能否直接应用于图像补丁序列。<br><br>
+        随后作者提出了公式 (1) 的输入构造方案<span class="citation-pill" data-cite="b4">[2]</span>，通过线性投影矩阵 <b>E</b> 将图像块映射为向量，并拼接类别标记向量 <b>x</b><sub>class</sub> 与位置嵌入 <b>E</b><sub>pos</sub>，完美实现了对标准 Transformer 的无缝复用。
+      </div>
+    </div>
+
+    <div class="drawer-footer">
+      <textarea class="drawer-compose-box" placeholder="基于当前选中的证据块提问... (Enter 发送)"></textarea>
+      <div class="drawer-footer-actions">
+        <span style="font-size:11px; color:var(--muted);">Gemini-2.5-Flash · PinAI 代理连通</span>
+        <button class="ai-trigger-btn" style="padding:4px 14px;">发送</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 5. 系统设置抽屉 -->
+  <aside class="drawer" id="settings-drawer">
+    <div class="drawer-header">
+      <div class="drawer-title">⚙ 系统配置与运行状态</div>
+      <button class="drawer-close" id="close-settings-btn">&times;</button>
+    </div>
+    <div class="drawer-body">
+      <div class="settings-card">
+        <div style="font-weight:600; color:var(--ink);">大语言模型 (LLM) 状态</div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#10b981;"></span>
+          <span style="font-weight:500;">OpenAI 兼容协议 · 已连接</span>
+        </div>
+        <div style="color:var(--ink-soft); font-size:11.5px;">当前模型: <b>gemini-2.5-flash</b></div>
+        <div style="color:var(--ink-soft); font-size:11.5px;">系统代理: <b>http://127.0.0.1:7890</b> (自动探测)</div>
+      </div>
+
+      <div class="settings-card">
+        <div style="font-weight:600; color:var(--ink);">MinerU 本地解析模型</div>
+        <div style="color:var(--ink-soft); font-size:11.5px;">已挂载: <b>MinerU2.5-Pro-2605-1.2B</b> (GPU 推理)</div>
+        <div style="color:var(--ink-soft); font-size:11.5px;">临时目录: <b>F:\tmp\easylearn</b></div>
+      </div>
+
+      <div class="settings-card">
+        <div style="font-weight:600; color:var(--ink);">配置文件说明 (config.toml)</div>
+        <div class="code-block">[llm]
+base_url = "https://api.pinaic.com/v1"
+model = "gemini-2.5-flash"
+api_key_env = "PINAI_API_KEY"
+proxy = "http://127.0.0.1:7890"
+max_retries = 3</div>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<script>
+  // 1. 块双向联动与平滑跳转
+  function selectBlock(blockId, isUserClick = false) {
+    // 移除旧高亮
+    document.querySelectorAll('.pdf-region.is-selected, .result-block.is-selected').forEach(el => {
+      el.classList.remove('is-selected');
+    });
+
+    const pdfEl = document.querySelector(`.pdf-region[data-block-id="${blockId}"]`);
+    const resEl = document.querySelector(`.result-block[data-block-id="${blockId}"]`);
+
+    if (pdfEl) pdfEl.classList.add('is-selected');
+    if (resEl) {
+      resEl.classList.add('is-selected');
+      if (isUserClick) {
+        resEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        resEl.classList.add('is-target-flash');
+        setTimeout(() => resEl.classList.remove('is-target-flash'), 1000);
+      }
+    }
+
+    // 同步更新 AI 抽屉的锚点框
+    const anchorBox = document.getElementById('ai-anchor');
+    if (anchorBox && resEl) {
+      const typeLabel = resEl.dataset.label || '段落';
+      const textSnippet = resEl.querySelector('.block-orig-text, .result-formula-container')?.innerText.slice(0, 75) + '...';
+      anchorBox.querySelector('.anchor-tag').innerText = `📍 当前所选锚点 (${blockId} [${typeLabel}])`;
+      anchorBox.querySelector('.anchor-text').innerText = textSnippet;
+      anchorBox.dataset.targetId = blockId;
+    }
+  }
+
+  // 悬浮临时高亮
+  function hoverBlock(blockId, isHovering) {
+    const pdfEl = document.querySelector(`.pdf-region[data-block-id="${blockId}"]`);
+    const resEl = document.querySelector(`.result-block[data-block-id="${blockId}"]`);
+    if (isHovering) {
+      if (pdfEl) pdfEl.classList.add('is-hovered');
+      if (resEl) resEl.classList.add('is-hovered');
+    } else {
+      if (pdfEl) pdfEl.classList.remove('is-hovered');
+      if (resEl) resEl.classList.remove('is-hovered');
+    }
+  }
+
+  // 绑定左侧 PDF 选框点击与悬浮
+  document.querySelectorAll('.pdf-region').forEach(el => {
+    el.addEventListener('click', () => selectBlock(el.dataset.blockId, true));
+    el.addEventListener('mouseenter', () => hoverBlock(el.dataset.blockId, true));
+    el.addEventListener('mouseleave', () => hoverBlock(el.dataset.blockId, false));
+  });
+
+  // 绑定右侧卡片点击与悬浮
+  document.querySelectorAll('.result-block').forEach(el => {
+    el.addEventListener('click', () => selectBlock(el.dataset.blockId, false));
+    el.addEventListener('mouseenter', () => hoverBlock(el.dataset.blockId, true));
+    el.addEventListener('mouseleave', () => hoverBlock(el.dataset.blockId, false));
+  });
+
+  // 绑定引用跳转
+  document.querySelectorAll('.citation-pill').forEach(pill => {
+    pill.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const citeId = pill.dataset.cite;
+      selectBlock(citeId, true);
+    });
+  });
+
+  // 绑定锚点框点击定位
+  document.getElementById('ai-anchor').addEventListener('click', () => {
+    const targetId = document.getElementById('ai-anchor').dataset.targetId || 'b1';
+    selectBlock(targetId, true);
+  });
+
+  // 2. 抽屉开关
+  const aiDrawer = document.getElementById('ai-drawer');
+  const settingsDrawer = document.getElementById('settings-drawer');
+
+  document.getElementById('open-ai-btn').addEventListener('click', () => {
+    settingsDrawer.classList.remove('is-open');
+    aiDrawer.classList.toggle('is-open');
+  });
+  document.getElementById('close-ai-btn').addEventListener('click', () => aiDrawer.classList.remove('is-open'));
+
+  document.getElementById('open-settings-btn').addEventListener('click', () => {
+    aiDrawer.classList.remove('is-open');
+    settingsDrawer.classList.toggle('is-open');
+  });
+  document.getElementById('close-settings-btn').addEventListener('click', () => settingsDrawer.classList.remove('is-open'));
+
+  // 3. 缩放控制
+  let currentZoom = 1.0;
+  const paper = document.getElementById('pdf-paper');
+  const zoomText = document.getElementById('zoom-text');
+
+  function setZoom(val) {
+    currentZoom = Math.min(Math.max(val, 0.5), 2.0);
+    paper.style.transform = `scale(${currentZoom})`;
+    zoomText.innerText = `${Math.round(currentZoom * 100)}%`;
+  }
+  document.getElementById('zoom-in-btn').addEventListener('click', () => setZoom(currentZoom + 0.15));
+  document.getElementById('zoom-out-btn').addEventListener('click', () => setZoom(currentZoom - 0.15));
+  document.getElementById('zoom-reset-btn').addEventListener('click', () => setZoom(1.0));
+
+  // 4. 快捷提问药丸填充
+  document.querySelectorAll('.quick-pill').forEach(pill => {
+    pill.addEventListener('click', () => {
+      document.querySelector('.drawer-compose-box').value = pill.dataset.prompt;
+    });
+  });
+</script>
+</body>
+</html>
