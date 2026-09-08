@@ -74,6 +74,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   cursor: pointer;
 }
 .document-open:focus-visible { outline: 2px solid var(--blue); }
+.document-open:disabled { opacity: 1; cursor: default; }
+.document-item:has(.retry-action) .document-open { padding-right: 86px; }
 .document-item.is-active .document-open { color: #1d4ed8; }
 
 /* Icon Container & Progress Ring */
@@ -226,13 +228,22 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   gap: 2px;
   transform: translateY(-50%);
   opacity: 0;
+  pointer-events: none;
   transition: opacity .15s;
   z-index: 2;
 }
 .document-item:hover .document-actions,
-.document-item.is-active .document-actions,
-.document-item.is-busy .document-actions {
+.document-item:focus-within .document-actions {
   opacity: 1;
+  pointer-events: auto;
+}
+.document-item:not(:hover) .document-actions:has(.favorite-action.is-active) {
+  opacity: 1;
+  pointer-events: auto;
+}
+.document-item:not(:hover) .document-actions:has(.favorite-action.is-active) .delete-action,
+.document-item:not(:hover) .document-actions:has(.favorite-action.is-active) .retry-action {
+  display: none;
 }
 .document-action {
   width: 26px;

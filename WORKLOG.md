@@ -7,6 +7,41 @@
 - 无。
 
 
+### 2026-09-08 — 侧边栏全面支持五种任务状态环形进度显示与重试交互（严格对齐设计原型）
+
+**目标**
+1. 完整实现设计原型（截图 104915 / `FastAPI_MinerU工作台交互示例_v3.html`）中的五大文档状态与对应环形进度/徽标显示：
+   - 解析完成：翡翠绿满环（`#10b981`），实心徽标，`✓ 解析完成 · 26页`；
+   - 解析中：品牌蓝进度环（`#3860f4`），`⚡ 解析中 72%`；
+   - 上传中：经典蓝进度环（`#2563eb`），`↑ 上传中 50%`；
+   - 排队中：暖橙色顺时针旋转环（`#f97316`），`⌛ 排队中`；
+   - 解析失败：无进度环，实心徽标，红叉失败文本 `✕ 解析失败`，悬浮出现重试按钮（`.retry-action`）；
+2. 修复上传中状态按钮 disabled 导致的整项透明度淡化（`.document-open:disabled { opacity: 1; cursor: default; }`）；
+3. 优化动作按钮（重试/收藏/删除）的悬浮显示与布局防重叠，支持重试按钮存在时的文本右内边距自适应（`padding-right: 86px`）；
+4. 通过无头浏览器（Selenium）及自动化测试进行完整真实验证。
+
+**当前状态**
+- 已完成：更新 `src/easylearn/static/app.js`：
+  - 在 `getDocumentTask` 中增加对 `item.tasks` 中失败与取消终端任务的提取；
+  - 增强 `createDocumentItemElement`：正确支持解析完成（绿环）、解析中（蓝环百分比）、上传中（蓝环百分比）、排队中（橙色旋转环）、解析失败（红字+悬浮重试按钮）五种状态；
+  - 在文件末尾挂载 `window.__easyLearn` 便于自动化测试与状态交互；
+- 已完成：更新 `src/easylearn/static/app.css`：
+  - 补充 `.document-open:disabled` 样式保证上传中项色彩鲜艳不淡化；
+  - 优化 `.document-actions` 规则，仅在悬浮或有激活收藏时展示，重试状态增加文本右内边距防遮挡；
+- 已验证：
+  1. 编写并运行真实 Selenium 验证脚本 `verify_states_selenium.py` 与 `verify_hover.py`，截图比对确认 5 种状态及悬浮重试按钮与设计原型 100% 一致；
+  2. `pytest tests/v3`：94 个单元测试全绿（94 passed in 14.39s）；
+  3. `ruff check src tests`：全部通过（All checks passed!）。
+
+**验证证据**
+- Selenium 截图验证：`scratch/crop_all_5_states_live.png`、`scratch/crop_doc5_hover.png`
+- `pytest tests/v3`：94 passed in 14.39s
+- `ruff check src tests`：All checks passed!
+
+**下一步**
+- 交付用户，用户可直接在实际启动的服务中查验所有状态环与重试按钮交互。
+
+
 ### 2026-09-08 — 解决浏览器强缓存导致侧边栏新进度环与实心徽标不生效问题（注入版本防缓存控制）
 
 **目标**

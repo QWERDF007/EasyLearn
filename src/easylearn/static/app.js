@@ -191,6 +191,13 @@ function getDocumentTask(documentId, item) {
     .sort((a, b) => new Date(b.finished_at || b.created_at || 0) - new Date(a.finished_at || a.created_at || 0))[0];
   if (recentTerminal) return recentTerminal;
 
+  if (Array.isArray(item?.tasks)) {
+    const terminalInItem = item.tasks
+      .filter((t) => t.status === "failed" || t.status === "cancelled")
+      .sort((a, b) => new Date(b.finished_at || b.created_at || 0) - new Date(a.finished_at || a.created_at || 0))[0];
+    if (terminalInItem) return terminalInItem;
+  }
+
   return null;
 }
 
@@ -230,6 +237,7 @@ function createDocumentItemElement(item) {
   let hasActiveTask = false;
   let ringVariant = "is-parsing";
   let showRing = false;
+  let failedTask = null;
 
   if (isUploading) {
     hasActiveTask = true;
@@ -244,12 +252,13 @@ function createDocumentItemElement(item) {
     if (task && (task.status === "queued" || task.status === "running")) {
       hasActiveTask = true;
       showRing = true;
-      statusClass = "is-running";
       if (task.status === "queued") {
+        statusClass = "is-muted";
         statusText = task.kind === "translate" ? "⌛ 排队翻译" : "⌛ 排队中";
         isSpinning = true;
         ringVariant = "is-queued";
       } else {
+        statusClass = "is-running";
         ringVariant = "is-parsing";
         const known = typeof task.progress === "number";
         const pct = known ? Math.round(task.progress * 100) : null;
@@ -267,7 +276,8 @@ function createDocumentItemElement(item) {
         }
       }
     } else if (task && task.status === "failed") {
-      statusText = "✕ 解析失败";
+      failedTask = task;
+      statusText = task.kind === "translate" ? "✕ 翻译失败" : "✕ 解析失败";
       statusClass = "is-failed";
     } else if (task && task.status === "cancelled") {
       statusText = "已取消";
@@ -376,7 +386,7 @@ function createDocumentItemElement(item) {
     actions.className = "document-actions";
 
 
-    if (failedTask && failedTask.failure?.retryable) {
+    if (failedTask) {
       const retry = document.createElement("button");
       retry.type = "button";
       retry.className = "icon-button action-icon-btn document-action retry-action";
@@ -384,7 +394,7 @@ function createDocumentItemElement(item) {
       retry.dataset.tooltip = "重试任务";
       retry.title = "重试任务";
       retry.disabled = state.retryingTasks.has(failedTask.task_id);
-      retry.innerHTML = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M13.5 8C13.5 11.0376 11.0376 13.5 8 13.5C4.96243 13.5 2.5 11.0376 2.5 8C2.5 4.96243 4.96243 2.5 8 2.5C10.15 2.5 12.02 3.73 12.94 5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M13.5 2.5V5.5H10.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+      retry.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>`;
       retry.addEventListener("click", (e) => {
         e.stopPropagation();
         void retryTask(failedTask);
@@ -2579,3 +2589,10 @@ for (const tab of document.querySelectorAll(".result-tab")) {
 
 syncWorkspaceLayout();
 void Promise.all([refreshHealth(), refreshModels(), refreshDocuments()]).catch((error) => notify(error.message));
+
+window.__easyLearn = {
+  state,
+  renderDocumentList,
+  createDocumentItemElement,
+  refreshDocuments,
+};
