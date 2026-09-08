@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ title }}</title>
     <link rel="stylesheet" href="/static/katex/katex.min.css">
-    <link rel="stylesheet" href="/static/app.css">
+    <link rel="stylesheet" href="/static/app.css?v={{ version | default('20260908') }}">
   </head>
   <body>
     <main class="app-shell no-document">
@@ -417,6 +417,6 @@ api_key_env = "OPENAI_API_KEY"         # API Key 环境变量</code></pre>
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="/static/app.js"></script>
+    <script type="module" src="/static/app.js?v={{ version | default('20260908') }}"></script>
   </body>
 </html>

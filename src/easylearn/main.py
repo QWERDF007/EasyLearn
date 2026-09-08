@@ -183,6 +183,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request.state.request_id = str(uuid4())
         response = await call_next(request)
         response.headers["X-Request-ID"] = request.state.request_id
+        if request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
         return response
 
     @app.exception_handler(DomainError)
@@ -258,7 +260,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request) -> HTMLResponse:
-        return templates.TemplateResponse(request, "index.html", {"title": "EasyLearn"})
+        static_dir = Path(__file__).with_name("static")
+        version = str(int((static_dir / "app.js").stat().st_mtime))
+        return templates.TemplateResponse(
+            request, "index.html", {"title": "EasyLearn", "version": version}
+        )
 
     @app.get("/api/documents", response_model=tuple[DocumentView, ...])
     async def list_documents(

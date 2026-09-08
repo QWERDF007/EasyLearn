@@ -7,6 +7,37 @@
 - 无。
 
 
+### 2026-09-08 — 解决浏览器强缓存导致侧边栏新进度环与实心徽标不生效问题（注入版本防缓存控制）
+
+**目标**
+1. 解决实际服务启动后（截图 104725），用户浏览器仍旧显示旧版 Acrobat 矢量图标和纯文字状态、未呈现绿色进度环与实心徽标的问题；
+2. 建立长期可靠的静态资源防缓存机制（Cache Busting），避免后续前端代码更新时用户浏览器因 HTTP 强缓存继续使用旧脚本。
+
+**当前状态**
+- 已完成：排查定位根因——`FastAPI` 默认对 `/static` 静态文件返回 `ETag` 与 `Last-Modified` 但无 `Cache-Control` 标头，客户端浏览器（Chrome/Edge）执行启发式强缓存（Heuristic Caching），在普通刷新（F5）时直接从 Disk Cache 读取旧版 `app.js`；
+- 已完成：更新 `src/easylearn/main.py`：
+  1. 在 `request_identity` 中间件中，对 `/static/` 路径统一注入 `Cache-Control: no-cache, must-revalidate` 标头；
+  2. 在 `index` 路由中，自动根据 `app.js` 文件修改时间戳（mtime）生成 `version` 参数并传递给页面模板；
+- 已完成：更新 `src/easylearn/templates/index.html`，为 `app.css` 与 `app.js` 引入 `?v={{ version | default('20260908') }}` 防缓存参数；
+- 已验证：
+  1. 真实运行中服务（8765端口）经 Selenium（干净缓存模式）自动化验证：
+     - `Doc badge text: PDF`
+     - `Doc badge class: doc-badge badge-pdf`
+     - `Found rings: 1`
+     - `Ring progress class: ring-progress is-success`
+     - `Ring progress stroke: rgb(16, 185, 129)`
+     - `Status text: ✓ 解析完成 · 26页`
+  2. `pytest tests/v3`：94 个测试全绿（94 passed in 10.42s）；
+  3. `ruff check src tests`：全部通过（All checks passed!）。
+
+**验证证据**
+- `pytest tests/v3`：94 passed in 10.42s
+- `ruff check src tests`：All checks passed!
+
+**下一步**
+- 用户直接普通刷新浏览器（F5）即可自动加载带版本参数的全新静态资源，看到绿圈环形进度与实心徽标。
+
+
 ### 2026-09-08 — 侧边栏实心徽标与环形进度条集成、重塑 v3 交互原型与技术方案（严格对齐现有代码真相源）
 
 **目标**
