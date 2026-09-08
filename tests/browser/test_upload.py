@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import socket
 import subprocess
 import sys
@@ -157,9 +156,10 @@ def browser(tmp_path: Path):
 
 @pytest.fixture
 def image_file(tmp_path: Path) -> Path:
-    source = ROOT / "docs" / "FastAPI_MinerU方案与交互示例_v2" / "FastAPI_MinerU最终交付页面_v2.png"
+    from PIL import Image
+
     destination = tmp_path / "browser-upload.png"
-    shutil.copyfile(source, destination)
+    Image.new("RGB", (100, 100), color=(56, 96, 244)).save(destination, "PNG")
     return destination
 
 
@@ -204,11 +204,12 @@ def test_uploading_image_posts_to_api_and_renders_document(server, browser, imag
 
 
 def test_uploading_two_images_keeps_both_documents_in_sidebar(server, browser, tmp_path):
+    from PIL import Image
+
     first = tmp_path / "first.png"
     second = tmp_path / "second.png"
-    source = ROOT / "docs" / "FastAPI_MinerU方案与交互示例_v2" / "FastAPI_MinerU最终交付页面_v2.png"
-    shutil.copyfile(source, first)
-    shutil.copyfile(source, second)
+    Image.new("RGB", (100, 100), color=(56, 96, 244)).save(first, "PNG")
+    Image.new("RGB", (100, 100), color=(16, 185, 129)).save(second, "PNG")
     _open_app(browser, server)
 
     for image in (first, second):

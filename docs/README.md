@@ -1,12 +1,11 @@
 # 文档与实现索引
 
-- [FastAPI + MinerU 完整方案与交互示例 v3](FastAPI_MinerU方案与交互示例_v3/FastAPI_MinerU完整开发方案_v3.md)：基于当前代码整理的系统架构方案与独立 HTML 交互原型。
-- [轻量完整开发方案 v3 (早期规格)](FastAPI_MinerU轻量完整开发方案_v3.md)：产品边界、接口和验收标准。
-- [本机启动](native.md)：`learn` 环境、配置和 Python 入口。
-- [当前状态、目标与计划](CURRENT.md)：当前可用能力和下一阶段工作入口。
-- [协议实现索引](protocols.md)：DocumentIR、MinerU 归档和坐标相关实现。
-- [Pinaic OpenAI 兼容 API 外部事实](research/pinaic-openai-compatible-api.md)：仅记录 Pinaic 官方页面明确说明的外部接口事实。
-- [任务账本](../WORKLOG.md)：当前工作的唯一进度记录。
+- [FastAPI + MinerU 完整架构方案 v3](FastAPI_MinerU方案与交互示例_v3/FastAPI_MinerU完整开发方案_v3.md)：系统总体架构设计、数据链路与实现规格（直连单一代码真相源）。
+- [FastAPI + MinerU 工作台交互原型与设计说明 v3](FastAPI_MinerU方案与交互示例_v3/FastAPI_MinerU交互示例_v3_说明.md)：工作台五态环形进度、原文折叠可视切换与学术排版交互说明（原型文件：[FastAPI_MinerU工作台交互示例_v3.html](FastAPI_MinerU方案与交互示例_v3/FastAPI_MinerU工作台交互示例_v3.html)）。
+- [本机运行指南](native.md)：`learn` Conda 环境、服务启动、配置与测试方法。
+- [协议实现索引](protocols.md)：DocumentIR、MinerU 运行时与坐标投影实现索引。
+- [Pinaic OpenAI 兼容 API 外部事实](research/pinaic-openai-compatible-api.md)：Pinaic 官方文档确认的外部接口契约事实。
+- [任务账本](../WORKLOG.md)：仓库唯一的任务账本与工作记录。
 
 实现的唯一入口：
 

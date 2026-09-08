@@ -37,7 +37,7 @@ LLM 使用 `[llm]` 的 OpenAI-compatible 地址。`local_only = true` 时，非�
 - `/api/documents/{id}/parses/{parse_id}`：读取固定解析版本及 Markdown。
 - `/api/documents/{id}/files/{file_id}`：读取服务端映射的原件、预览、JSON、图片和导出文件。
 
-完整接口和验收范围见 [v3 方案](FastAPI_MinerU轻量完整开发方案_v3.md)。
+完整系统架构与设计说明见 [v3 方案](FastAPI_MinerU方案与交互示例_v3/FastAPI_MinerU完整开发方案_v3.md)。
 
 ## 验证
 

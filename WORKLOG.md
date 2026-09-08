@@ -7,6 +7,33 @@
 - 无。
 
 
+### 2026-09-08 — 清理 docs 过时历史包袱与冗余文件，更新单一真相源文档索引
+
+**目标**
+1. 彻底清除 `docs/` 下已过时且与当前代码分叉的历史文档和静态资源，严格遵守单一真相源（SSOT）原则；
+2. 清理全部已废弃的 `v2` 方案历史包袱（`docs/FastAPI_MinerU方案与交互示例_v2/` 全目录共 8 个文件）；
+3. 清理已废弃的过渡草案 `docs/FastAPI_MinerU轻量完整开发方案_v3.md` 以及违背单一任务账本原则的 `docs/CURRENT.md`；
+4. 解耦 `tests/browser/test_upload.py` 对已删除 v2 文档样张图片的依赖，改用 PIL 动态生成自包含测试图像；
+5. 更新 `docs/README.md`、`docs/native.md` 以及 `docs/FastAPI_MinerU方案与交互示例_v3/FastAPI_MinerU完整开发方案_v3.md`，保持文档索引精准、精炼并直接指向代码。
+
+**当前状态**
+- 已完成：删除过时目录 `docs/FastAPI_MinerU方案与交互示例_v2/`（含旧版方案、原型图及 Noto 字体协议等 8 个文件）；
+- 已完成：删除过时草案 `docs/FastAPI_MinerU轻量完整开发方案_v3.md` 与多余状态记录 `docs/CURRENT.md`（进度统一收归根目录 `WORKLOG.md`）；
+- 已完成：更新 `tests/browser/test_upload.py`，使用 PIL 内存动态创建测试 PNG，彻底解除测试对文档目录静态资源的偶合；
+- 已完成：更新 `docs/README.md` 与 `docs/native.md`，剔除无效死链，对齐最新的 `FastAPI_MinerU方案与交互示例_v3/`；
+- 已完成：更新 `docs/FastAPI_MinerU方案与交互示例_v3/FastAPI_MinerU完整开发方案_v3.md`，同步补充最新 5 态环形进度与原文可视折叠全宽铺满说明；
+- 已验证：
+  1. `pytest tests/v3`：94 个单元测试全绿（94 passed in 10.45s）；
+  2. `ruff check src tests`：全部通过（All checks passed!）。
+
+**验证证据**
+- `pytest tests/v3`：94 passed in 10.45s
+- `ruff check src tests`：All checks passed!
+
+**下一步**
+- 后续新增或修改功能时持续维护 `docs/` 索引与 `WORKLOG.md`。
+
+
 ### 2026-09-08 — 侧边栏品牌标升级为原文面板可视切换按钮（支持一键折叠原文并铺满右侧结果区）
 
 **目标**
