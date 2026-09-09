@@ -221,11 +221,15 @@ export class PdfReader {
     }
     const state = this.pageStates[region.page_index];
     if (!state) return;
-    state.shell.scrollIntoView({ block: "start", behavior: "auto" });
-    await this.#renderPage(state);
-    if (generation !== this.focusGeneration) return;
-    const target = state.regions.find((item) => item.dataset.blockId === blockId);
-    target?.scrollIntoView({ block: "center", inline: "center", behavior: "auto" });
+    let target = state.regions.find((item) => item.dataset.blockId === blockId);
+    if (!target) {
+      state.shell.scrollIntoView({ block: "start", behavior: "auto" });
+      await this.#renderPage(state);
+      if (generation !== this.focusGeneration) return;
+      target = state.regions.find((item) => item.dataset.blockId === blockId);
+    }
+    target?.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+    window.scrollTo(0, 0);
     this.#updatePageCounter(region.page_index, false);
   }
 

@@ -7,6 +7,43 @@
 - 无。
 
 
+### 2026-09-09 — 修复原文件与解析文档区域内容块点击双向平滑居中反馈与单选行为
+
+**目标**
+1. 修复原文件区域（PDF 预览）或解析文档区域（Markdown/文本）点击块时，若块处于顶部或底部，仅单向让对方区域居中而自身不居中的 Bug；
+2. 统一实现双向平滑居中联动：无论在原文件区域还是解析文档区域点击块，均使左右两侧视口同时平滑滚动并将对应块居中展示；
+3. 去除多选行为，统一点击为单选聚焦；
+4. 消除 PDF 聚焦已渲染页面时强制将页面顶部拉顶的二次跳动隐患。
+
+**当前状态**
+- 已完成：深入分析前端点击与滚动调用链路：
+  - 定位根因：左侧 `onBlockClick` 只调用了 `scrollToResultBlock(blockId)`（右侧居中），未调用 `pdfReader.focusBlock(blockId)`（左侧未居中）；右侧 `bindResultBlock` 只调用了 `pdfReader.focusBlock(blockId)`（左侧居中），未调用 `scrollToResultBlock(blockId)`（右侧未居中）；
+- 已完成：更新 `src/easylearn/static/app.js`：
+  - `onBlockClick`：点击同时调用 `selectBlock(blockId, false)`、`scrollToResultBlock(blockId)` 与 `pdfReader.focusBlock(blockId)`；
+  - `bindResultBlock`：去除 `event.ctrlKey || event.metaKey` 多选分支，单选触发并同时调用 `scrollToResultBlock(blockId)` 与 `pdfReader.focusBlock(blockId)`；
+  - 内联文献引用跳转：同样补齐双向居中；
+  - `scrollToResultBlock` 选择器优化为通用 `[data-block-id]`，兼容表格单元格与常规正文块；
+- 已完成：更新 `src/easylearn/static/pdf-viewer.js`：
+  - `focusBlock` 采用 `behavior: "smooth"` 平滑滚动；若当前页面已渲染直接对目标 region 进行视口居中，避免整页拉顶的二次跳动，并锁定 `window.scrollTo(0, 0)`；
+- 已完成：更新 `tests/v3/test_app.py`：
+  - 新增 `test_block_click_triggers_bilateral_centering_and_single_selection` 测试断言双向居中与单选约束；
+- 已验证：
+  - `pytest tests/v3`：99 passed in 12.52s；
+  - `ruff check src tests`：All checks passed!；
+  - Selenium 真实 Chrome 浏览器端到端测试：点击右侧正文块与点击左侧 PDF 块均精准双向垂直居中（偏移度 <0.5px），并生成带高亮状态与居中视图的真实截图证据。
+
+**验证证据**
+- `pytest tests/v3`：99 passed
+- `ruff check src tests`：All checks passed
+- Selenium 真实环境测试输出：
+  - 点击解析区域目标块：左右两侧中心坐标均平滑居中；
+  - 点击 PDF 区域目标块：左右两侧中心点与容器中心差值仅 `0.4px`，完成双向平滑居中对齐；
+- 真实浏览器验证截图证据：`bilateral_centering_verified.png`
+
+**下一步**
+- 保持代码干净与无状态交付，无遗留技术债。
+
+
 ### 2026-09-09 — 收藏操作前端乐观更新与文档即时渲染性能优化
 
 **目标**

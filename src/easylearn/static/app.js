@@ -75,6 +75,7 @@ const pdfReader = new PdfReader($("#pdf-viewer"), {
   onBlockClick(blockId) {
     selectBlock(blockId, false);
     scrollToResultBlock(blockId);
+    void pdfReader.focusBlock(blockId);
   },
   onBlankClick() {
     clearBlockSelection();
@@ -1363,6 +1364,7 @@ function appendInlineNodes(container, block, language) {
         const target = node.target?.block_id;
         if (!target) return;
         selectBlock(target, false);
+        scrollToResultBlock(target);
         void pdfReader.focusBlock(target);
       });
       container.append(reference);
@@ -1454,7 +1456,8 @@ function bindResultBlock(element, blockId) {
     if (event.target.closest("textarea,button,input,select,a")) return;
     if (window.getSelection()?.toString()) return;
     event.stopPropagation();
-    selectBlock(blockId, event.ctrlKey || event.metaKey);
+    selectBlock(blockId, false);
+    scrollToResultBlock(blockId);
     void pdfReader.focusBlock(blockId);
   });
 }
@@ -1878,7 +1881,7 @@ function clearBlockSelection() {
 function scrollToResultBlock(blockId) {
   const container = $("#result-content");
   if (!container) return;
-  const target = container.querySelector(`.result-block[data-block-id="${CSS.escape(blockId)}"]`);
+  const target = container.querySelector(`[data-block-id="${CSS.escape(blockId)}"]`);
   if (target) {
     target.scrollIntoView({ block: "center", behavior: "smooth" });
     window.scrollTo(0, 0);

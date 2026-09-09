@@ -309,6 +309,37 @@ async def test_browser_module_is_served_with_a_javascript_mime_type(client, asse
 
 
 @pytest.mark.asyncio
+async def test_block_click_triggers_bilateral_centering_and_single_selection(client):
+    response = await client.get("/static/app.js")
+    assert response.status_code == 200
+    content = response.text
+
+    # 1. onBlockClick in PDF viewer must trigger bilateral centering and single selection
+    assert "onBlockClick(blockId)" in content
+    idx_pdf_start = content.index("onBlockClick(blockId)")
+    idx_pdf_end = content.index("onBlankClick")
+    pdf_click_block = content[idx_pdf_start:idx_pdf_end]
+    assert "selectBlock(blockId, false);" in pdf_click_block
+    assert "scrollToResultBlock(blockId);" in pdf_click_block
+    assert "pdfReader.focusBlock(blockId);" in pdf_click_block
+
+    # 2. bindResultBlock in parsed view must trigger bilateral centering and single selection
+    assert "function bindResultBlock(element, blockId)" in content
+    idx_res_start = content.index("function bindResultBlock(element, blockId)")
+    idx_res_end = content.index("function blockUnits(block)")
+    result_click_block = content[idx_res_start:idx_res_end]
+    assert "selectBlock(blockId, false);" in result_click_block
+    assert "scrollToResultBlock(blockId);" in result_click_block
+    assert "pdfReader.focusBlock(blockId);" in result_click_block
+
+    # 3. pdf-viewer.js must support smooth focus
+    viewer_res = await client.get("/static/pdf-viewer.js")
+    assert viewer_res.status_code == 200
+    viewer_text = viewer_res.text
+    assert "smooth" in viewer_text
+
+
+@pytest.mark.asyncio
 async def test_second_instance_with_the_same_data_directory_is_rejected(tmp_path):
     settings = Settings(app=AppSettings(data_dir=tmp_path))
     first = create_app(settings)
