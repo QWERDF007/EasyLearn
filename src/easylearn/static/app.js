@@ -4,6 +4,13 @@ import katex from "./katex/katex.mjs";
 const state = {
   documents: [],
   document: null,
+  docFilter: {
+    tab: "recent",
+    searchKeyword: "",
+    sortOrder: "desc",
+    fileType: "all",
+    parseStatus: "all",
+  },
   parse: null,
   models: [],
   selectedModelId: null,
@@ -38,6 +45,11 @@ const state = {
   readerHidden: false,
 };
 
+if ("scrollRestoration" in history) {
+  history.scrollRestoration = "manual";
+}
+window.scrollTo(0, 0);
+
 const $ = (selector) => document.querySelector(selector);
 const terminalStatuses = new Set(["succeeded", "failed", "cancelled"]);
 const pdfReader = new PdfReader($("#pdf-viewer"), {
@@ -56,6 +68,7 @@ const pdfReader = new PdfReader($("#pdf-viewer"), {
       const firstBlock = document.querySelector(`[data-block-id^="p${pageIndex}."]`);
       if (firstBlock) {
         firstBlock.scrollIntoView({ block: "start", behavior: "auto" });
+        window.scrollTo(0, 0);
       }
     }
   },
@@ -442,12 +455,62 @@ function createDocumentItemElement(item) {
   return entry;
 }
 
+function getFilteredAndSortedDocuments() {
+  const { tab, searchKeyword, sortOrder, fileType, parseStatus } = state.docFilter;
+
+  const filtered = state.documents.filter((doc) => {
+    if (tab === "favorite" && !doc.favorite) {
+      return false;
+    }
+
+    if (searchKeyword) {
+      const name = (doc.name || "").toLowerCase();
+      if (!name.includes(searchKeyword.toLowerCase())) {
+        return false;
+      }
+    }
+
+    if (fileType !== "all") {
+      const ext = ((doc.name || "").split(".").pop() || "").toLowerCase();
+      const isImg = ["png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "jp2"].includes(ext);
+      const isDoc = ["pdf", "ppt", "pptx", "doc", "docx", "word", "xls", "xlsx", "csv"].includes(ext);
+      if (fileType === "doc" && !isDoc) return false;
+      if (fileType === "image" && !isImg) return false;
+    }
+
+    if (parseStatus !== "all") {
+      const task = getDocumentTask(doc.document_id, doc);
+      const isRunningOrQueued = Boolean(task && (task.status === "queued" || task.status === "running"));
+      const isFailed = Boolean(task && task.status === "failed");
+      const isCompleted = Boolean(doc.active_parse_id || (doc.parse_results && doc.parse_results.length > 0));
+
+      if (parseStatus === "parsing" && !isRunningOrQueued) return false;
+      if (parseStatus === "failed" && !isFailed) return false;
+      if (parseStatus === "completed" && (!isCompleted || isRunningOrQueued || isFailed)) return false;
+    }
+
+    return true;
+  });
+
+  filtered.sort((a, b) => {
+    const timeA = new Date(a.created_at || 0).getTime();
+    const timeB = new Date(b.created_at || 0).getTime();
+    if (sortOrder === "asc") {
+      return (timeA - timeB) || (a.name || "").localeCompare(b.name || "");
+    }
+    return (timeB - timeA) || (b.name || "").localeCompare(a.name || "");
+  });
+
+  return filtered;
+}
+
 function renderDocumentList() {
   const list = $("#document-list");
   if (!list) return;
   list.replaceChildren();
 
-  if (state.uploadingDoc) {
+  const isRecentTab = state.docFilter.tab === "recent";
+  if (state.uploadingDoc && isRecentTab) {
     const uploadingEntry = createDocumentItemElement({
       document_id: "uploading",
       name: state.uploadingDoc.name,
@@ -457,10 +520,20 @@ function renderDocumentList() {
     list.append(uploadingEntry);
   }
 
-  for (const item of state.documents) {
+  const items = getFilteredAndSortedDocuments();
+  for (const item of items) {
     const entry = createDocumentItemElement(item);
     list.append(entry);
   }
+
+  const footer = document.createElement("div");
+  footer.className = "document-list-footer";
+  if (items.length > 0 || (state.uploadingDoc && isRecentTab)) {
+    footer.textContent = "没有更多啦";
+  } else {
+    footer.textContent = state.docFilter.tab === "favorite" ? "暂无收藏文档" : "暂无相关文档";
+  }
+  list.append(footer);
 }
 
 async function refreshDocuments() {
@@ -1763,6 +1836,7 @@ function scrollToResultBlock(blockId) {
   const target = container.querySelector(`.result-block[data-block-id="${CSS.escape(blockId)}"]`);
   if (target) {
     target.scrollIntoView({ block: "center", behavior: "smooth" });
+    window.scrollTo(0, 0);
     target.classList.remove("is-target-flash");
     void target.offsetWidth;
     target.classList.add("is-target-flash");
@@ -2624,6 +2698,13 @@ $("#result-content")?.addEventListener("click", (event) => {
 
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
+    const sortPopover = $("#doc-sort-popover");
+    if (sortPopover && !sortPopover.hidden) {
+      sortPopover.hidden = true;
+      $("#doc-sort-filter-btn")?.setAttribute("aria-expanded", "false");
+      $("#doc-sort-filter-btn")?.classList.remove("is-active");
+      return;
+    }
     const aiPanel = $("#ai-panel");
     if (aiPanel && !aiPanel.hidden) {
       closeQaDrawer();
@@ -2640,6 +2721,152 @@ window.addEventListener("keydown", (event) => {
   }
 });
 
+function initDocumentSidebarControls() {
+  const recentTab = $("#doc-tab-recent");
+  const favoriteTab = $("#doc-tab-favorite");
+  const searchToggleBtn = $("#doc-search-toggle-btn");
+  const searchBar = $("#doc-search-bar");
+  const searchInput = $("#doc-search-input");
+  const searchClearBtn = $("#doc-search-clear-btn");
+  const sortFilterBtn = $("#doc-sort-filter-btn");
+  const sortPopover = $("#doc-sort-popover");
+  const sortCancelBtn = $("#doc-sort-cancel-btn");
+  const sortConfirmBtn = $("#doc-sort-confirm-btn");
+
+  recentTab?.addEventListener("click", () => {
+    if (state.docFilter.tab === "recent") return;
+    state.docFilter.tab = "recent";
+    recentTab.classList.add("is-active");
+    recentTab.setAttribute("aria-selected", "true");
+    favoriteTab?.classList.remove("is-active");
+    favoriteTab?.setAttribute("aria-selected", "false");
+    renderDocumentList();
+  });
+
+  favoriteTab?.addEventListener("click", () => {
+    if (state.docFilter.tab === "favorite") return;
+    state.docFilter.tab = "favorite";
+    favoriteTab.classList.add("is-active");
+    favoriteTab.setAttribute("aria-selected", "true");
+    recentTab?.classList.remove("is-active");
+    recentTab?.setAttribute("aria-selected", "false");
+    renderDocumentList();
+  });
+
+  searchToggleBtn?.addEventListener("click", () => {
+    if (!searchBar) return;
+    const willShow = searchBar.hidden;
+    searchBar.hidden = !willShow;
+    searchToggleBtn.classList.toggle("is-active", willShow);
+    searchToggleBtn.setAttribute("aria-expanded", String(willShow));
+    if (willShow) {
+      searchInput?.focus();
+    } else if (state.docFilter.searchKeyword) {
+      state.docFilter.searchKeyword = "";
+      if (searchInput) searchInput.value = "";
+      if (searchClearBtn) searchClearBtn.hidden = true;
+      renderDocumentList();
+    }
+  });
+
+  searchInput?.addEventListener("input", (e) => {
+    const val = e.target.value.trim();
+    state.docFilter.searchKeyword = val;
+    if (searchClearBtn) searchClearBtn.hidden = !val;
+    renderDocumentList();
+  });
+
+  searchClearBtn?.addEventListener("click", () => {
+    if (searchInput) {
+      searchInput.value = "";
+      searchInput.focus();
+    }
+    state.docFilter.searchKeyword = "";
+    searchClearBtn.hidden = true;
+    renderDocumentList();
+  });
+
+  function openSortPopover() {
+    if (!sortPopover || !sortFilterBtn) return;
+    const sortRadio = sortPopover.querySelector(`input[name="popover-sort"][value="${state.docFilter.sortOrder}"]`);
+    if (sortRadio) sortRadio.checked = true;
+    const typeRadio = sortPopover.querySelector(`input[name="popover-filetype"][value="${state.docFilter.fileType}"]`);
+    if (typeRadio) typeRadio.checked = true;
+    const statusRadio = sortPopover.querySelector(`input[name="popover-status"][value="${state.docFilter.parseStatus}"]`);
+    if (statusRadio) statusRadio.checked = true;
+
+    const rect = sortFilterBtn.getBoundingClientRect();
+    const arrowOffset = 36;
+    const btnCenterX = rect.left + rect.width / 2;
+    let targetLeft = btnCenterX - arrowOffset;
+    const popoverWidth = 445;
+    if (targetLeft + popoverWidth > window.innerWidth - 10) {
+      targetLeft = window.innerWidth - popoverWidth - 10;
+    }
+    if (targetLeft < 10) targetLeft = 10;
+    sortPopover.style.top = `${rect.bottom + 8}px`;
+    sortPopover.style.left = `${targetLeft}px`;
+
+    sortPopover.hidden = false;
+    sortFilterBtn.setAttribute("aria-expanded", "true");
+    sortFilterBtn.classList.add("is-active");
+  }
+
+  function closeSortPopover() {
+    if (!sortPopover || !sortFilterBtn) return;
+    sortPopover.hidden = true;
+    sortFilterBtn.setAttribute("aria-expanded", "false");
+    sortFilterBtn.classList.remove("is-active");
+  }
+
+  sortFilterBtn?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (sortPopover && !sortPopover.hidden) {
+      closeSortPopover();
+    } else {
+      openSortPopover();
+    }
+  });
+
+  sortCancelBtn?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    closeSortPopover();
+  });
+
+  sortConfirmBtn?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!sortPopover) return;
+    const selectedSort = sortPopover.querySelector('input[name="popover-sort"]:checked')?.value || "desc";
+    const selectedType = sortPopover.querySelector('input[name="popover-filetype"]:checked')?.value || "all";
+    const selectedStatus = sortPopover.querySelector('input[name="popover-status"]:checked')?.value || "all";
+
+    state.docFilter.sortOrder = selectedSort;
+    state.docFilter.fileType = selectedType;
+    state.docFilter.parseStatus = selectedStatus;
+
+    closeSortPopover();
+    renderDocumentList();
+  });
+
+  sortPopover?.addEventListener("click", (e) => {
+    e.stopPropagation();
+  });
+
+  document.addEventListener("click", (e) => {
+    if (sortPopover && !sortPopover.hidden) {
+      if (!sortPopover.contains(e.target) && !sortFilterBtn?.contains(e.target)) {
+        closeSortPopover();
+      }
+    }
+  });
+
+  window.addEventListener("resize", () => {
+    if (sortPopover && !sortPopover.hidden) {
+      closeSortPopover();
+    }
+  });
+}
+
 $("#toggle-reader-button")?.addEventListener("click", () => {
   toggleReaderView();
 });
@@ -2651,12 +2878,14 @@ for (const tab of document.querySelectorAll(".result-tab")) {
   });
 }
 
+initDocumentSidebarControls();
 syncWorkspaceLayout();
 void Promise.all([refreshHealth(), refreshModels(), refreshDocuments()]).catch((error) => notify(error.message));
 
 window.__easyLearn = {
   state,
   renderDocumentList,
+  getFilteredAndSortedDocuments,
   createDocumentItemElement,
   refreshDocuments,
   updateReaderVisibility,

@@ -44,7 +44,37 @@
             <span>系统设置</span>
           </button>
         </div>
-        <div class="sidebar-heading">文档</div>
+        <div class="sidebar-doc-section">
+          <div class="sidebar-doc-header">
+            <div class="sidebar-doc-tabs" role="tablist" aria-label="文档分类">
+              <button id="doc-tab-recent" class="doc-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="document-list">最近上传</button>
+              <button id="doc-tab-favorite" class="doc-tab" type="button" role="tab" aria-selected="false" aria-controls="document-list">我的收藏</button>
+            </div>
+            <div class="sidebar-doc-tools">
+              <button id="doc-search-toggle-btn" class="icon-button doc-tool-btn" type="button" title="搜索文档" aria-label="搜索文档" aria-expanded="false" aria-controls="doc-search-bar">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="11" cy="11" r="8"/>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+              </button>
+              <button id="doc-sort-filter-btn" class="icon-button doc-tool-btn" type="button" title="排序与筛选" aria-label="排序与筛选" aria-expanded="false" aria-controls="doc-sort-popover" aria-haspopup="dialog">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M3 6h18M6 12h12M10 18h4"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div id="doc-search-bar" class="doc-search-bar" hidden>
+            <span class="doc-search-icon" aria-hidden="true">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="8"/>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+            </span>
+            <input id="doc-search-input" type="text" class="doc-search-input" placeholder="搜索文档..." autocomplete="off">
+            <button id="doc-search-clear-btn" class="icon-button doc-search-clear" type="button" title="清空搜索" aria-label="清空搜索" hidden>✕</button>
+          </div>
+        </div>
         <nav id="document-list" class="document-list" aria-live="polite"></nav>
         <div class="sidebar-heading">任务</div>
         <div id="task-list" class="task-list" aria-live="polite"></div>
@@ -409,6 +439,79 @@ api_key_env = "OPENAI_API_KEY"         # API Key 环境变量</code></pre>
           </div>
         </form>
       </aside>
+    </div>
+
+    <div id="doc-sort-popover" class="doc-sort-popover" hidden role="dialog" aria-modal="false" aria-label="排序与筛选">
+      <div class="sort-popover-arrow"></div>
+      <div class="sort-popover-body">
+        <div class="sort-filter-row">
+          <div class="sort-filter-label">排序</div>
+          <div class="sort-filter-options">
+            <label class="sort-filter-radio">
+              <input type="radio" name="popover-sort" value="desc" checked>
+              <span class="radio-dot"></span>
+              <span class="radio-label">时间从新到旧</span>
+            </label>
+            <label class="sort-filter-radio">
+              <input type="radio" name="popover-sort" value="asc">
+              <span class="radio-dot"></span>
+              <span class="radio-label">时间从旧到新</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="sort-filter-row">
+          <div class="sort-filter-label">文件类型</div>
+          <div class="sort-filter-options">
+            <label class="sort-filter-radio">
+              <input type="radio" name="popover-filetype" value="all" checked>
+              <span class="radio-dot"></span>
+              <span class="radio-label">全部</span>
+            </label>
+            <label class="sort-filter-radio">
+              <input type="radio" name="popover-filetype" value="doc">
+              <span class="radio-dot"></span>
+              <span class="radio-label">文档</span>
+            </label>
+            <label class="sort-filter-radio">
+              <input type="radio" name="popover-filetype" value="image">
+              <span class="radio-dot"></span>
+              <span class="radio-label">图片</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="sort-filter-row">
+          <div class="sort-filter-label">解析状态</div>
+          <div class="sort-filter-options">
+            <label class="sort-filter-radio">
+              <input type="radio" name="popover-status" value="all" checked>
+              <span class="radio-dot"></span>
+              <span class="radio-label">全部</span>
+            </label>
+            <label class="sort-filter-radio">
+              <input type="radio" name="popover-status" value="parsing">
+              <span class="radio-dot"></span>
+              <span class="radio-label">解析中</span>
+            </label>
+            <label class="sort-filter-radio">
+              <input type="radio" name="popover-status" value="failed">
+              <span class="radio-dot"></span>
+              <span class="radio-label">解析失败</span>
+            </label>
+            <label class="sort-filter-radio">
+              <input type="radio" name="popover-status" value="completed">
+              <span class="radio-dot"></span>
+              <span class="radio-label">解析完成</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="sort-popover-actions">
+          <button id="doc-sort-cancel-btn" class="sort-popover-btn btn-cancel" type="button">取消</button>
+          <button id="doc-sort-confirm-btn" class="sort-popover-btn btn-confirm" type="button">确定</button>
+        </div>
+      </div>
     </div>
 
     <dialog id="document-delete-dialog" class="confirm-dialog">

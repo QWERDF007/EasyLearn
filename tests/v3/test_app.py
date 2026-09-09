@@ -277,9 +277,24 @@ async def test_page_exposes_full_result_and_question_history_controls(client):
         "zoom-value",
         "zoom-in",
         "reset-zoom",
+        "doc-tab-recent",
+        "doc-tab-favorite",
+        "doc-search-toggle-btn",
+        "doc-sort-filter-btn",
+        "doc-search-bar",
+        "doc-search-input",
+        "doc-sort-popover",
+        "doc-sort-cancel-btn",
+        "doc-sort-confirm-btn",
     ):
         assert f'id="{element_id}"' in response.text
     assert "点击上传或者拖入文件开始解析" in response.text
+    assert "最近上传" in response.text
+    assert "我的收藏" in response.text
+    assert "时间从新到旧" in response.text
+    assert "时间从旧到新" in response.text
+    assert "文件类型" in response.text
+    assert "解析状态" in response.text
 
 
 @pytest.mark.asyncio

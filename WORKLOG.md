@@ -7,6 +7,53 @@
 - 无。
 
 
+### 2026-09-09 — 实现侧边栏收藏切换 Tab、搜索过滤与排序弹窗，并修复页面整体上移遮挡 Bug
+
+**目标**
+1. 侧边栏文档区域增加「最近上传」与「我的收藏」Tab 页切换，收藏页仅展示标星收藏文档；
+2. 增加搜索按钮 🔍，点击平滑展开/收起内联搜索框，支持关键字实时模糊搜索与一键清除；
+3. 增加排序/筛选按钮 ⩛，点击弹出浮层弹窗（带指向箭头、圆角阴影卡片），支持按时间升降序排序、按文档/图片类型过滤、按解析状态（解析中/失败/完成）过滤，支持确定应用与取消关闭；
+4. 修复由于浏览器默认滚动恢复与块级 `scrollIntoView` 导致根容器整体上移被顶部工具栏遮挡、底部产生大块空白的 Bug，将 `.app-shell` 固化为视口定位并禁用浏览器滚动恢复；
+5. TDD 自动化测试验证、全量测试通过并通过真实 Chrome 浏览器截图验收。
+
+**当前状态**
+- 已完成：更新 `src/easylearn/templates/index.html`：
+  - 新增 `.sidebar-doc-header`，包含 `doc-tab-recent`（最近上传）与 `doc-tab-favorite`（我的收藏）Tab 切换组；
+  - 新增 `doc-search-toggle-btn`（搜索按钮）与可折叠 `doc-search-bar`（包含输入框与一键清空按钮）；
+  - 新增 `doc-sort-filter-btn`（排序筛选按钮）与卡片浮层 `#doc-sort-popover`（排序单选项、类型单选项、解析状态单选项及取消/确定按钮）；
+- 已完成：更新 `src/easylearn/static/app.css`：
+  - 添加 `[hidden] { display: none !important; }`，避免全局 `display: flex` 覆盖 `hidden` 属性；
+  - 样式化 Tab、搜索栏、弹窗卡片（445px 宽，白底圆角立体阴影、单行紧凑排列的自定义 Radio Dot、操作按钮等）；
+  - 设置 `.sidebar` 为 `overflow-y: auto; overflow-x: hidden;`，杜绝横向滚动条；
+  - 核心布局修复：将 `.app-shell` 设置为 `position: fixed; inset: 0; width: 100vw; height: 100vh;`，彻底根除页面被顶出视口或底部留白问题；
+- 已完成：更新 `src/easylearn/static/app.js`：
+  - 增加 `history.scrollRestoration = "manual"` 与 `window.scrollTo(0, 0)` 重置；
+  - 在 `state` 中增加响应式筛选模型 `docFilter`（tab, searchKeyword, sortOrder, fileType, parseStatus）；
+  - 实现纯前端实时响应式过滤排序流水线 `getFilteredAndSortedDocuments()`，毫秒级即时响应；
+  - 封装 `initDocumentSidebarControls`：管理 Tab 切换、搜索栏展开聚焦/清空还原、排序弹窗定位计算与状态同步、ESC 键及点击外部关闭等生命周期；
+- 已完成：更新 `tests/v3/test_app.py`：
+  - 在 `test_page_exposes_full_result_and_question_history_controls` 中增加新元素 ID 及 Tab、排序文案断言；
+- 已验证：
+  1. `pytest tests/v3`：98 passed in 15.58s；
+  2. `ruff check src tests`：All checks passed!；
+  3. Selenium 真实环境端到端自动化测试：
+     - Tab 切换（最近上传 2 个文档，我的收藏 0 个文档）验证通过；
+     - 搜索框展开、模糊搜索 "HOW DO" 准确过滤至 1 个文档、一键清除还原验证通过；
+     - 排序弹窗打开、各选项排列不换行、选择时间从旧到新后确定生效验证通过；
+     - 修复验证：`window.scrollY = 0`，`app-shell` 顶部严密贴合 `top = 0`，文档顶部标题栏无截断、底部无留白。
+
+**验证证据**
+- `pytest tests/v3`：98 passed in 15.58s
+- `ruff check src tests`：All checks passed!
+- Selenium 真实浏览器截图证据：
+  - `popover_open_verified.png`：弹窗精确定位浮现、单选按钮整齐单行对齐、无滚动条
+  - `layout_and_sort_verified.png`：时间升序排列生效、底部“没有更多啦”
+  - `document_opened_verified.png`：文档全栏目完整展示，顶部完全不被遮挡，底部充满视口
+
+**下一步**
+- 保持文档与代码同步，后续工作按需求持续迭代。
+
+
 ### 2026-09-08 — 增强 LLMClient 指数退避与 Jitter 重试机制以容忍瞬态 503/网络中断
 
 **目标**
