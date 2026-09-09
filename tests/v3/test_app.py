@@ -340,6 +340,38 @@ async def test_block_click_triggers_bilateral_centering_and_single_selection(cli
 
 
 @pytest.mark.asyncio
+async def test_block_centering_and_image_block_color_consistency(client):
+    # 1. CSS styling consistency: image blocks and table blocks must match PDF viewer colors
+    css_res = await client.get("/static/app.css")
+    assert css_res.status_code == 200
+    css = css_res.text
+    assert '.result-block[data-block-type="image"]' in css
+    assert '.result-block[data-block-type="figure"]' in css
+    assert '.result-block[data-block-type="table"]' in css
+    assert "#10b981" in css  # Green for images
+    assert "#f59e0b" in css  # Orange for tables
+
+    # 2. pdf-viewer.js: focusBlock must not trigger page top snapping
+    viewer_res = await client.get("/static/pdf-viewer.js")
+    assert viewer_res.status_code == 200
+    viewer_code = viewer_res.text
+    idx_focus = viewer_code.index("async focusBlock(blockId)")
+    idx_set_hover = viewer_code.index("setHover(blockId)")
+    focus_fn = viewer_code[idx_focus:idx_set_hover]
+    assert "#updatePageCounter(region.page_index, false)" not in focus_fn
+
+    # 3. app.js: selectBlock must update selection classes without destroying DOM tree
+    app_res = await client.get("/static/app.js")
+    assert app_res.status_code == 200
+    app_code = app_res.text
+    idx_select = app_code.index("function selectBlock(blockId, additive)")
+    idx_clear = app_code.index("function clearBlockSelection()")
+    select_fn = app_code[idx_select:idx_clear]
+    assert "updateResultSelection();" in select_fn
+    assert "renderResult();" not in select_fn
+
+
+@pytest.mark.asyncio
 async def test_second_instance_with_the_same_data_directory_is_rejected(tmp_path):
     settings = Settings(app=AppSettings(data_dir=tmp_path))
     first = create_app(settings)

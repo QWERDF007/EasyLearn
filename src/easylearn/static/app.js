@@ -1849,6 +1849,22 @@ function setHover(blockId) {
   }
 }
 
+function updateResultSelection() {
+  const content = $("#result-content");
+  if (!content) return;
+  content.classList.toggle("has-selection", state.selectedBlocks.size > 0);
+  const selectionCount = $("#selection-count");
+  if (selectionCount) {
+    selectionCount.textContent = state.selectedBlocks.size
+      ? `已选 ${state.selectedBlocks.size} 块`
+      : "";
+  }
+  for (const block of content.querySelectorAll(".result-block, th, td")) {
+    const isSelected = state.selectedBlocks.has(block.dataset.blockId);
+    block.classList.toggle("is-selected", isSelected);
+  }
+}
+
 function selectBlock(blockId, additive) {
   if (additive) {
     if (state.selectedBlocks.has(blockId)) state.selectedBlocks.delete(blockId);
@@ -1858,7 +1874,7 @@ function selectBlock(blockId, additive) {
   }
   state.activeQaAnchorBlockId = [...state.selectedBlocks][0] || null;
   pdfReader.setSelected(state.selectedBlocks);
-  renderResult();
+  updateResultSelection();
   const panel = $("#ai-panel");
   if (panel && !panel.hidden) {
     updateQaAnchorBox();
@@ -1867,11 +1883,16 @@ function selectBlock(blockId, additive) {
 
 function clearBlockSelection() {
   if (!state.selectedBlocks.size && !state.editingSourceBlockId) return;
+  const wasEditing = Boolean(state.editingSourceBlockId);
   state.selectedBlocks.clear();
   state.editingSourceBlockId = null;
   state.activeQaAnchorBlockId = null;
   pdfReader.setSelected(state.selectedBlocks);
-  renderResult();
+  if (wasEditing) {
+    renderResult();
+  } else {
+    updateResultSelection();
+  }
   const panel = $("#ai-panel");
   if (panel && !panel.hidden) {
     updateQaAnchorBox();

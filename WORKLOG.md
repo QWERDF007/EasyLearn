@@ -7,6 +7,45 @@
 - 无。
 
 
+### 2026-09-09 — 修复内容块首次点击即平滑居中（杜绝二次点击问题）并统一解析区图片/表格块主题色系
+
+**目标**
+1. 修复顶部或底部的块在点击后第一次不居中、需要第二次点击才居中的问题；
+2. 修复右侧解析文档区域中图片块（以及表格块）的选中/悬浮边框及标签背景色与左侧原文件区域颜色不一致的问题（左侧为绿，右侧原为蓝）。
+
+**当前状态**
+- 已完成：深入分析首击不居中根因与色彩规则缺失：
+  - 定位根因 1（居中被打断）：在跨页或初次聚焦块时，`focusBlock` 调用了 `this.#updatePageCounter(region.page_index, false)`，其中的 `!isUserScroll` 触发了 `onPageChange` 中的 `firstBlock.scrollIntoView({ block: "start" })`，强行将右侧解析区域扯回该页首块，截断了刚开始的 `scrollToResultBlock` 目标居中动画；而第二次点击时由于 `currentPage` 已相同不再触发翻页回调，故第二次才成功；
+  - 定位根因 2（DOM 抖动导致排版不稳）：原 `selectBlock` 调用 `renderResult()` 将右侧 200 多个 DOM 块全量销毁重建，导致包含图片的块重新挂载时图片高度不稳定；
+  - 定位根因 3（色彩规则遗漏）：`app.css` 中只定义了 `.result-block` 针对公式（粉红）的规则，遗漏了图片（绿色 `#10b981`）和表格（橙色 `#f59e0b`）的特化规则，导致回退到默认蓝色。
+- 已完成：更新 `src/easylearn/static/pdf-viewer.js`：
+  - `focusBlock` 中聚焦块时同步更新 `this.currentPage` 并传递 `isUserScroll = true`，彻底杜绝翻页回调把解析区域扯回页首打断居中；
+- 已完成：更新 `src/easylearn/static/app.js`：
+  - 新增轻量级局部类更新函数 `updateResultSelection()`，仅为需要更新的块切换 `.is-selected` 类并更新计数，不再整体销毁 DOM，保障图片与文本的排版高度绝对稳定；
+- 已完成：更新 `src/easylearn/static/app.css`：
+  - 增加 `.result-block[data-block-type="image"]` / `figure` 绿色系样式（边框、阴影与标签统一采用 `#10b981`，浅绿底 `#f0fdf4`）；
+  - 增加 `.result-block[data-block-type="table"]` 橙色系样式（边框、阴影与标签统一采用 `#f59e0b`，浅橙底 `#fffbeb`）；
+- 已完成：更新 `tests/v3/test_app.py`：
+  - 新增 `test_block_centering_and_image_block_color_consistency` 自动化测试；
+- 已验证：
+  - `pytest tests/v3`：100 passed in 12.57s；
+  - `ruff check src tests`：All checks passed!；
+  - Selenium 真实 Chrome 浏览器端到端测试：在图片块上单次首次点击（FIRST CLICK）即精准双向垂直居中（两侧与容器垂直中心差值仅 `0.2px`），且计算样式计算确认两侧边框均为 `rgb(16, 185, 129)`（绿色）；生成截图证据 `first_click_green_image_verified.png`。
+
+**验证证据**
+- `pytest tests/v3`：100 passed
+- `ruff check src tests`：All checks passed
+- Selenium 真实环境测试输出：
+  - `FIRST CLICK - Right pane: container center=416.5, block center=416.3, diff=0.2px`
+  - `FIRST CLICK - Left PDF pane: container center=416.5, region center=416.3, diff=0.2px`
+  - `Right image block border-color: rgb(16, 185, 129)`
+  - `Left PDF image region border-color: rgb(16, 185, 129)`
+- 真实浏览器验证截图证据：`first_click_green_image_verified.png`
+
+**下一步**
+- 保持代码干净与无状态交付，无遗留技术债。
+
+
 ### 2026-09-09 — 修复原文件与解析文档区域内容块点击双向平滑居中反馈与单选行为
 
 **目标**

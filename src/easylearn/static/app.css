@@ -830,6 +830,34 @@ h1, h2 { margin: 0; font-size: 17px; }
   background: #f43f5e;
 }
 
+/* Table (表格) 橙色系：常态与普通块一致，仅在悬浮或选中时显示橙色样式 */
+.result-block[data-block-type="table"].is-hovered,
+.result-block[data-block-type="table"].is-selected {
+  border-color: #f59e0b;
+  background: #fffbeb;
+  box-shadow: 0 2px 10px rgba(245, 158, 11, 0.12);
+}
+.result-block[data-block-type="table"].is-hovered::before,
+.result-block[data-block-type="table"].is-selected::before {
+  background: #f59e0b;
+}
+
+/* Image (图片/图表) 绿色系：常态与普通块一致，仅在悬浮或选中时显示绿色样式 */
+.result-block[data-block-type="image"].is-hovered,
+.result-block[data-block-type="image"].is-selected,
+.result-block[data-block-type="figure"].is-hovered,
+.result-block[data-block-type="figure"].is-selected {
+  border-color: #10b981;
+  background: #f0fdf4;
+  box-shadow: 0 2px 10px rgba(16, 185, 129, 0.12);
+}
+.result-block[data-block-type="image"].is-hovered::before,
+.result-block[data-block-type="image"].is-selected::before,
+.result-block[data-block-type="figure"].is-hovered::before,
+.result-block[data-block-type="figure"].is-selected::before {
+  background: #10b981;
+}
+
 /* 公式展示排版容器 */
 .result-formula-container {
   display: flex;

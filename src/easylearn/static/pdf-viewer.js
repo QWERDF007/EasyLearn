@@ -230,7 +230,8 @@ export class PdfReader {
     }
     target?.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
     window.scrollTo(0, 0);
-    this.#updatePageCounter(region.page_index, false);
+    this.currentPage = region.page_index;
+    this.onPageChange(region.page_index, this.pageStates.length, true);
   }
 
   setHover(blockId) {
