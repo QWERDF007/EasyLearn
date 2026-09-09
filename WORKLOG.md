@@ -7,6 +7,26 @@
 - 无。
 
 
+### 2026-09-09 — 对齐 config.toml 与 config.example.toml 全量配置结构
+
+**目标**
+1. 将 `config.toml` 与 `config.example.toml` 改为 1:1 全量对齐结构，补全全部小节与字段；
+2. 保持各自特化值与模板示例的规范一致性，同步补充 `translation_concurrency = 4` 与 `reasoning_effort = "low"`。
+
+**当前状态**
+- 已完成：重构 `config.toml` 为全量结构，显式声明 `[app]`、`[tasks]`、`[cache]`、`[mineru]`、`[mineru.parse]`、`[mineru.archive_limits]`、`[mineru.table_limits]`、`[mineru.image_limits]`、`[mineru.preview_limits]`、`[llm]`、`[llm.providers.deepseek]`、`[llm.providers.openai]`、`[files]`、`[extensions]`，并保留本地数据与日志路径；
+- 已完成：同步更新 `config.example.toml`，在 `[tasks]` 中补齐 `translation_concurrency = 4`，在 `[llm.providers.openai]` 中补齐 `reasoning_effort = "low"`；
+- 已完成：通过 Python 脚本加载验证 `config.toml` 与 `config.example.toml` 均可 100% 正确解析。
+
+**验证证据**
+- `python -c "Settings.load('config.toml'); Settings.load('config.example.toml')"`：两个文件均加载成功，所有数据目录与 LLM 配置均正常解析；
+- `pytest tests/v3/test_config.py tests/v3/test_app.py`：27 passed in 2.14s；
+- `ruff check src tests`：All checks passed!。
+
+**下一步**
+- 保持配置与代码单一真相源。
+
+
 ### 2026-09-09 — 集成 FreeDeepseekAPI-EN 为子模块并支持 DeepSeek 与 OpenAI 兼容服务一键切换及本地代理智能绕过
 
 **目标**

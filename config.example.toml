@@ -11,6 +11,7 @@ open_browser = false
 queue_limit = 8
 parse_concurrency = 1
 translation_requests = 1
+translation_concurrency = 4
 qa_requests = 1
 finished_task_retention_minutes = 30
 
@@ -81,6 +82,7 @@ base_url = "https://api.openai.com/v1"
 model = "gpt-4o"
 api_key_env = "OPENAI_API_KEY"
 local_only = false
+reasoning_effort = "low"
 
 [files]
 max_upload_mb = 100
