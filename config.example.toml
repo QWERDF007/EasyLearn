@@ -65,6 +65,8 @@ render_edge_pixels = 1024
 
 [llm]
 active_provider = "deepseek"
+# 可选：独立指定 AI 解读使用的 provider，留空或未配置则默认继承 active_provider
+# qa_provider = "deepseek"
 proxy = "http://127.0.0.1:7890"
 timeout_seconds = 600
 max_retries = 5
@@ -74,15 +76,19 @@ retry_max_delay = 30.0
 [llm.providers.deepseek]
 base_url = "http://127.0.0.1:9655/v1"
 model = "deepseek-chat"
+qa_model = "deepseek-reasoner"
 api_key = "sk-freedeepseek"
 local_only = true
+translation_concurrency = 1
 
 [llm.providers.openai]
 base_url = "https://api.openai.com/v1"
 model = "gpt-4o"
+qa_model = "gpt-4o"
 api_key_env = "OPENAI_API_KEY"
 local_only = false
 reasoning_effort = "low"
+translation_concurrency = 4
 
 [files]
 max_upload_mb = 100

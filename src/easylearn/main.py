@@ -138,7 +138,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 database, documents, manager, settings, llm=LLMClient(settings, http)
             )
             exporter = ExportService(database, documents, manager)
-            qa = QAService(database, documents, manager, settings, llm=LLMClient(settings, http))
+            qa_llm_settings = settings.qa_llm
+            qa_proxy = qa_llm_settings.resolved_proxy
+            qa_http = (
+                http
+                if (qa_proxy == proxy and qa_llm_settings.local_only == settings.llm.local_only)
+                else httpx.AsyncClient(
+                    trust_env=not qa_llm_settings.local_only and not qa_proxy,
+                    proxy=qa_proxy,
+                    follow_redirects=False,
+                )
+            )
+            qa_provider = settings.llm.qa_provider or settings.llm.active_provider
+            qa_client = LLMClient(settings, qa_http, provider=qa_provider, for_qa=True)
+            qa = QAService(database, documents, manager, settings, llm=qa_client)
             manager.register(JobKind.PARSE, parser.execute)
             manager.register(JobKind.TRANSLATE, translation.execute)
             manager.register(JobKind.EXPORT, exporter.execute)
@@ -255,6 +268,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     settings.llm.model and settings.llm.base_url and settings.llm_api_key
                 ),
                 "active_provider": settings.llm.active_provider,
+                "qa_provider": settings.llm.qa_provider or settings.llm.active_provider,
+                "translation_concurrency": settings.translation_concurrency,
                 "model": settings.llm.model,
                 "base_url": settings.llm.base_url,
                 "has_api_key": bool(settings.llm_api_key),

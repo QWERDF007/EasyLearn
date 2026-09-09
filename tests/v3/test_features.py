@@ -16,7 +16,14 @@ from httpx import ASGITransport, AsyncClient
 from PIL import Image
 from starlette.requests import Request
 
-from easylearn.config import AppSettings, ExtensionSettings, FileSettings, LLMSettings, Settings
+from easylearn.config import (
+    AppSettings,
+    ExtensionSettings,
+    FileSettings,
+    LLMProviderSettings,
+    LLMSettings,
+    Settings,
+)
 from easylearn.document_ir.schema import (
     AssetDescriptor,
     Block,
@@ -1185,5 +1192,152 @@ async def test_llm_client_stream_retries_transient_503_and_recovers():
         chunks = [chunk async for chunk in llm.stream([{"role": "user", "content": "hi"}])]
         assert "".join(chunks) == "Hello"
         assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_llm_client_passes_session_id_in_headers_and_payload():
+    recorded_requests: list[httpx.Request] = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        recorded_requests.append(request)
+        body = json.loads(request.content.decode("utf-8"))
+        if body.get("stream"):
+            sse_data = 'data: {"choices": [{"delta": {"content": "ok"}}]}\n\ndata: [DONE]\n\n'
+            return httpx.Response(200, text=sse_data)
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"u1": "译文"}'}}]})
+
+    transport = httpx.MockTransport(mock_handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        settings = Settings(
+            llm=LLMSettings(
+                base_url="https://llm.example.test/v1",
+                model="test-model",
+                local_only=False,
+            )
+        )
+        llm = LLMClient(settings, http=http_client)
+
+        res = await llm.complete_json(
+            [{"role": "user", "content": "hi"}], session_id="session-doc-1"
+        )
+        assert res == '{"u1": "译文"}'
+        req0 = recorded_requests[0]
+        assert req0.headers.get("x-agent-session") == "session-doc-1"
+        body0 = json.loads(req0.content.decode("utf-8"))
+        assert body0.get("user") == "session-doc-1"
+
+        chunks = [
+            c
+            async for c in llm.stream(
+                [{"role": "user", "content": "hi"}], session_id="session-doc-1"
+            )
+        ]
+        assert "".join(chunks) == "ok"
+        req1 = recorded_requests[1]
+        assert req1.headers.get("x-agent-session") == "session-doc-1"
+        body1 = json.loads(req1.content.decode("utf-8"))
+        assert body1.get("user") == "session-doc-1"
+
+
+@pytest.mark.asyncio
+async def test_llm_client_qa_enables_deep_thinking():
+    recorded_requests: list[httpx.Request] = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        recorded_requests.append(request)
+        sse_data = (
+            'data: {"choices": [{"delta": {"reasoning_content": "thinking..."}}]}\n\n'
+            'data: {"choices": [{"delta": {"content": "Answer"}}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+        return httpx.Response(200, text=sse_data)
+
+    transport = httpx.MockTransport(mock_handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        settings = Settings(
+            llm=LLMSettings(
+                active_provider="deepseek",
+                providers={
+                    "deepseek": LLMProviderSettings(
+                        base_url="http://127.0.0.1:9655/v1",
+                        model="deepseek-chat",
+                        qa_model="deepseek-reasoner",
+                        local_only=True,
+                    )
+                },
+            )
+        )
+        qa_llm = LLMClient(settings, http=http_client, for_qa=True)
+        assert qa_llm.configuration.model == "deepseek-reasoner"
+
+        chunks = [
+            c
+            async for c in qa_llm.stream(
+                [{"role": "user", "content": "hi"}], session_id="session-doc-1"
+            )
+        ]
+        assert "".join(chunks) == "Answer"
+
+        req = recorded_requests[0]
+        assert req.headers.get("x-thinking-enabled") == "true"
+        assert req.headers.get("x-agent-session") == "session-doc-1"
+        body = json.loads(req.content.decode("utf-8"))
+        assert body.get("model") == "deepseek-reasoner"
+        assert body.get("thinking_enabled") is True
+        assert body.get("user") == "session-doc-1"
+
+
+@pytest.mark.asyncio
+async def test_translation_and_qa_share_document_session_id(feature_context):
+    client, document_id, parse_id = feature_context
+    application = client._transport.app
+
+    class SessionTrackingLLM(FakeLLM):
+        def __init__(self):
+            self.translation_sessions: list[str | None] = []
+            self.qa_sessions: list[str | None] = []
+
+        async def complete_json(
+            self, messages: list[dict[str, str]], session_id: str | None = None
+        ) -> str:
+            self.translation_sessions.append(session_id)
+            return await super().complete_json(messages)
+
+        async def stream(
+            self, messages: list[dict[str, str]], session_id: str | None = None
+        ):
+            self.qa_sessions.append(session_id)
+            async for chunk in super().stream(messages):
+                yield chunk
+
+    tracker = SessionTrackingLLM()
+    application.state.services.translation.llm = tracker
+    application.state.services.qa.llm = tracker
+
+    # 1. Trigger translation
+    t_resp = await client.post(
+        f"/api/documents/{document_id}/translate",
+        json={"parse_id": str(parse_id), "block_ids": ["b1"]},
+    )
+    assert t_resp.status_code == 202, t_resp.text
+    t_task = await wait_for_task(client, t_resp.json()["task_id"])
+    assert t_task["status"] == "succeeded", t_task
+
+    # 2. Trigger QA
+    q_resp = await client.post(
+        f"/api/documents/{document_id}/qa",
+        json={"parse_id": str(parse_id), "question": "What is the value?", "block_ids": ["b1"]},
+    )
+    assert q_resp.status_code == 202, q_resp.text
+    q_task = await wait_for_task(client, q_resp.json()["task_id"])
+    assert q_task["status"] == "succeeded", q_task
+
+    expected_session_id = f"easylearn-{document_id}"
+    assert len(tracker.translation_sessions) > 0
+    assert all(s == expected_session_id for s in tracker.translation_sessions)
+    assert len(tracker.qa_sessions) > 0
+    assert all(s == expected_session_id for s in tracker.qa_sessions)
+    assert tracker.translation_sessions[0] == tracker.qa_sessions[0] == expected_session_id
+
 
 

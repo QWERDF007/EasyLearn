@@ -20,7 +20,7 @@ from uuid import UUID, uuid4
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from easylearn.config import Settings
+from easylearn.config import LLMSettings, Settings
 from easylearn.database import Database
 from easylearn.document_ir.schema import (
     DocumentIR,
@@ -165,34 +165,72 @@ def _parse_retry_after(response: httpx.Response) -> float | None:
 class LLMClient:
     """Small OpenAI-compatible HTTP adapter; prompts and structure stay in this module."""
 
-    def __init__(self, settings: Settings, http: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        http: httpx.AsyncClient | None = None,
+        provider: str | None = None,
+        for_qa: bool = False,
+    ) -> None:
         self.settings = settings
         self.http = http
+        self.provider = provider
+        self.for_qa = for_qa
 
-    async def complete_json(self, messages: list[dict[str, str]]) -> str:
-        configuration = self.settings.llm
+    @property
+    def configuration(self) -> LLMSettings:
+        if self.for_qa:
+            return self.settings.qa_llm
+        if self.provider:
+            return self.settings.llm.for_provider(self.provider)
+        return self.settings.llm
+
+    @property
+    def api_key(self) -> str | None:
+        cfg = self.configuration
+        if cfg.api_key:
+            return cfg.api_key
+        return os.environ.get(cfg.api_key_env) if cfg.api_key_env else None
+
+    async def complete_json(
+        self, messages: list[dict[str, str]], session_id: str | None = None
+    ) -> str:
+        configuration = self.configuration
         if not configuration.model or not configuration.base_url:
             raise DomainError(
                 "LLM_NOT_CONFIGURED", "Configure an OpenAI-compatible LLM", status=503
             )
         _ensure_local_policy(configuration.base_url, configuration.local_only)
+        api_key = self.api_key
         headers = (
-            {"Authorization": f"Bearer {self.settings.llm_api_key}"}
-            if self.settings.llm_api_key
+            {"Authorization": f"Bearer {api_key}"}
+            if api_key
             else {}
         )
+        if session_id:
+            headers["x-agent-session"] = session_id
+        if self.for_qa:
+            headers["x-thinking-enabled"] = "true"
         payload: dict[str, Any] = {
             "model": configuration.model,
             "messages": messages,
             "temperature": 0.2,
         }
+        if session_id:
+            payload["user"] = session_id
+        if self.for_qa and (
+            configuration.local_only
+            or "deepseek" in configuration.base_url.lower()
+            or "deepseek" in configuration.model.lower()
+        ):
+            payload["thinking_enabled"] = True
         if configuration.reasoning_effort:
             payload["reasoning_effort"] = configuration.reasoning_effort
         if configuration.json_mode:
             payload["response_format"] = {"type": "json_object"}
-        max_retries = getattr(self.settings.llm, "max_retries", 5)
-        min_delay = getattr(self.settings.llm, "retry_min_delay", 2.0)
-        max_delay = getattr(self.settings.llm, "retry_max_delay", 30.0)
+        max_retries = getattr(configuration, "max_retries", 5)
+        min_delay = getattr(configuration, "retry_min_delay", 2.0)
+        max_delay = getattr(configuration, "retry_max_delay", 30.0)
         response: httpx.Response | None = None
         for attempt in range(max_retries + 1):
             try:
@@ -276,31 +314,46 @@ class LLMClient:
             raise DomainError("LLM_PROTOCOL_INVALID", "LLM returned an empty response")
         return content
 
-    async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
+    async def stream(
+        self, messages: list[dict[str, str]], session_id: str | None = None
+    ) -> AsyncIterator[str]:
         """Yield content deltas from an OpenAI-compatible streaming response."""
 
-        configuration = self.settings.llm
+        configuration = self.configuration
         if not configuration.model or not configuration.base_url:
             raise DomainError(
                 "LLM_NOT_CONFIGURED", "Configure an OpenAI-compatible LLM", status=503
             )
         _ensure_local_policy(configuration.base_url, configuration.local_only)
+        api_key = self.api_key
         headers = (
-            {"Authorization": f"Bearer {self.settings.llm_api_key}"}
-            if self.settings.llm_api_key
+            {"Authorization": f"Bearer {api_key}"}
+            if api_key
             else {}
         )
+        if session_id:
+            headers["x-agent-session"] = session_id
+        if self.for_qa:
+            headers["x-thinking-enabled"] = "true"
         payload: dict[str, Any] = {
             "model": configuration.model,
             "messages": messages,
             "temperature": 0.2,
             "stream": True,
         }
+        if session_id:
+            payload["user"] = session_id
+        if self.for_qa and (
+            configuration.local_only
+            or "deepseek" in configuration.base_url.lower()
+            or "deepseek" in configuration.model.lower()
+        ):
+            payload["thinking_enabled"] = True
         if configuration.reasoning_effort:
             payload["reasoning_effort"] = configuration.reasoning_effort
-        max_retries = getattr(self.settings.llm, "max_retries", 5)
-        min_delay = getattr(self.settings.llm, "retry_min_delay", 2.0)
-        max_delay = getattr(self.settings.llm, "retry_max_delay", 30.0)
+        max_retries = getattr(configuration, "max_retries", 5)
+        min_delay = getattr(configuration, "retry_min_delay", 2.0)
+        max_delay = getattr(configuration, "retry_max_delay", 30.0)
         for attempt in range(max_retries + 1):
             try:
                 async with (
@@ -390,15 +443,15 @@ class LLMClient:
                 raise DomainError("LLM_UNAVAILABLE", detail, retryable=True) from exc
 
     def _resolve_proxy(self) -> str | None:
-        if hasattr(self.settings.llm, "resolved_proxy"):
-            return self.settings.llm.resolved_proxy
-        explicit = getattr(self.settings.llm, "proxy", None)
+        if hasattr(self.configuration, "resolved_proxy"):
+            return self.configuration.resolved_proxy
+        explicit = getattr(self.configuration, "proxy", None)
         if explicit is not None:
             explicit = explicit.strip()
             if not explicit or explicit.lower() in ("none", "false", "off", "direct"):
                 return None
             return explicit
-        if not self.settings.llm.local_only:
+        if not self.configuration.local_only:
             env_proxy = (
                 os.environ.get("HTTPS_PROXY")
                 or os.environ.get("HTTP_PROXY")
@@ -419,7 +472,7 @@ class LLMClient:
             yield self.http
         else:
             proxy = self._resolve_proxy()
-            trust_env = not self.settings.llm.local_only and not proxy
+            trust_env = not self.configuration.local_only and not proxy
             async with httpx.AsyncClient(
                 trust_env=trust_env, proxy=proxy, follow_redirects=False
             ) as client:
@@ -554,7 +607,7 @@ class TranslationService:
 
             await context.publish(result_ref, noop_publish)
             return result_ref
-        concurrency = max(1, self.settings.tasks.translation_concurrency)
+        concurrency = max(1, self.settings.translation_concurrency)
         logger.info(
             "Translation started: document_id=%s, parse_id=%s, total_units=%d, "
             "to_translate=%d, batches=%d, concurrency=%d",
@@ -570,6 +623,7 @@ class TranslationService:
         completed_units = already_completed
         progress_lock = asyncio.Lock()
         start_time = time.monotonic()
+        doc_session_id = f"easylearn-{record.document_id}"
 
         async def publish_batch(
             batch: tuple[TranslationUnit, ...], batch_result: dict[str, str]
@@ -633,7 +687,7 @@ class TranslationService:
             async with semaphore:
                 await context.check()
                 t0 = time.monotonic()
-                batch_result = await self._translate_batch(batch)
+                batch_result = await self._translate_batch(batch, session_id=doc_session_id)
                 elapsed = time.monotonic() - t0
                 await publish_batch(batch, batch_result)
                 async with progress_lock:
@@ -992,7 +1046,9 @@ class TranslationService:
             for row in rows
         )
 
-    async def _translate_batch(self, units: tuple[TranslationUnit, ...]) -> dict[str, str]:
+    async def _translate_batch(
+        self, units: tuple[TranslationUnit, ...], session_id: str | None = None
+    ) -> dict[str, str]:
         completed_results: dict[str, str] = {}
         pending_units: list[TranslationUnit] = list(units)
         max_attempts = 1 + max(0, getattr(self.settings.llm, "max_retries", 2))
@@ -1002,20 +1058,22 @@ class TranslationService:
 
         for attempt in range(max_attempts):
             payload = {unit.unit_id: unit.source_text for unit in pending_units}
-            content = await self.llm.complete_json(
-                [
-                    {
-                        "role": "system",
-                        "content": (
-                            "Translate English document text into Simplified Chinese. "
-                            "Return only a JSON object mapping every supplied unit_id to one "
-                            "non-empty string. Do not add, remove, or rename IDs. Preserve "
-                            "numbers, URLs, paths, and {{PLACEHOLDER}} tokens."
-                        ),
-                    },
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-                ]
-            )
+            prompt_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "Translate English document text into Simplified Chinese. "
+                        "Return only a JSON object mapping every supplied unit_id to one "
+                        "non-empty string. Do not add, remove, or rename IDs. Preserve "
+                        "numbers, URLs, paths, and {{PLACEHOLDER}} tokens."
+                    ),
+                },
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ]
+            try:
+                content = await self.llm.complete_json(prompt_messages, session_id=session_id)
+            except TypeError:
+                content = await self.llm.complete_json(prompt_messages)
             content = _strip_code_fence(content)
             try:
                 raw_value = json.loads(content, object_pairs_hook=_unique_json_object)

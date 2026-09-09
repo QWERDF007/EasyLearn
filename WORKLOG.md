@@ -7,6 +7,35 @@
 - 无。
 
 
+### 2026-09-09 — 支持 DeepSeek 与 OpenAI 分离并发配置、会话上下文统一及 AI 解读深度思考模式
+
+**目标**
+1. 修复 FreeDeepseekAPI-EN 默认俄语环境问题，支持 `zh_CN` 与本地时区；
+2. 支持 `translation_concurrency` 在 provider 级别分别配置（`deepseek` 为 1，`openai` 为 4）；
+3. 支持同一文档的全部翻译分批与 AI 解读（QA）共享同一个会话标识符（`easylearn-{document_id}`），使 AI 解读具备完整的文档翻译上下文；
+4. 支持 AI 解读自动或配置开启 DeepSeek Web 的【深度思考】（DeepThink/Reasoner 模式），并在流式响应中无缝支持思考过程分离。
+
+**当前状态**
+- 已完成：修复 `FreeDeepseekAPI-EN` 中俄文请求头硬编码（`ru` / `14400`），支持环境变量 `DEEPSEEK_LOCALE`（默认 `zh_CN`）与 `DEEPSEEK_TIMEZONE_OFFSET`（默认 `-28800`），并在请求体和头部支持 `thinking_enabled` 动态开启；
+- 已完成：在 `LLMProviderSettings` 与 `LLMSettings` 中新增 `translation_concurrency`（动态解析当前 provider）与 `qa_model` 支持，deepseek provider 默认解析为 `deepseek-reasoner`（对应 Web 深度思考）；
+- 已完成：在 `translation.py` 与 `qa.py` 中为同文档请求传递统一会话 ID `easylearn-{document_id}`，并通过 `x-agent-session` 与 `user` 字段透传给 FreeDeepseekAPI-EN；
+- 已完成：`LLMClient` 针对 QA 初始化（`for_qa=True`）时自动携带 `x-thinking-enabled: "true"` 与 `thinking_enabled: True`，并使用 `qa_model`；流式输出正确过滤 `reasoning_content`，避免干扰正文及 `[1]` 引用验证；
+- 已完成：在 `config.toml` 与 `config.example.toml` 中配置 `[llm.providers.deepseek]` 为并发 1、`qa_model = "deepseek-reasoner"`；`[llm.providers.openai]` 为并发 4；
+- 已完成：编写并执行单元测试与真实服务联调，涵盖配置动态解析、会话继承及真实 DeepSeek 深度思考验证。
+
+**验证证据**
+- 真实调用本地 FreeDeepseekAPI-EN（`http://127.0.0.1:9655/v1`）：
+  - `model="deepseek-chat"` 翻译 "Hello world" 成功；
+  - 同一会话 `test-mix-123` 下执行 `model="deepseek-reasoner"` 提问，DeepSeek 成功输出 354 字符的思考链（`reasoning_content`）并正确回答 "您刚才让我翻译的是 'Hello world'"，证明多轮会话继承与深度思考完美运作；
+  - 流式测试中 `reasoning_content` 块被精准分离，正文顺畅流出；
+- `pytest tests/v3/test_config.py tests/v3/test_features.py tests/v3/test_app.py`：64 passed in 8.66s；
+- `ruff check src tests`：All checks passed!。
+
+**下一步**
+- 提交代码并向用户汇报。
+
+
+
 ### 2026-09-09 — 对齐 config.toml 与 config.example.toml 全量配置结构
 
 **目标**

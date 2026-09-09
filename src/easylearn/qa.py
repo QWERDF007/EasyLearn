@@ -250,22 +250,26 @@ class QAService:
             question,
             len(evidence),
         )
+        doc_session_id = f"easylearn-{record.document_id}"
         try:
             await context.progress(0.1, "Generating answer")
-            async for chunk in self.llm.stream(
-                [
-                    {
-                        "role": "system",
-                        "content": (
-                            "Answer only from the supplied evidence. "
-                            "Cite supporting evidence with the exact bracket number such as [1]. "
-                            "If evidence is insufficient, say so plainly; "
-                            "never invent facts or citation numbers."
-                        ),
-                    },
-                    {"role": "user", "content": f"Question: {question}\n\n{prompt}"},
-                ]
-            ):
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "Answer only from the supplied evidence. "
+                        "Cite supporting evidence with the exact bracket number such as [1]. "
+                        "If evidence is insufficient, say so plainly; "
+                        "never invent facts or citation numbers."
+                    ),
+                },
+                {"role": "user", "content": f"Question: {question}\n\n{prompt}"},
+            ]
+            try:
+                stream_iter = self.llm.stream(messages, session_id=doc_session_id)
+            except TypeError:
+                stream_iter = self.llm.stream(messages)
+            async for chunk in stream_iter:
                 await context.append_answer(chunk)
             await context.check()
             answer = record.answer or ""

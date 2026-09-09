@@ -3,6 +3,7 @@
 import os
 import tomllib
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -72,15 +73,27 @@ class MinerUSettings(_Config):
 class LLMProviderSettings(_Config):
     base_url: str = Field(default="http://127.0.0.1:8000/v1", min_length=1)
     model: str = Field(default="", max_length=255)
+    qa_model: str | None = Field(default=None, max_length=255)
     api_key: str | None = None
     api_key_env: str | None = None
     local_only: bool = False
     json_mode: bool = False
     reasoning_effort: str | None = None
+    translation_concurrency: int | None = Field(default=None, ge=1, le=16)
+
+    @property
+    def resolved_qa_model(self) -> str:
+        if self.qa_model:
+            return self.qa_model
+        if self.model == "deepseek-chat" or "deepseek" in self.base_url.lower():
+            return "deepseek-reasoner"
+        return self.model
 
 
 class LLMSettings(_Config):
     active_provider: str | None = None
+    qa_provider: str | None = None
+    qa_model: str | None = None
     providers: dict[str, LLMProviderSettings] = Field(default_factory=dict)
     base_url: str = "http://127.0.0.1:8000/v1"
     model: str = ""
@@ -90,31 +103,89 @@ class LLMSettings(_Config):
     local_only: bool = True
     json_mode: bool = False
     reasoning_effort: str | None = None
+    translation_concurrency: int | None = Field(default=None, ge=1, le=16)
     proxy: str | None = None
     max_retries: int = Field(default=5, ge=0, le=10)
     retry_min_delay: float = Field(default=2.0, ge=0.0, le=60.0)
     retry_max_delay: float = Field(default=30.0, ge=0.0, le=300.0)
 
-    @model_validator(mode="after")
-    def resolve_provider(self) -> "LLMSettings":
-        if not self.providers:
-            return self
-        if not self.active_provider or self.active_provider not in self.providers:
-            configured = list(self.providers.keys())
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_provider(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        providers = data.get("providers")
+        if not providers or not isinstance(providers, dict):
+            return data
+        active_provider = data.get("active_provider")
+        if not active_provider or active_provider not in providers:
+            configured = list(providers.keys())
             raise ValueError(
-                f"LLM active_provider '{self.active_provider}' not found in configured providers: "
+                f"LLM active_provider '{active_provider}' not found in configured providers: "
                 f"{configured}"
             )
-        active = self.providers[self.active_provider]
+        qa_provider = data.get("qa_provider")
+        if qa_provider and qa_provider not in providers:
+            configured = list(providers.keys())
+            raise ValueError(
+                f"LLM qa_provider '{qa_provider}' not found in configured providers: "
+                f"{configured}"
+            )
+        active = providers[active_provider]
+        if isinstance(active, BaseModel):
+            active_dict = active.model_dump()
+            resolved_qa = getattr(
+                active, "resolved_qa_model", active_dict.get("qa_model") or active_dict.get("model")
+            )
+        elif isinstance(active, dict):
+            active_dict = dict(active)
+            qa_m = active_dict.get("qa_model")
+            m = str(active_dict.get("model") or "")
+            base_u = str(active_dict.get("base_url") or "")
+            if qa_m:
+                resolved_qa = qa_m
+            elif m == "deepseek-chat" or "deepseek" in base_u.lower():
+                resolved_qa = "deepseek-reasoner"
+            else:
+                resolved_qa = m
+        else:
+            return data
+
+        updated = dict(data)
+        updated["base_url"] = active_dict.get(
+            "base_url", updated.get("base_url", "http://127.0.0.1:8000/v1")
+        )
+        updated["model"] = active_dict.get("model", updated.get("model", ""))
+        updated["qa_model"] = resolved_qa
+        updated["api_key"] = active_dict.get("api_key", updated.get("api_key"))
+        updated["api_key_env"] = active_dict.get("api_key_env", updated.get("api_key_env"))
+        updated["local_only"] = active_dict.get("local_only", updated.get("local_only", True))
+        updated["reasoning_effort"] = active_dict.get(
+            "reasoning_effort", updated.get("reasoning_effort")
+        )
+        updated["json_mode"] = active_dict.get("json_mode", updated.get("json_mode", False))
+        updated["translation_concurrency"] = active_dict.get(
+            "translation_concurrency", updated.get("translation_concurrency")
+        )
+        return updated
+
+    def for_provider(self, provider_name: str | None, for_qa: bool = False) -> "LLMSettings":
+        if not provider_name or not self.providers or provider_name not in self.providers:
+            return self
+        active = self.providers[provider_name]
+        selected_model = active.resolved_qa_model if for_qa else active.model
         return self.model_copy(
             update={
+                "active_provider": provider_name,
                 "base_url": active.base_url,
-                "model": active.model,
+                "model": selected_model,
+                "qa_model": active.resolved_qa_model,
                 "api_key": active.api_key,
                 "api_key_env": active.api_key_env,
                 "local_only": active.local_only,
                 "reasoning_effort": active.reasoning_effort,
                 "json_mode": active.json_mode,
+                "translation_concurrency": active.translation_concurrency,
             }
         )
 
@@ -268,6 +339,24 @@ class Settings(BaseModel):
         if self.llm.api_key:
             return self.llm.api_key
         return os.environ.get(self.llm.api_key_env) if self.llm.api_key_env else None
+
+    @property
+    def translation_concurrency(self) -> int:
+        if self.llm.translation_concurrency is not None:
+            return self.llm.translation_concurrency
+        return self.tasks.translation_concurrency
+
+    @property
+    def qa_llm(self) -> LLMSettings:
+        target_provider = self.llm.qa_provider or self.llm.active_provider
+        return self.llm.for_provider(target_provider, for_qa=True)
+
+    @property
+    def qa_llm_api_key(self) -> str | None:
+        target = self.qa_llm
+        if target.api_key:
+            return target.api_key
+        return os.environ.get(target.api_key_env) if target.api_key_env else None
 
 
 def _load_dotenv(path: Path) -> None:

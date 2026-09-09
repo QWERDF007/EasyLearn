@@ -111,8 +111,10 @@ def test_config_llm_provider_switching_deepseek_and_openai(
         "[llm.providers.deepseek]\n"
         'base_url = "http://127.0.0.1:9655/v1"\n'
         'model = "deepseek-chat"\n'
+        'qa_model = "deepseek-reasoner"\n'
         'api_key = "sk-freedeepseek"\n'
         "local_only = true\n"
+        "translation_concurrency = 1\n"
         "\n"
         "[llm.providers.openai]\n"
         'base_url = "https://api.pinaic.com/v1"\n'
@@ -120,6 +122,7 @@ def test_config_llm_provider_switching_deepseek_and_openai(
         'api_key_env = "TEST_PINAI_KEY"\n'
         "local_only = false\n"
         'reasoning_effort = "low"\n'
+        "translation_concurrency = 4\n"
     )
     config = tmp_path / "config.toml"
     config.write_text(config_content, encoding="utf-8")
@@ -131,6 +134,8 @@ def test_config_llm_provider_switching_deepseek_and_openai(
     assert settings.llm.model == "deepseek-chat"
     assert settings.llm.local_only is True
     assert settings.llm_api_key == "sk-freedeepseek"
+    assert settings.translation_concurrency == 1
+    assert settings.qa_llm.model == "deepseek-reasoner"
     # Proxy is kept in settings.llm.proxy, but resolved_proxy automatically bypasses it
     assert settings.llm.proxy == "http://127.0.0.1:7890"
     assert settings.llm.resolved_proxy is None
@@ -147,8 +152,32 @@ def test_config_llm_provider_switching_deepseek_and_openai(
     assert settings_openai.llm.local_only is False
     assert settings_openai.llm.reasoning_effort == "low"
     assert settings_openai.llm_api_key == "secret-pinai-key"
+    assert settings_openai.translation_concurrency == 4
+    assert settings_openai.qa_llm.model == "gpt-5.6-luna"
     assert settings_openai.llm.proxy == "http://127.0.0.1:7890"
     assert settings_openai.llm.resolved_proxy == "http://127.0.0.1:7890"
+
+
+def test_config_qa_provider_override(tmp_path: Path):
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "[llm]\n"
+        'active_provider = "deepseek"\n'
+        'qa_provider = "openai"\n'
+        "[llm.providers.deepseek]\n"
+        'base_url = "http://127.0.0.1:9655/v1"\n'
+        'model = "deepseek-chat"\n'
+        "[llm.providers.openai]\n"
+        'base_url = "https://api.pinaic.com/v1"\n'
+        'model = "gpt-5.6-luna"\n',
+        encoding="utf-8",
+    )
+    settings = Settings.load(config)
+    assert settings.llm.active_provider == "deepseek"
+    assert settings.llm.model == "deepseek-chat"
+    assert settings.llm.qa_provider == "openai"
+    assert settings.qa_llm.active_provider == "openai"
+    assert settings.qa_llm.model == "gpt-5.6-luna"
 
 
 def test_config_llm_invalid_provider_raises(tmp_path: Path):
@@ -163,6 +192,23 @@ def test_config_llm_invalid_provider_raises(tmp_path: Path):
     )
     with pytest.raises(ValueError, match="active_provider 'unknown_provider' not found"):
         Settings.load(config)
+
+
+def test_config_qa_model_defaults_to_deepseek_reasoner(tmp_path: Path):
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "[llm]\n"
+        'active_provider = "deepseek"\n'
+        "[llm.providers.deepseek]\n"
+        'base_url = "http://127.0.0.1:9655/v1"\n'
+        'model = "deepseek-chat"\n',
+        encoding="utf-8",
+    )
+    settings = Settings.load(config)
+    assert settings.llm.model == "deepseek-chat"
+    assert settings.qa_llm.model == "deepseek-reasoner"
+
+
 
 
 
