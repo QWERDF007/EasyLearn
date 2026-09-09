@@ -709,6 +709,12 @@ class TranslationService:
                     fraction,
                     f"已翻译 {curr_completed_units}/{total_units} 单元 ({percent}%)",
                 )
+                active_prov = (getattr(self.settings.llm, "active_provider", None) or "").lower()
+                active_url = (getattr(self.settings.llm, "base_url", None) or "").lower()
+                if (
+                    "deepseek" in active_prov or "deepseek" in active_url
+                ) and index + 1 < len(batches):
+                    await asyncio.sleep(1.0)
                 return batch_result
 
         tasks = [
@@ -1065,7 +1071,9 @@ class TranslationService:
                         "Translate English document text into Simplified Chinese. "
                         "Return only a JSON object mapping every supplied unit_id to one "
                         "non-empty string. Do not add, remove, or rename IDs. Preserve "
-                        "numbers, URLs, paths, and {{PLACEHOLDER}} tokens."
+                        "numbers, URLs, paths, and {{PLACEHOLDER}} tokens. "
+                        "Only translate the provided unit_id keys; "
+                        "do not generate or predict any other keys."
                     ),
                 },
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},

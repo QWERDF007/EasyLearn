@@ -7,6 +7,35 @@
 - 无。
 
 
+### 2026-09-09 — 彻底解决 DeepSeek Web 会话分裂与频繁新建会话问题
+
+**目标**
+1. 解决文档批量翻译和 AI 解读过程中 DeepSeek Web 侧产生多个分裂会话（如 `{"p8.b1...`, `ViTADMambaAD`, `继续翻译`, `翻译JSON对象`）的问题；
+2. 保证整个文档的所有批次翻译与 AI 解读严格稳定复用同一 DeepSeek Web 远端会话；
+3. 杜绝连续请求过快触发 DeepSeek 502/400 频控熔断导致的会话重建。
+
+**当前状态**
+- 已完成：在 FreeDeepseekAPI-EN（`server.js`）中引入显式会话保护（`isExplicitSession`）：
+  - 显式会话永久豁免深度（`MAX_MESSAGE_DEPTH`）与 TTL 超时自动重置；
+  - 账号处于 cooldown 时对显式会话直接抛出 429 速率限制让客户端退避重试，禁止重置 `session.id`；
+  - 发生非 404 的上游瞬态错误（如 400/500/502/超时）时保留远端会话 ID，禁止调用 `resetRemoteSession` 和 `chat_session/create`；
+  - 空响应重试、工具调用修复与单轮提示词格式化全面支持显式会话保持，并移除单轮对话中多余的 `User:` 伪剧本前缀；
+- 已完成：在 `translation.py` 的 `translate_worker` 中引入针对 deepseek provider 的 1.0 秒节流间隔（`await asyncio.sleep(1.0)`），彻底消除因连续 ~200ms 突发请求触发的 Web 端限频 502 错误；
+- 已完成：强化批量翻译 prompt，明确要求只返回提供的单元 ID，禁止模型基于上下文前瞻推测翻译后续表格行；
+- 已完成：同步更新并重启本地运行的 FreeDeepseekAPI-EN 服务（端口 9655），补全 Node 端 42 项单元测试。
+
+**验证证据**
+- `node --test tests/unit.test.js`（FreeDeepseekAPI-EN）：42 passed in 437ms（新增显式会话持久化与降级保护测试）；
+- 真实远端多轮测试（Turn 1 翻译 apple -> 苹果, Turn 2 翻译 banana -> 香蕉, Turn 3 deepseek-reasoner 深度思考提问）：
+  - 服务端日志确认为 `Created new session: 08695d98-f07d-45a1-953d-673ed2768584`，随后 Turn 2 和 Turn 3 均严格复用 `Reusing session: 08695d98-f07d-45a1-953d-673ed2768584`；
+  - Turn 3 成功触发 258 字符思考链，并准确回答“您第一次让我翻译的是 apple，第二次是 banana”，全流程未产生任何多余会话；
+- `pytest tests/v3/test_config.py tests/v3/test_features.py tests/v3/test_app.py`：64 passed in 22.47s；
+- `ruff check src tests`：All checks passed!。
+
+**下一步**
+- 向用户总结汇报并等待下一步指令。
+
+
 ### 2026-09-09 — 支持 DeepSeek 与 OpenAI 分离并发配置、会话上下文统一及 AI 解读深度思考模式
 
 **目标**
