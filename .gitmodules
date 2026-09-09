@@ -2,3 +2,6 @@
 	path = 3rdparty/MinerU
 	url = https://github.com/opendatalab/MinerU.git
 	branch = master
+[submodule "3rdparty/FreeDeepseekAPI-EN"]
+	path = 3rdparty/FreeDeepseekAPI-EN
+	url = https://github.com/atharvotech/FreeDeepseekAPI-EN

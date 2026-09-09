@@ -126,8 +126,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 max_upload_bytes=settings.max_upload_bytes,
                 cache=cache,
             )
+            proxy = settings.llm.resolved_proxy
             http = httpx.AsyncClient(
-                trust_env=not settings.llm.local_only, follow_redirects=False
+                trust_env=not settings.llm.local_only and not proxy,
+                proxy=proxy,
+                follow_redirects=False,
             )
             parser = ParseService(database, files, documents, manager, settings)
             source_edits = SourceEditService(database, documents)
@@ -251,6 +254,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "configured": bool(
                     settings.llm.model and settings.llm.base_url and settings.llm_api_key
                 ),
+                "active_provider": settings.llm.active_provider,
                 "model": settings.llm.model,
                 "base_url": settings.llm.base_url,
                 "has_api_key": bool(settings.llm_api_key),

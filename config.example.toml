@@ -20,12 +20,12 @@ max_documents = 3
 
 [mineru]
 default_model_id = "MinerU2.5-Pro-2605-1.2B"
+timeout_seconds = 900
 # 模型候选必须显式登记；前端不提供模型选择，解析默认使用 default_model_id。
 [[mineru.models]]
 model_id = "MinerU2.5-Pro-2605-1.2B"
 name = "MinerU2.5-Pro-2605-1.2B"
 path = "F:/models/MinerU2.5-Pro-2605-1.2B"
-timeout_seconds = 900
 
 [mineru.parse]
 backend = "vlm-engine"
@@ -63,16 +63,24 @@ max_page_points = 14400
 render_edge_pixels = 1024
 
 [llm]
-base_url = "http://127.0.0.1:8000/v1"
-model = ""
-# 填写推理服务实际提供的模型名后才会启用翻译/问答。
-# api_key_env = "EASYLEARN_LLM_API_KEY"
+active_provider = "deepseek"
+proxy = "http://127.0.0.1:7890"
 timeout_seconds = 600
-local_only = true
-json_mode = false
 max_retries = 5
 retry_min_delay = 2.0
 retry_max_delay = 30.0
+
+[llm.providers.deepseek]
+base_url = "http://127.0.0.1:9655/v1"
+model = "deepseek-chat"
+api_key = "sk-freedeepseek"
+local_only = true
+
+[llm.providers.openai]
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o"
+api_key_env = "OPENAI_API_KEY"
+local_only = false
 
 [files]
 max_upload_mb = 100

@@ -98,3 +98,71 @@ def test_config_resolves_translation_concurrency(tmp_path: Path):
     assert settings.tasks.translation_concurrency == 6
 
 
+def test_config_llm_provider_switching_deepseek_and_openai(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("TEST_PINAI_KEY", "secret-pinai-key")
+    config_content = (
+        "[llm]\n"
+        'active_provider = "deepseek"\n'
+        'proxy = "http://127.0.0.1:7890"\n'
+        "timeout_seconds = 300.0\n"
+        "\n"
+        "[llm.providers.deepseek]\n"
+        'base_url = "http://127.0.0.1:9655/v1"\n'
+        'model = "deepseek-chat"\n'
+        'api_key = "sk-freedeepseek"\n'
+        "local_only = true\n"
+        "\n"
+        "[llm.providers.openai]\n"
+        'base_url = "https://api.pinaic.com/v1"\n'
+        'model = "gpt-5.6-luna"\n'
+        'api_key_env = "TEST_PINAI_KEY"\n'
+        "local_only = false\n"
+        'reasoning_effort = "low"\n'
+    )
+    config = tmp_path / "config.toml"
+    config.write_text(config_content, encoding="utf-8")
+
+    # 1. When active_provider is deepseek
+    settings = Settings.load(config)
+    assert settings.llm.active_provider == "deepseek"
+    assert settings.llm.base_url == "http://127.0.0.1:9655/v1"
+    assert settings.llm.model == "deepseek-chat"
+    assert settings.llm.local_only is True
+    assert settings.llm_api_key == "sk-freedeepseek"
+    # Proxy is kept in settings.llm.proxy, but resolved_proxy automatically bypasses it
+    assert settings.llm.proxy == "http://127.0.0.1:7890"
+    assert settings.llm.resolved_proxy is None
+
+    # 2. When active_provider is switched to openai
+    openai_toml = config_content.replace(
+        'active_provider = "deepseek"', 'active_provider = "openai"'
+    )
+    config.write_text(openai_toml, encoding="utf-8")
+    settings_openai = Settings.load(config)
+    assert settings_openai.llm.active_provider == "openai"
+    assert settings_openai.llm.base_url == "https://api.pinaic.com/v1"
+    assert settings_openai.llm.model == "gpt-5.6-luna"
+    assert settings_openai.llm.local_only is False
+    assert settings_openai.llm.reasoning_effort == "low"
+    assert settings_openai.llm_api_key == "secret-pinai-key"
+    assert settings_openai.llm.proxy == "http://127.0.0.1:7890"
+    assert settings_openai.llm.resolved_proxy == "http://127.0.0.1:7890"
+
+
+def test_config_llm_invalid_provider_raises(tmp_path: Path):
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "[llm]\n"
+        'active_provider = "unknown_provider"\n'
+        "[llm.providers.deepseek]\n"
+        'base_url = "http://127.0.0.1:9655/v1"\n'
+        'model = "deepseek-chat"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="active_provider 'unknown_provider' not found"):
+        Settings.load(config)
+
+
+

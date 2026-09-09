@@ -69,7 +69,19 @@ class MinerUSettings(_Config):
             raise ValueError("MinerU default_model_id must reference a configured model")
         return self
 
+class LLMProviderSettings(_Config):
+    base_url: str = Field(default="http://127.0.0.1:8000/v1", min_length=1)
+    model: str = Field(default="", max_length=255)
+    api_key: str | None = None
+    api_key_env: str | None = None
+    local_only: bool = False
+    json_mode: bool = False
+    reasoning_effort: str | None = None
+
+
 class LLMSettings(_Config):
+    active_provider: str | None = None
+    providers: dict[str, LLMProviderSettings] = Field(default_factory=dict)
     base_url: str = "http://127.0.0.1:8000/v1"
     model: str = ""
     api_key: str | None = None
@@ -82,6 +94,56 @@ class LLMSettings(_Config):
     max_retries: int = Field(default=5, ge=0, le=10)
     retry_min_delay: float = Field(default=2.0, ge=0.0, le=60.0)
     retry_max_delay: float = Field(default=30.0, ge=0.0, le=300.0)
+
+    @model_validator(mode="after")
+    def resolve_provider(self) -> "LLMSettings":
+        if not self.providers:
+            return self
+        if not self.active_provider or self.active_provider not in self.providers:
+            configured = list(self.providers.keys())
+            raise ValueError(
+                f"LLM active_provider '{self.active_provider}' not found in configured providers: "
+                f"{configured}"
+            )
+        active = self.providers[self.active_provider]
+        return self.model_copy(
+            update={
+                "base_url": active.base_url,
+                "model": active.model,
+                "api_key": active.api_key,
+                "api_key_env": active.api_key_env,
+                "local_only": active.local_only,
+                "reasoning_effort": active.reasoning_effort,
+                "json_mode": active.json_mode,
+            }
+        )
+
+    @property
+    def resolved_proxy(self) -> str | None:
+        from urllib.parse import urlparse
+
+        hostname = (urlparse(self.base_url).hostname or "").lower()
+        if self.local_only or hostname in {"127.0.0.1", "localhost", "::1"}:
+            return None
+        if self.proxy is not None:
+            explicit = self.proxy.strip()
+            if not explicit or explicit.lower() in ("none", "false", "off", "direct"):
+                return None
+            return explicit
+        env_proxy = (
+            os.environ.get("HTTPS_PROXY")
+            or os.environ.get("HTTP_PROXY")
+            or os.environ.get("ALL_PROXY")
+        )
+        if env_proxy:
+            return env_proxy
+        try:
+            import urllib.request
+
+            system_proxies = urllib.request.getproxies()
+            return system_proxies.get("https") or system_proxies.get("http")
+        except Exception:
+            return None
 
 
 class FileSettings(_Config):

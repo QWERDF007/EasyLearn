@@ -390,6 +390,8 @@ class LLMClient:
                 raise DomainError("LLM_UNAVAILABLE", detail, retryable=True) from exc
 
     def _resolve_proxy(self) -> str | None:
+        if hasattr(self.settings.llm, "resolved_proxy"):
+            return self.settings.llm.resolved_proxy
         explicit = getattr(self.settings.llm, "proxy", None)
         if explicit is not None:
             explicit = explicit.strip()
@@ -416,8 +418,8 @@ class LLMClient:
         if self.http is not None:
             yield self.http
         else:
-            trust_env = not self.settings.llm.local_only
             proxy = self._resolve_proxy()
+            trust_env = not self.settings.llm.local_only and not proxy
             async with httpx.AsyncClient(
                 trust_env=trust_env, proxy=proxy, follow_redirects=False
             ) as client:

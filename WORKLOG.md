@@ -7,6 +7,36 @@
 - 无。
 
 
+### 2026-09-09 — 集成 FreeDeepseekAPI-EN 为子模块并支持 DeepSeek 与 OpenAI 兼容服务一键切换及本地代理智能绕过
+
+**目标**
+1. 将 `https://github.com/atharvotech/FreeDeepseekAPI-EN` 作为 git submodule 引入至 `3rdparty/FreeDeepseekAPI-EN`；
+2. 改造 `config.toml` 与配置模型，支持通过 `active_provider` 在本地 `deepseek`（由 FreeDeepseekAPI-EN 驱动）与外部 `openai` 兼容格式之间一键切换；
+3. 保留全局 `proxy = "http://127.0.0.1:7890"`，并在代码中智能处理代理：当激活本地 deepseek 转发或目标为本地回环（127.0.0.1/localhost/::1）时自动绕过代理直连，切换至外部 API 时自动恢复代理。
+
+**当前状态**
+- 已完成：通过 `git submodule add` 将 `FreeDeepseekAPI-EN` 添加至 `3rdparty/FreeDeepseekAPI-EN`，并在 `.gitmodules` 中固化配置；
+- 已完成：在 `src/easylearn/config.py` 中新增强类型 `LLMProviderSettings`，扩展 `LLMSettings` 支持 `active_provider` 与 `providers` 字典映射，并通过 `model_validator` 实现当前激活供应商属性向根设置无缝透传，保持单一真相源（SSOT）；
+- 已完成：在 `LLMSettings` 中新增 `resolved_proxy` 属性，当 `local_only=True` 或目标主机为回环地址时返回 `None`，外部地址时返回配置的代理；
+- 已完成：更新 `src/easylearn/translation.py` 中 `_resolve_proxy()` 及 `_client()`，在本地转发时禁用代理及环境变量代理污染；
+- 已完成：更新 `src/easylearn/main.py` 全局 HTTP 客户端初始化，传递 `resolved_proxy`，并在 `/api/health` 暴露 `active_provider`；
+- 已完成：更新 `config.toml` 与 `config.example.toml`，配置 `deepseek` 与 `openai` 两套 provider profile，默认启用 `deepseek` 并保留 proxy；
+- 已完成：编写 `tests/v3/test_config.py` 自动化测试，覆盖 provider 切换、代理绕过及非法 provider 拦截。
+
+**验证证据**
+- `git submodule status`：`3rdparty/FreeDeepseekAPI-EN` 子模块正确就绪；
+- `pytest tests/v3/test_config.py tests/v3/test_app.py tests/v3/test_tasks.py`：39 passed in 2.07s；
+- `ruff check src tests`：All checks passed!；
+- 真实环境联调（本地运行中的 `http://127.0.0.1:9655/v1`）：
+  - `LLMClient.complete_json()` 成功返回 `{"greeting":"Hello EasyLearn"}`；
+  - `LLMClient.stream()` 真实流式翻译返回 `{"u1":"敏捷的棕色狐狸跳过了懒惰的狗。"}`；
+  - `/api/health` 正确报告 `configured: True, active_provider: deepseek, has_api_key: True`；
+  - 本地回环请求成功直连，未被 `http://127.0.0.1:7890` 代理拦截。
+
+**下一步**
+- 保持代码干净与无状态交付。
+
+
 ### 2026-09-09 — 修复内容块首次点击即平滑居中（杜绝二次点击问题）并统一解析区图片/表格块主题色系
 
 **目标**
