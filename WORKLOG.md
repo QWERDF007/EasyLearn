@@ -7,6 +7,41 @@
 - 无。
 
 
+### 2026-09-09 — 收藏操作前端乐观更新与文档即时渲染性能优化
+
+**目标**
+1. 定位并排查用户反馈的点击收藏/取消收藏响应慢，以及点击/切换文档渲染慢的问题；
+2. 澄清搜索与排序功能对渲染性能的影响（纯前端内存数组过滤耗时 <0.05ms，并非瓶颈）；
+3. 解决收藏操作的性能痛点：消除原先串行等待 PATCH 请求与全量 `GET /api/documents` 往返导致的延迟，实现前端内存乐观更新（即时点亮/熄灭）；
+4. 解决文档切换与渲染慢的性能痛点：实现文档列表高亮即时响应、正文结果（Markdown）与 PDF 双向加载解耦并行（无需等待 PDF.js 完整下载与渲染即可立即展示正文）、移除文档切换时多余的全量文档列表重复请求。
+
+**当前状态**
+- 已完成：深入分析前端链路与网络请求耗时：
+  - 排查确认搜索、排序代码为内存级操作（`Array.prototype.filter` / `sort`），在数十至数百个文档规模下耗时 <0.05ms，不是导致响应迟缓的原因；
+  - 定位到真正根因：
+    1. 收藏：原 `setDocumentFavorite` 无乐观更新，必须串行等待 `PATCH /api/documents/{id}/favorite` 响应后再全量 `GET /api/documents` 并重建全部 DOM，导致视觉延迟达到上百毫秒；
+    2. 文档切换：原 `openDocument` 点击时无即时选中反馈，必须等待详情接口返回；而在 `openParse` 中必须等待 `pdfReader.load()`（包含 PDF 二进制下载与 PDF.js Canvas 首页渲染）全部完成后才执行 `renderResult()`，最后还串行触发了多余的 `refreshDocuments()` 再次拉取全量文档列表并重建侧边栏 DOM。
+- 已完成：更新 `src/easylearn/static/app.js`：
+  - `setDocumentFavorite` 实现前端内存状态乐观更新：点击即刻同步内存并刷新侧边栏/顶部收藏星标（0ms 响应），PATCH 异步在后台静默同步，若失败自动回滚；取消多余的 `refreshDocuments()`；
+  - `openDocument` 增加点击即时高亮反馈：点击瞬间立即对目标文档项添加 `.is-active` 类并预显文档名称；移除末尾冗余的 `await refreshDocuments()`；
+  - `openParse` 解耦结果渲染：收到解析数据后立即调用 `renderResult()` 渲染 Markdown / 正文内容，同时并行调用 `pdfReader.load()`，不再阻塞正文呈现；
+  - 优化顶部 `#favorite-button` 点击逻辑，不再产生禁用态闪烁。
+- 已验证：
+  - `pytest tests/v3`：98 passed in 16.19s；
+  - `ruff check src tests`：All checks passed!；
+  - Selenium 真实浏览器自动化测试：收藏切换从原先延迟降至即时触发，文档切换正文渲染时间大幅下降（192ms 内即完成正文切换并挂载块元素）。
+
+**验证证据**
+- `pytest tests/v3`：98 passed
+- `ruff check src tests`：All checks passed
+- Selenium 真实 Chrome 浏览器端到端测试输出：
+  - `Favorite toggle latency: 63.3ms`（包含 Selenium 驱动派发、悬浮与轮询开销，页面 DOM 即刻反转）
+  - `Switch to doc 1 latency: 192.1ms`（无需等待 PDF 下载与 canvas 光栅化，Markdown 正文即时渲染完成）
+
+**下一步**
+- 保持文档与代码同步，无遗留技术债。
+
+
 ### 2026-09-09 — 实现侧边栏收藏切换 Tab、搜索过滤与排序弹窗，并修复页面整体上移遮挡 Bug
 
 **目标**

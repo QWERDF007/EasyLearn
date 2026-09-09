@@ -554,24 +554,70 @@ async function refreshDocuments() {
 }
 
 async function setDocumentFavorite(documentId, favorite) {
+  const target = state.documents.find((d) => d.document_id === documentId);
+  const previousDocFavorite = target?.favorite;
+  const isCurrentDoc = state.document?.document_id === documentId;
+  const previousCurrentFavorite = state.document?.favorite;
+
+  if (target) {
+    target.favorite = favorite;
+  }
+  if (isCurrentDoc && state.document) {
+    state.document.favorite = favorite;
+    syncFavoriteButton();
+  }
+  renderDocumentList();
+
   try {
     const updated = await api(`/api/documents/${documentId}/favorite`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ favorite }),
     });
-    if (state.document?.document_id === documentId) {
+    if (target) {
+      Object.assign(target, updated);
+    }
+    if (isCurrentDoc && state.document) {
       state.document = updated;
       syncFavoriteButton();
     }
-    await refreshDocuments();
   } catch (error) {
+    if (target && previousDocFavorite !== undefined) {
+      target.favorite = previousDocFavorite;
+    }
+    if (isCurrentDoc && state.document && previousCurrentFavorite !== undefined) {
+      state.document.favorite = previousCurrentFavorite;
+      syncFavoriteButton();
+    }
+    renderDocumentList();
     notify(error.message);
   }
 }
 
 async function openDocument(documentId) {
   const generation = ++state.documentLoadGeneration;
+  for (const el of document.querySelectorAll("#document-list .document-item")) {
+    if (el.dataset.documentId === documentId) {
+      el.classList.add("is-active");
+    } else {
+      el.classList.remove("is-active");
+    }
+  }
+  const cachedDoc = state.documents.find((d) => d.document_id === documentId);
+  if (cachedDoc) {
+    $("#document-name").textContent = cachedDoc.name;
+    const sizeElem = $("#document-size");
+    if (sizeElem && cachedDoc.size_bytes) sizeElem.textContent = formatFileSize(cachedDoc.size_bytes);
+    if (cachedDoc.favorite !== undefined) {
+      const favBtn = $("#favorite-button");
+      if (favBtn) {
+        favBtn.classList.toggle("is-active", Boolean(cachedDoc.favorite));
+        const icon = favBtn.querySelector("span");
+        if (icon) icon.textContent = cachedDoc.favorite ? "★" : "☆";
+      }
+    }
+  }
+
   try {
     const loaded = await api(`/api/documents/${documentId}`);
     if (generation !== state.documentLoadGeneration) return;
@@ -615,7 +661,6 @@ async function openDocument(documentId) {
       $("#document-status").textContent = "等待解析";
       renderResult();
     }
-    await refreshDocuments();
   } catch (error) {
     if (generation === state.documentLoadGeneration) notify(error.message);
   }
@@ -649,6 +694,7 @@ async function openParse(parseId, documentGeneration = state.documentLoadGenerat
     renderVersionSelect(parseId);
     syncToolbar();
     $("#document-status").textContent = "解析结果已加载";
+    renderResult();
     await pdfReader.load(
       `/api/documents/${documentId}/files/preview:${parseId}`,
       parse.pages,
@@ -656,7 +702,6 @@ async function openParse(parseId, documentGeneration = state.documentLoadGenerat
     );
     if (generation !== state.parseLoadGeneration || documentGeneration !== state.documentLoadGeneration) return;
     pdfReader.setSelected(state.selectedBlocks);
-    renderResult();
   } catch (error) {
     if (generation === state.parseLoadGeneration) notify(error.message);
   }
@@ -2386,16 +2431,9 @@ $("#reparse-button").addEventListener("click", async () => {
   });
 });
 
-$("#favorite-button")?.addEventListener("click", async () => {
-  if (!state.document || $("#favorite-button").disabled) return;
-  $("#favorite-button").disabled = true;
-  try {
-    await setDocumentFavorite(state.document.document_id, !state.document.favorite);
-  } catch (error) {
-    notify(error.message);
-  } finally {
-    syncToolbar();
-  }
+$("#favorite-button")?.addEventListener("click", () => {
+  if (!state.document) return;
+  void setDocumentFavorite(state.document.document_id, !state.document.favorite);
 });
 
 $("#delete-button")?.addEventListener("click", async () => {
