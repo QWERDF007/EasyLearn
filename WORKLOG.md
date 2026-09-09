@@ -7,6 +7,37 @@
 - 无。
 
 
+### 2026-09-09 — 定位并修复 AI 解读/翻译 502 报错、长时间排队及 Web 端无发送消息根因
+
+**目标**
+1. 定位并排查用户提问“为什么 AI 解读失败了，一直在排队中，然后报错 502 了，且 DeepSeek Web 上没有看到发送信息”的根因；
+2. 修复 `3rdparty/FreeDeepseekAPI-ZH` 中由于异常请求导致 `parentMessageId` 指向孤儿节点（Ghost ID）、进而被 DeepSeek Web 判定 `biz_code: 26 (invalid message id)` 造成永久 502 死锁的问题；
+3. 建立会话树自愈与同步机制（`syncSessionParentMessageId`），仅在响应成功时提交 `parentMessageId`。
+
+**当前状态**
+- 已完成：根因排查与真实网络抓包重现：
+  - **为什么长时间“排队中”**：EasyLearn 的 `LLMClient.stream()` 在接收到 502 时会进行 5 次指数退避重试（间隔 2s, 4s, 8s, 16s, 30s，累计约 60 秒），期间任务状态保持为执行/排队中，直到 5 次重试耗尽后抛出 `LLM_UNAVAILABLE: LLM is temporarily unavailable (HTTP 502)`；
+  - **为什么报错 502 且 Web 端看不到发送消息**：在前面的请求中（如批次翻译或异常中断），`readDeepSeekResponse` 在首行就将 `newMessageId` 赋值给 `session.parentMessageId`；当上游失败或返回空时，DeepSeek Web 并未落盘该消息，导致 `parentMessageId` 变为幽灵 ID。后续请求（AI 解读）携带此无效父节点 ID 发起时，DeepSeek Web 返回 HTTP 200 JSON `{"code":0,"data":{"biz_code":26,"biz_msg":"invalid message id"}}` 而非 SSE 流，服务端解析不到 `data:` 判定为空响应，且由于父节点不存在，DeepSeek Web 根本不会在会话树中挂载该条消息；
+- 已完成：在 `3rdparty/FreeDeepseekAPI-ZH/server.js` 中彻底修复该机制缺陷：
+  - 严格确保仅在 `fullContent` 成功生成且非空时才提交 `session.parentMessageId = newMessageId` 与 `messageCount++`，杜绝未落盘的幽灵 ID 污染会话状态；
+  - 增强非 SSE JSON 业务错误拦截：捕获 `biz_code: 26` / `invalid message id` 及 upstream biz errors，明确错误分类；
+  - 引入 `syncSessionParentMessageId` 远程会话树自愈机制：出现无效消息 ID 或空响应重试时，自动调用 DeepSeek Web `history_messages` 同步真实末梢助手节点，若会话远端已不存在（404）则自动重置本地状态以供新建；
+  - 在 `GET /v1/sessions` 中增加 `parent_message_id` 输出，方便状态追踪；
+- 已完成：编写 Node 端单元测试覆盖消息 ID 同步与错误分类，运行全量测试 44 项通过；
+- 已完成：重启 Node 服务（PID 背景守护），对此前报错会话执行真实 `deepseek-reasoner` 深度思考流式解读验证，完美返回思考链与证据引用答复。
+
+**验证证据**
+- 针对 DeepSeek Web 携带 `parent_message_id: 24`（幽灵 ID）的直连测试：精准截获 `{"biz_code": 26, "biz_msg": "invalid message id"}`，100% 证实排队 502 与 Web 端未显示消息的原因；
+- `npm test`（3rdparty/FreeDeepseekAPI-ZH）：44 passed in 410ms（新增 `classifyRecoveryFailure` 与 `syncSessionParentMessageId` 单元测试）；
+- 真实 AI 解读端到端流式验证（`test_qa_stream.py`）：
+  - HTTP status 200，成功返回 `reasoning_content`（“我们根据提供的证据回答...”）与 `content`（“根据提供的证据，本文讲了两个方面：一是研究了异常检测在工业视觉中的应用 [1]；二是提出了一种新的 Dinomaly 模型 [2]...”）；
+  - 多轮追加提问（`test_turn2_chain.py`）：Turn 2 自动沿用 Turn 1 的 parent ID 并在同一会话树平滑延伸回答；
+- `pytest tests/v3/test_config.py tests/v3/test_app.py`：29 passed in 2.04s。
+
+**下一步**
+- 向用户详细解答故障三大表象的根因，并汇报修复结果。
+
+
 ### 2026-09-09 — 替换 FreeDeepseekAPI-EN 为 QWERDF007/FreeDeepseekAPI-ZH 子模块
 
 **目标**
