@@ -7,6 +7,30 @@
 - 无。
 
 
+### 2026-09-09 — 替换 FreeDeepseekAPI-EN 为 QWERDF007/FreeDeepseekAPI-ZH 子模块
+
+**目标**
+1. 彻底移除 `3rdparty/FreeDeepseekAPI-EN` 子模块；
+2. 引入 `https://github.com/QWERDF007/FreeDeepseekAPI-ZH.git` 作为 `3rdparty/FreeDeepseekAPI-ZH` 子模块；
+3. 迁移 DeepSeek 网页登录鉴权凭证（`deepseek-auth.json`）并同步已验证的显式单会话保护机制与中文环境支持。
+
+**当前状态**
+- 已完成：安全备份并迁移 `deepseek-auth.json` 至 `3rdparty/FreeDeepseekAPI-ZH/`，保证无需重新执行网页鉴权；
+- 已完成：彻底反注册并移除 `3rdparty/FreeDeepseekAPI-EN` 子模块，清理 `.gitmodules` 与 `.git/modules/` 对应缓存；
+- 已完成：通过 `git submodule add` 接入 `https://github.com/QWERDF007/FreeDeepseekAPI-ZH.git` 至 `3rdparty/FreeDeepseekAPI-ZH`；
+- 已完成：将中文环境（`zh_CN`、`-28800`）、显式会话保护（`isExplicitSession`）以及 42 项完整单元测试同步并提交至 `FreeDeepseekAPI-ZH` 子模块中；
+- 已完成：运行 FreeDeepseekAPI-ZH 单元测试与 EasyLearn 回归测试，全量通过。
+
+**验证证据**
+- `git submodule status`：`3rdparty/FreeDeepseekAPI-ZH`（commit 3931719）正确就绪，EN 版子模块已彻底移除；
+- `node --test tests/unit.test.js`（3rdparty/FreeDeepseekAPI-ZH）：42 passed in 418ms；
+- `pytest tests/v3/test_config.py tests/v3/test_features.py tests/v3/test_app.py`：64 passed in 8.37s；
+- `ruff check src tests`：All checks passed!。
+
+**下一步**
+- 向用户汇报迁移完成情况。
+
+
 ### 2026-09-09 — 彻底解决 DeepSeek Web 会话分裂与频繁新建会话问题
 
 **目标**
