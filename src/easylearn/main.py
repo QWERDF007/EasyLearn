@@ -151,7 +151,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             qa_provider = settings.llm.qa_provider or settings.llm.active_provider
             qa_client = LLMClient(settings, qa_http, provider=qa_provider, for_qa=True)
-            qa = QAService(database, documents, manager, settings, llm=qa_client)
+            qa = QAService(
+                database, documents, manager, settings, llm=qa_client, translation=translation
+            )
             manager.register(JobKind.PARSE, parser.execute)
             manager.register(JobKind.TRANSLATE, translation.execute)
             manager.register(JobKind.EXPORT, exporter.execute)
@@ -176,12 +178,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             logger.info("EasyLearn started at %s:%s", settings.app.host, settings.app.port)
             yield
         finally:
-            await manager.close()
+            try:
+                await asyncio.wait_for(manager.close(), timeout=2.0)
+            except Exception as exc:
+                logger.warning("Error closing task manager during shutdown: %s", exc)
             if parser is not None:
-                await parser.close()
+                try:
+                    await asyncio.wait_for(parser.close(), timeout=2.0)
+                except Exception as exc:
+                    logger.warning("Error closing parser during shutdown: %s", exc)
             if http is not None:
-                await http.aclose()
-            await database.close()
+                try:
+                    await asyncio.wait_for(http.aclose(), timeout=2.0)
+                except Exception as exc:
+                    logger.warning("Error closing http client during shutdown: %s", exc)
+            if qa_http is not None and qa_http is not http:
+                try:
+                    await asyncio.wait_for(qa_http.aclose(), timeout=2.0)
+                except Exception as exc:
+                    logger.warning("Error closing qa http client during shutdown: %s", exc)
+            try:
+                await asyncio.wait_for(database.close(), timeout=2.0)
+            except Exception as exc:
+                logger.warning("Error closing database during shutdown: %s", exc)
             logger.info("EasyLearn stopped")
             logging_controller.close()
             instance_lock.release()

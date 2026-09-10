@@ -63,8 +63,12 @@ def render_markdown(
     return "\n\n".join(chunks).rstrip() + "\n"
 
 
-def block_text(block: Block) -> str:
-    return _render_block(block, {}, "source", {})
+def block_text(
+    block: Block,
+    translations: Mapping[str, str] | None = None,
+    language: RenderLanguage = "source",
+) -> str:
+    return _render_block(block, translations or {}, language, {})
 
 
 def _render_block(

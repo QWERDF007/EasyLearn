@@ -88,6 +88,10 @@ def test_config_loads_dotenv_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
 
 def test_config_resolves_translation_concurrency(tmp_path: Path):
+    default_settings = Settings()
+    assert default_settings.tasks.translation_concurrency == 4
+    assert default_settings.translation_concurrency == 4
+
     config = tmp_path / "config.toml"
     config.write_text(
         "[tasks]\n"
@@ -96,6 +100,7 @@ def test_config_resolves_translation_concurrency(tmp_path: Path):
     )
     settings = Settings.load(config)
     assert settings.tasks.translation_concurrency == 6
+    assert settings.translation_concurrency == 6
 
 
 def test_config_llm_provider_switching_deepseek_and_openai(
@@ -114,7 +119,6 @@ def test_config_llm_provider_switching_deepseek_and_openai(
         'qa_model = "deepseek-reasoner"\n'
         'api_key = "sk-freedeepseek"\n'
         "local_only = true\n"
-        "translation_concurrency = 1\n"
         "\n"
         "[llm.providers.openai]\n"
         'base_url = "https://api.pinaic.com/v1"\n'
@@ -122,7 +126,6 @@ def test_config_llm_provider_switching_deepseek_and_openai(
         'api_key_env = "TEST_PINAI_KEY"\n'
         "local_only = false\n"
         'reasoning_effort = "low"\n'
-        "translation_concurrency = 4\n"
     )
     config = tmp_path / "config.toml"
     config.write_text(config_content, encoding="utf-8")
@@ -134,7 +137,7 @@ def test_config_llm_provider_switching_deepseek_and_openai(
     assert settings.llm.model == "deepseek-chat"
     assert settings.llm.local_only is True
     assert settings.llm_api_key == "sk-freedeepseek"
-    assert settings.translation_concurrency == 1
+    assert settings.translation_concurrency == 4
     assert settings.qa_llm.model == "deepseek-reasoner"
     # Proxy is kept in settings.llm.proxy, but resolved_proxy automatically bypasses it
     assert settings.llm.proxy == "http://127.0.0.1:7890"
@@ -207,6 +210,21 @@ def test_config_qa_model_defaults_to_deepseek_reasoner(tmp_path: Path):
     settings = Settings.load(config)
     assert settings.llm.model == "deepseek-chat"
     assert settings.qa_llm.model == "deepseek-reasoner"
+
+
+def test_config_app_timeout_graceful_shutdown(tmp_path: Path):
+    settings = Settings()
+    assert settings.app.timeout_graceful_shutdown == 2
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "[app]\n"
+        "timeout_graceful_shutdown = 5\n",
+        encoding="utf-8",
+    )
+    loaded = Settings.load(config)
+    assert loaded.app.timeout_graceful_shutdown == 5
+
 
 
 

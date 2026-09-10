@@ -370,3 +370,131 @@ def test_qa_keyword_candidates_prioritize_relevance_before_document_order():
         QARequest(parse_id=parse_id, question="target"),
     )
     assert [item["block_id"] for item in context] == ["high-score"]
+
+
+def test_qa_uses_translations_and_isolates_selected_blocks():
+    document_id, parse_id = uuid4(), uuid4()
+    ir = DocumentIR(
+        document_id=document_id,
+        parse_run_id=parse_id,
+        preview_asset_id=uuid4(),
+        preview_sha256="0" * 64,
+        mineru_version="3.4.5",
+        adapter_version="3.0.0",
+        pages=(
+            PageGeometry(page_index=0, media_box=(0, 0, 600, 800), crop_box=(0, 0, 600, 800)),
+        ),
+        blocks=(
+            Block(
+                block_id="b1",
+                block_type="paragraph",
+                order_index=0,
+                source_locator=PageLocator(page_indices=(0,)),
+                source_nodes=(TextNode(node_id="n1", text="English source 1"),),
+            ),
+            Block(
+                block_id="b2",
+                block_type="paragraph",
+                order_index=1,
+                source_locator=PageLocator(page_indices=(0,)),
+                source_nodes=(TextNode(node_id="n2", text="English source 2 matching keyword"),),
+            ),
+        ),
+    )
+    service = QAService(
+        None,
+        None,
+        None,
+        Settings(extensions=ExtensionSettings(qa_context_chars=1000, qa_max_blocks=10)),
+    )
+    translations = {"b1:n1": "中文翻译 1", "b2:n2": "中文翻译 2"}
+
+    # 1. When auto_related is False and b1 is selected, only b1 is included, and translated text is used
+    ctx_zh = service.build_context(
+        document_id,
+        ir,
+        QARequest(parse_id=parse_id, question="keyword", block_ids=("b1",), auto_related=False),
+        translations=translations,
+        language="zh",
+    )
+    assert len(ctx_zh) == 1
+    assert ctx_zh[0]["block_id"] == "b1"
+    assert ctx_zh[0]["text"] == "中文翻译 1"
+
+    # 2. When language is source, source text is used
+    ctx_source = service.build_context(
+        document_id,
+        ir,
+        QARequest(parse_id=parse_id, question="keyword", block_ids=("b1",), auto_related=False),
+        translations=translations,
+        language="source",
+    )
+    assert len(ctx_source) == 1
+    assert ctx_source[0]["block_id"] == "b1"
+    assert ctx_source[0]["text"] == "English source 1"
+
+
+@pytest.mark.asyncio
+async def test_llm_client_has_active_session_handles_probe_and_fallback():
+    import httpx
+    from easylearn.config import LLMSettings
+    from easylearn.translation import LLMClient
+
+    # 1. Single session probe returns active: true
+    def handler_active(request: httpx.Request):
+        if request.url.path == "/v1/sessions/test-agent":
+            return httpx.Response(200, json={"agent": "test-agent", "active": True, "exists": True})
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler_active)
+    async with httpx.AsyncClient(transport=transport) as http:
+        settings = Settings(llm=LLMSettings(base_url="http://mock-proxy/v1", model="test-model"))
+        client = LLMClient(settings, http=http)
+        res = await client.has_active_session("test-agent")
+        assert res is True
+
+    # 2. Single session probe returns active: false (e.g. remote deleted on DeepSeek Web)
+    def handler_deleted(request: httpx.Request):
+        if request.url.path == "/v1/sessions/test-agent":
+            return httpx.Response(
+                200,
+                json={"agent": "test-agent", "active": False, "exists": False, "remote_deleted": True},
+            )
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler_deleted)
+    async with httpx.AsyncClient(transport=transport) as http:
+        settings = Settings(llm=LLMSettings(base_url="http://mock-proxy/v1", model="test-model"))
+        client = LLMClient(settings, http=http)
+        res = await client.has_active_session("test-agent")
+        assert res is False
+
+    # 3. Single session probe returns 404, fallback to /v1/sessions list endpoint
+    def handler_fallback(request: httpx.Request):
+        if request.url.path == "/v1/sessions/test-agent":
+            return httpx.Response(404)
+        if request.url.path == "/v1/sessions":
+            return httpx.Response(
+                200,
+                json={"agents": [{"agent": "test-agent", "session_id": "remote-123"}]},
+            )
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler_fallback)
+    async with httpx.AsyncClient(transport=transport) as http:
+        settings = Settings(llm=LLMSettings(base_url="http://mock-proxy/v1", model="test-model"))
+        client = LLMClient(settings, http=http)
+        res = await client.has_active_session("test-agent")
+        assert res is True
+
+    # 4. Standard OpenAI endpoint returns 404 for all session paths -> returns None
+    def handler_openai(request: httpx.Request):
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler_openai)
+    async with httpx.AsyncClient(transport=transport) as http:
+        settings = Settings(llm=LLMSettings(base_url="https://api.openai.com/v1", model="gpt-4o"))
+        client = LLMClient(settings, http=http)
+        res = await client.has_active_session("test-agent")
+        assert res is None
+

@@ -585,11 +585,145 @@ async def test_document_and_parse_result_has_translation_status(client, pdf_byte
                 crop_box=(0, 0, 600, 800),
             ),
         ),
-        blocks=(),
+        blocks=(
+            Block(
+                block_id="b1",
+                block_type="paragraph",
+                order_index=0,
+                source_nodes=(TextNode(node_id="n1", text="Unit 1"),),
+            ),
+            Block(
+                block_id="b2",
+                block_type="paragraph",
+                order_index=1,
+                source_nodes=(TextNode(node_id="n1", text="Unit 2"),),
+            ),
+        ),
     )
     (parse_directory / "document.json").write_bytes(
         ir.model_dump_json(exclude_computed_fields=True).encode("utf-8")
     )
+    async with services.database.transaction() as connection:
+        await connection.execute(
+            "INSERT INTO parse_results "
+            "(id, document_id, preview_path, ir_path, raw_path, pages, metadata_json, created_at) "
+            "VALUES (?, ?, ?, ?, NULL, 1, '{\"total_units\": 2}', ?)",
+            (
+                str(parse_id),
+                str(document_id),
+                f"parses/{parse_id}/preview.pdf",
+                f"parses/{parse_id}/document.json",
+                "2026-01-01T00:00:00+00:00",
+            ),
+        )
+        await connection.execute(
+            "UPDATE documents SET active_parse_id = ? WHERE id = ?",
+            (str(parse_id), str(document_id)),
+        )
+
+    # Initially has_translation is False, translation_status is none
+    doc_res = await client.get(f"/api/documents/{document_id}")
+    assert doc_res.status_code == 200
+    doc_data = doc_res.json()
+    assert doc_data["has_translation"] is False
+    assert doc_data["total_units"] == 2
+    assert doc_data["translated_units"] == 0
+    assert doc_data["translation_status"] == "none"
+    assert doc_data["parse_results"][0]["has_translation"] is False
+    assert doc_data["parse_results"][0]["total_units"] == 2
+    assert doc_data["parse_results"][0]["translated_units"] == 0
+    assert doc_data["parse_results"][0]["translation_status"] == "none"
+
+    # Insert 1 translation row (partial)
+    async with services.database.transaction() as connection:
+        await connection.execute(
+            "INSERT INTO translations (parse_id, block_id, unit_id, auto_text, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (str(parse_id), "b1", "b1:n1", "译文1", "2026-01-01T00:00:00+00:00"),
+        )
+
+    # Now translation_status is partial
+    doc_res = await client.get(f"/api/documents/{document_id}")
+    assert doc_res.status_code == 200
+    doc_data = doc_res.json()
+    assert doc_data["has_translation"] is True
+    assert doc_data["total_units"] == 2
+    assert doc_data["translated_units"] == 1
+    assert doc_data["translation_status"] == "partial"
+    assert doc_data["parse_results"][0]["translation_status"] == "partial"
+
+    # Insert 2nd translation row (completed)
+    async with services.database.transaction() as connection:
+        await connection.execute(
+            "INSERT INTO translations (parse_id, block_id, unit_id, auto_text, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (str(parse_id), "b2", "b2:n1", "译文2", "2026-01-01T00:00:00+00:00"),
+        )
+
+    # Now translation_status is completed
+    doc_res = await client.get(f"/api/documents/{document_id}")
+    assert doc_res.status_code == 200
+    doc_data = doc_res.json()
+    assert doc_data["has_translation"] is True
+    assert doc_data["total_units"] == 2
+    assert doc_data["translated_units"] == 2
+    assert doc_data["translation_status"] == "completed"
+    assert doc_data["parse_results"][0]["translation_status"] == "completed"
+
+    # Also check list documents
+    list_res = await client.get("/api/documents")
+    assert list_res.status_code == 200
+    list_data = list_res.json()
+    doc_item = next(d for d in list_data if d["document_id"] == str(document_id))
+    assert doc_item["has_translation"] is True
+    assert doc_item["total_units"] == 2
+    assert doc_item["translated_units"] == 2
+    assert doc_item["translation_status"] == "completed"
+    assert doc_item["parse_results"][0]["translation_status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_document_total_units_legacy_backfill(client, pdf_bytes):
+    created = await client.post(
+        "/api/documents", files={"file": ("legacy.pdf", pdf_bytes, "application/pdf")}
+    )
+    assert created.status_code == 201
+    document_id = UUID(created.json()["document_id"])
+    parse_id = uuid4()
+    services = client._transport.app.state.services
+    parse_directory = services.files.paths.parse(document_id, parse_id)
+    parse_directory.mkdir(parents=True)
+    shutil.copyfile(
+        await services.documents.file_path(document_id, "original"),
+        parse_directory / "preview.pdf",
+    )
+    ir = DocumentIR(
+        document_id=document_id,
+        parse_run_id=parse_id,
+        preview_asset_id=uuid4(),
+        preview_sha256="0" * 64,
+        mineru_version="3.4.5",
+        adapter_version="3.0.0",
+        pages=(
+            PageGeometry(
+                page_index=0,
+                media_box=(0, 0, 600, 800),
+                crop_box=(0, 0, 600, 800),
+            ),
+        ),
+        blocks=(
+            Block(
+                block_id="b1",
+                block_type="paragraph",
+                order_index=0,
+                source_nodes=(TextNode(node_id="n1", text="Legacy Text"),),
+            ),
+        ),
+    )
+    (parse_directory / "document.json").write_bytes(
+        ir.model_dump_json(exclude_computed_fields=True).encode("utf-8")
+    )
+    # Insert with empty metadata_json '{}' (legacy data)
     async with services.database.transaction() as connection:
         await connection.execute(
             "INSERT INTO parse_results "
@@ -608,33 +742,20 @@ async def test_document_and_parse_result_has_translation_status(client, pdf_byte
             (str(parse_id), str(document_id)),
         )
 
-    # Initially has_translation is False
+    # First read triggers backfill from ir_path
     doc_res = await client.get(f"/api/documents/{document_id}")
     assert doc_res.status_code == 200
     doc_data = doc_res.json()
-    assert doc_data["has_translation"] is False
-    assert doc_data["parse_results"][0]["has_translation"] is False
+    assert doc_data["total_units"] == 1
+    assert doc_data["translated_units"] == 0
+    assert doc_data["translation_status"] == "none"
 
-    # Insert a translation row
-    async with services.database.transaction() as connection:
-        await connection.execute(
-            "INSERT INTO translations (parse_id, block_id, unit_id, auto_text, updated_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (str(parse_id), "b1", "u1", "译文", "2026-01-01T00:00:00+00:00"),
-        )
-
-    # Now has_translation is True
-    doc_res = await client.get(f"/api/documents/{document_id}")
-    assert doc_res.status_code == 200
-    doc_data = doc_res.json()
-    assert doc_data["has_translation"] is True
-    assert doc_data["parse_results"][0]["has_translation"] is True
-
-    # Also check list documents
-    list_res = await client.get("/api/documents")
-    assert list_res.status_code == 200
-    list_data = list_res.json()
-    doc_item = next(d for d in list_data if d["document_id"] == str(document_id))
-    assert doc_item["has_translation"] is True
-    assert doc_item["parse_results"][0]["has_translation"] is True
+    # Verify DB metadata_json was updated with total_units
+    async with services.database.read() as connection:
+        row = await (
+            await connection.execute(
+                "SELECT metadata_json FROM parse_results WHERE id = ?", (str(parse_id),)
+            )
+        ).fetchone()
+        assert json.loads(row["metadata_json"]).get("total_units") == 1
 

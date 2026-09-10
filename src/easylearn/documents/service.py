@@ -254,36 +254,73 @@ class DocumentService:
             self.cache.invalidate(document_id, parse_id)
 
     async def _view(self, row: Row) -> DocumentView:
+        document_id = UUID(row["id"])
         async with self.database.read() as connection:
             cursor = await connection.execute(
                 "SELECT p.*, "
-                "EXISTS("
-                "  SELECT 1 FROM translations t "
+                "("
+                "  SELECT count(*) FROM translations t "
                 "  WHERE t.parse_id = p.id "
                 "  AND ("
                 "    (t.auto_text IS NOT NULL AND t.auto_text != '') "
                 "    OR (t.manual_text IS NOT NULL AND t.manual_text != '')"
                 "  )"
-                ") AS has_translation "
+                ") AS translated_units "
                 "FROM parse_results p WHERE p.document_id = ? "
                 "ORDER BY p.created_at DESC, p.id DESC",
                 (row["id"],),
             )
             parse_rows = await cursor.fetchall()
             await cursor.close()
-        results = tuple(
-            ParseResultView(
-                parse_id=UUID(parse_row["id"]),
-                created_at=datetime.fromisoformat(parse_row["created_at"]),
-                pages=parse_row["pages"],
-                preview_file_id=f"preview:{parse_row['id']}",
-                ir_file_id=f"ir:{parse_row['id']}",
-                raw_file_id=(f"raw:{parse_row['id']}" if parse_row["raw_path"] else None),
-                metadata=json.loads(parse_row["metadata_json"]),
-                has_translation=bool(parse_row["has_translation"]),
+
+        results_list: list[ParseResultView] = []
+        for parse_row in parse_rows:
+            metadata = json.loads(parse_row["metadata_json"])
+            total_units = metadata.get("total_units")
+            parse_id = UUID(parse_row["id"])
+            if total_units is None:
+                try:
+                    ir = await self.load_ir(document_id, parse_id)
+                    from easylearn.translation import translation_units
+
+                    total_units = len(translation_units(ir))
+                    metadata["total_units"] = total_units
+                    async with self.database.transaction() as conn:
+                        await conn.execute(
+                            "UPDATE parse_results SET metadata_json = ? WHERE id = ?",
+                            (
+                                json.dumps(metadata, ensure_ascii=False, separators=(",", ":")),
+                                str(parse_id),
+                            ),
+                        )
+                except Exception:
+                    total_units = 0
+
+            translated_units = int(parse_row["translated_units"])
+            if total_units > 0 and translated_units >= total_units:
+                translation_status = "completed"
+            elif translated_units > 0:
+                translation_status = "partial"
+            else:
+                translation_status = "none"
+
+            results_list.append(
+                ParseResultView(
+                    parse_id=parse_id,
+                    created_at=datetime.fromisoformat(parse_row["created_at"]),
+                    pages=parse_row["pages"],
+                    preview_file_id=f"preview:{parse_row['id']}",
+                    ir_file_id=f"ir:{parse_row['id']}",
+                    raw_file_id=(f"raw:{parse_row['id']}" if parse_row["raw_path"] else None),
+                    metadata=metadata,
+                    has_translation=(translated_units > 0),
+                    total_units=total_units,
+                    translated_units=translated_units,
+                    translation_status=translation_status,
+                )
             )
-            for parse_row in parse_rows
-        )
+
+        results = tuple(results_list)
         original_size: int | None = None
         try:
             original_file = self.files.original_path(
@@ -301,9 +338,12 @@ class DocumentService:
             else (results[0] if results else None)
         )
         doc_has_translation = bool(active_parse.has_translation) if active_parse else False
+        doc_total_units = active_parse.total_units if active_parse else 0
+        doc_translated_units = active_parse.translated_units if active_parse else 0
+        doc_translation_status = active_parse.translation_status if active_parse else "none"
 
         return DocumentView(
-            document_id=UUID(row["id"]),
+            document_id=document_id,
             name=row["name"],
             favorite=bool(row["favorite"]),
             created_at=datetime.fromisoformat(row["created_at"]),
@@ -311,6 +351,9 @@ class DocumentService:
             size_bytes=original_size,
             parse_results=results,
             has_translation=doc_has_translation,
+            total_units=doc_total_units,
+            translated_units=doc_translated_units,
+            translation_status=doc_translation_status,
         )
 
 

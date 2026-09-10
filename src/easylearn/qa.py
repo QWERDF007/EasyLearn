@@ -18,8 +18,9 @@ from easylearn.document_ir.schema import Block, BlockRef, DocumentIR
 from easylearn.documents.service import DocumentService
 from easylearn.errors import DomainError
 from easylearn.jobs.schema import JobKind, TaskView
+from easylearn.rendering import block_text, render_markdown
 from easylearn.tasks import TaskContext, TaskManager, TaskRecord
-from easylearn.translation import LLMClient
+from easylearn.translation import LLMClient, TranslationService
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class QARequest(BaseModel):
     related_block_ids: tuple[str, ...] = ()
     exclude_block_ids: tuple[str, ...] = ()
     auto_related: bool = True
+    language: str = "auto"
 
     @field_validator("question")
     @classmethod
@@ -75,18 +77,34 @@ class QAService:
         manager: TaskManager,
         settings: Settings,
         llm: LLMClient | None = None,
+        translation: TranslationService | None = None,
     ) -> None:
         self.database = database
         self.documents = documents
         self.manager = manager
         self.settings = settings
         self.llm = llm or LLMClient(settings)
+        self.translation = translation
 
     async def submit(self, document_id: UUID, request: QARequest) -> TaskView:
         if not self.settings.extensions.qa_enabled:
             raise DomainError("QA_DISABLED", "AI question answering is disabled", status=503)
         ir = await self.documents.load_ir(document_id, request.parse_id)
-        context = self.build_context(document_id, ir, request)
+        translations = (
+            await self.translation.effective_map_for_ir(ir)
+            if self.translation is not None
+            else {}
+        )
+        resolved_language = request.language
+        if resolved_language == "auto":
+            resolved_language = "zh" if translations else "source"
+        context = self.build_context(
+            document_id,
+            ir,
+            request,
+            translations=translations,
+            language=resolved_language,
+        )
         qa_id = uuid4()
 
         async def admit() -> None:
@@ -103,13 +121,19 @@ class QAService:
                 "related_block_ids": list(request.related_block_ids),
                 "exclude_block_ids": list(request.exclude_block_ids),
                 "auto_related": request.auto_related,
+                "language": resolved_language,
                 "context": cast(JsonValue, context),
             },
             admission=admit,
         )
 
     def build_context(
-        self, document_id: UUID, ir: DocumentIR, request: QARequest
+        self,
+        document_id: UUID,
+        ir: DocumentIR,
+        request: QARequest,
+        translations: Mapping[str, str] | None = None,
+        language: str = "source",
     ) -> list[dict[str, JsonValue]]:
         blocks = {block.block_id: block for block in ir.blocks}
         order = {block.block_id: index for index, block in enumerate(ir.blocks)}
@@ -131,7 +155,8 @@ class QAService:
                 status=422,
             )
         candidates: list[str] = list(required_ids)
-        if request.auto_related:
+        if request.auto_related and not selected:
+            # Whole-document mode: auto-expand using relation/section/keyword matches
             selected_set = set(required_ids)
             for relation in ir.relations:
                 if relation.source.block_id in selected_set:
@@ -158,6 +183,14 @@ class QAService:
             candidates.extend(
                 block_id for (_, block_id) in reversed(scored) if _score(blocks[block_id], keywords)
             )
+        elif request.auto_related and selected:
+            # When specific blocks are selected, only consider direct relations, never entire section/doc keyword search
+            selected_set = set(required_ids)
+            for relation in ir.relations:
+                if relation.source.block_id in selected_set:
+                    candidates.append(relation.target.block_id)
+                if relation.target.block_id in selected_set:
+                    candidates.append(relation.source.block_id)
         if not candidates:
             candidates = [block.block_id for block in ir.blocks]
         candidates = list(
@@ -170,11 +203,18 @@ class QAService:
 
         budget = self.settings.extensions.qa_context_chars
         max_blocks = self.settings.extensions.qa_max_blocks
-        selected_context: list[tuple[str, Block, bool]] = []
+        selected_context: list[tuple[str, Block, bool, str]] = []
         used = 0
+        render_lang: RenderLanguage = "chinese" if language in ("zh", "chinese") else "source"
         for block_id in candidates:
             block = blocks[block_id]
-            text = block.source_text.strip()
+            text = (
+                block_text(block, translations, language=render_lang).strip()
+                if translations
+                else block.source_text.strip()
+            )
+            if not text:
+                text = block.source_text.strip()
             if not text:
                 continue
             required = block_id in required_set
@@ -192,7 +232,7 @@ class QAService:
                         status=422,
                     )
                 continue
-            selected_context.append((block_id, block, required))
+            selected_context.append((block_id, block, required, text))
             used += len(text)
         if not selected_context:
             raise DomainError(
@@ -203,7 +243,7 @@ class QAService:
                 "QA_CONTEXT_EMPTY", "A required question context block contains no readable text"
             )
         result: list[dict[str, JsonValue]] = []
-        for citation, (block_id, block, required) in enumerate(selected_context, start=1):
+        for citation, (block_id, block, required, text) in enumerate(selected_context, start=1):
             pages = tuple(
                 sorted({region.page_index for region in block.source_regions})
                 or (
@@ -222,7 +262,7 @@ class QAService:
                         "parse_run_id": str(ir.parse_run_id),
                         "block_id": block_id,
                     },
-                    "text": block.source_text,
+                    "text": text,
                     "page_indices": list(pages),
                     "localization_level": block.localization_level,
                     "required": required,
@@ -250,20 +290,80 @@ class QAService:
             question,
             len(evidence),
         )
-        doc_session_id = f"easylearn-{record.document_id}"
+        doc_session_id = f"easylearn-qa-{record.document_id}"
+        async with self.database.read() as connection:
+            row = await (
+                await connection.execute(
+                    "SELECT COUNT(*) FROM qa_records WHERE document_id = ?",
+                    (str(record.document_id),),
+                )
+            ).fetchone()
+            prior_qa_count = int(row[0]) if row else 0
+
+        is_session_active = None
+        if hasattr(self.llm, "has_active_session"):
+            try:
+                is_session_active = await self.llm.has_active_session(doc_session_id)
+            except Exception as exc:
+                logger.debug("Error checking active session for %s: %s", doc_session_id, exc)
+
+        is_first_turn = (prior_qa_count == 0) or (is_session_active is False)
+        if is_first_turn:
+            ir = await self.documents.load_ir(record.document_id, parse_id)
+            excluded_set = set(record.scope.get("exclude_block_ids") or ())
+            if excluded_set:
+                ir_for_md = ir.model_copy(
+                    update={"blocks": tuple(b for b in ir.blocks if b.block_id not in excluded_set)}
+                )
+            else:
+                ir_for_md = ir
+            translations = (
+                await self.translation.effective_map_for_ir(ir_for_md)
+                if self.translation is not None
+                else {}
+            )
+            lang = str(record.scope.get("language") or "auto")
+            use_zh = lang in ("zh", "chinese") or (lang == "auto" and bool(translations))
+            doc_markdown = render_markdown(
+                ir_for_md,
+                translations=translations if use_zh else None,
+                language="chinese" if use_zh else "source",
+            )
+            if len(doc_markdown) > 60000:
+                doc_markdown = (
+                    doc_markdown[:30000]
+                    + "\n\n...[中间内容过长已折叠]...\n\n"
+                    + doc_markdown[-30000:]
+                )
+            parts = [
+                "以下是正在阅读的完整文档内容（Markdown）：\n\n"
+                f"```markdown\n{doc_markdown.strip()}\n```\n\n"
+                "请结合整篇文档的全局脉络以及下方提供的重点参考段落回答问题。\n\n"
+                f"【用户问题】\n{question}"
+            ]
+            if prompt.strip():
+                parts.append(f"【重点参考段落】\n{prompt}")
+            user_content = "\n\n".join(parts)
+        else:
+            parts = [f"【用户问题】\n{question}"]
+            if prompt.strip():
+                parts.append(f"【重点参考段落】\n{prompt}")
+            user_content = "\n\n".join(parts)
+
         try:
             await context.progress(0.1, "Generating answer")
             messages = [
                 {
                     "role": "system",
                     "content": (
-                        "Answer only from the supplied evidence. "
-                        "Cite supporting evidence with the exact bracket number such as [1]. "
-                        "If evidence is insufficient, say so plainly; "
-                        "never invent facts or citation numbers."
+                        "你是一位严谨专业的学术与技术文档阅读解读助手。\n"
+                        "请结合整篇文档的全局脉络以及下方提供的重点参考段落，深入、客观地回答用户问题：\n"
+                        "1. 若回答内容直接引用或依据了选定的参考段落，请使用类似 [1] 的方括号标明引用出处；\n"
+                        "2. 若参考段落未详尽涵盖问题的全部细节，应充分结合本文档已投喂的全文 Markdown 上下文进行补充说明与全局综合解答；\n"
+                        "3. 保持回答客观严谨，严禁捏造文档中不存在的事实。"
                     ),
                 },
-                {"role": "user", "content": f"Question: {question}\n\n{prompt}"},
+                {"role": "user", "content": user_content},
             ]
             try:
                 stream_iter = self.llm.stream(messages, session_id=doc_session_id)
@@ -379,7 +479,7 @@ def _score(block: Block, keywords: tuple[str, ...]) -> int:
 
 def _prompt(evidence: list[dict[str, JsonValue]]) -> str:
     return "\n\n".join(
-        f"[{item['citation']}] block {item['block_id']}: {item['text']}" for item in evidence
+        f"[{item['citation']}] 段落 {item['block_id']}: {item['text']}" for item in evidence
     )
 
 

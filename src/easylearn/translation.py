@@ -442,6 +442,105 @@ class LLMClient:
                 )
                 raise DomainError("LLM_UNAVAILABLE", detail, retryable=True) from exc
 
+    async def delete_session(self, session_id: str) -> bool:
+        """Instruct the LLM proxy to delete the temporary session locally and upstream."""
+        configuration = self.configuration
+        if not configuration.base_url:
+            return False
+        base = configuration.base_url.rstrip("/")
+        candidates: list[tuple[str, str]] = [
+            ("DELETE", f"{base}/sessions/{session_id}"),
+        ]
+        if base.endswith("/v1"):
+            origin = base[:-3].rstrip("/")
+            candidates.append(("DELETE", f"{origin}/v1/sessions/{session_id}"))
+            candidates.append(("POST", f"{origin}/reset-session?agent={session_id}&delete_remote=true"))
+        else:
+            candidates.append(("DELETE", f"{base}/v1/sessions/{session_id}"))
+            candidates.append(("POST", f"{base}/reset-session?agent={session_id}&delete_remote=true"))
+
+        api_key = self.api_key
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+        try:
+            async with self._client() as http:
+                for method, url in candidates:
+                    try:
+                        resp = await http.request(method, url, headers=headers, timeout=5.0)
+                        if resp.status_code in (200, 204):
+                            logger.info("Deleted LLM session %s via %s %s", session_id, method, url)
+                            return True
+                    except Exception as exc:
+                        logger.debug("Failed deleting session %s via %s %s: %s", session_id, method, url, exc)
+        except Exception as exc:
+            logger.debug("Error attempting session deletion for %s: %s", session_id, exc)
+        return False
+
+    async def has_active_session(self, session_id: str) -> bool | None:
+        """Check if the given session is currently active in the LLM proxy.
+
+        Returns:
+            True if session exists and is active.
+            False if proxy responded and session is not found/not active.
+            None if the provider does not support session probing (e.g. standard OpenAI).
+        """
+        configuration = self.configuration
+        if not configuration.base_url:
+            return None
+        base = configuration.base_url.rstrip("/")
+        if base.endswith("/v1"):
+            origin = base[:-3].rstrip("/")
+            single_candidates = [
+                f"{origin}/v1/sessions/{session_id}",
+                f"{origin}/sessions/{session_id}",
+            ]
+            list_candidates = [
+                f"{origin}/v1/sessions",
+                f"{origin}/sessions",
+            ]
+        else:
+            single_candidates = [
+                f"{base}/v1/sessions/{session_id}",
+                f"{base}/sessions/{session_id}",
+            ]
+            list_candidates = [
+                f"{base}/v1/sessions",
+                f"{base}/sessions",
+            ]
+
+        api_key = self.api_key
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+        try:
+            async with self._client() as http:
+                for url in single_candidates:
+                    try:
+                        resp = await http.get(url, headers=headers, timeout=3.0)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            if isinstance(data, dict) and "active" in data:
+                                return bool(data.get("active"))
+                    except Exception:
+                        continue
+
+                for url in list_candidates:
+                    try:
+                        resp = await http.get(url, headers=headers, timeout=3.0)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            agents = data.get("agents")
+                            if isinstance(agents, list):
+                                return any(
+                                    a.get("agent") == session_id and bool(a.get("session_id"))
+                                    for a in agents
+                                    if isinstance(a, dict)
+                                )
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        return None
+
     def _resolve_proxy(self) -> str | None:
         if hasattr(self.configuration, "resolved_proxy"):
             return self.configuration.resolved_proxy
@@ -623,7 +722,7 @@ class TranslationService:
         completed_units = already_completed
         progress_lock = asyncio.Lock()
         start_time = time.monotonic()
-        doc_session_id = f"easylearn-{record.document_id}"
+        doc_session_id = f"easylearn-translate-{record.document_id}"
 
         async def publish_batch(
             batch: tuple[TranslationUnit, ...], batch_result: dict[str, str]
@@ -722,39 +821,48 @@ class TranslationService:
             for index, batch in enumerate(batches)
         ]
         try:
-            await asyncio.gather(*tasks)
-        except BaseException as exc:
-            for t in tasks:
-                if not t.done():
-                    t.cancel()
-            logger.error(
-                "Translation failed: document_id=%s, parse_id=%s, error=%s",
+            try:
+                await asyncio.gather(*tasks)
+            except BaseException as exc:
+                for t in tasks:
+                    if not t.done():
+                        t.cancel()
+                logger.error(
+                    "Translation failed: document_id=%s, parse_id=%s, error=%s",
+                    record.document_id,
+                    parse_id,
+                    exc,
+                )
+                raise
+
+            total_elapsed = time.monotonic() - start_time
+            logger.info(
+                "Translation completed: document_id=%s, parse_id=%s, units=%d, elapsed=%.2fs",
                 record.document_id,
                 parse_id,
-                exc,
+                total_units,
+                total_elapsed,
             )
-            raise
+            await context.check()
+            result_ref = {
+                "parse_id": str(parse_id),
+                "translated_units": total_units,
+                "conflicted_units": conflict_count,
+            }
 
-        total_elapsed = time.monotonic() - start_time
-        logger.info(
-            "Translation completed: document_id=%s, parse_id=%s, units=%d, elapsed=%.2fs",
-            record.document_id,
-            parse_id,
-            total_units,
-            total_elapsed,
-        )
-        await context.check()
-        result_ref = {
-            "parse_id": str(parse_id),
-            "translated_units": total_units,
-            "conflicted_units": conflict_count,
-        }
+            async def finalize_publish() -> None:
+                pass
 
-        async def finalize_publish() -> None:
-            pass
-
-        await context.publish(result_ref, finalize_publish)
-        return result_ref
+            await context.publish(result_ref, finalize_publish)
+            return result_ref
+        finally:
+            if hasattr(self.llm, "delete_session"):
+                try:
+                    await self.llm.delete_session(doc_session_id)
+                except Exception as exc:
+                    logger.debug(
+                        "Error cleaning up translation session %s: %s", doc_session_id, exc
+                    )
 
     async def list(self, document_id: UUID, parse_id: UUID) -> tuple[TranslationUnitView, ...]:
         ir = await self.documents.load_ir(document_id, parse_id)
@@ -785,12 +893,27 @@ class TranslationService:
             for unit in units
         )
 
-    async def effective_map(self, document_id: UUID, parse_id: UUID) -> dict[str, str]:
+    async def effective_map_for_ir(self, ir: DocumentIR) -> dict[str, str]:
+        units = translation_units(ir)
+        async with self.database.read() as connection:
+            rows = await (
+                await connection.execute(
+                    "SELECT block_id, unit_id, auto_text, manual_text, use_manual, locked, revision "
+                    "FROM translations WHERE parse_id = ?",
+                    (str(ir.parse_run_id),),
+                )
+            ).fetchall()
+        values = {row[1]: row for row in rows}
         return {
-            item.unit_id: item.effective_text
-            for item in await self.list(document_id, parse_id)
-            if item.auto_text is not None or item.manual_text is not None
+            unit.unit_id: _effective(unit, values[unit.unit_id])
+            for unit in units
+            if unit.unit_id in values
+            and (values[unit.unit_id][2] is not None or values[unit.unit_id][3] is not None)
         }
+
+    async def effective_map(self, document_id: UUID, parse_id: UUID) -> dict[str, str]:
+        ir = await self.documents.load_ir(document_id, parse_id)
+        return await self.effective_map_for_ir(ir)
 
     async def edit(
         self, document_id: UUID, unit_id: str, request: EditTranslationRequest
@@ -1068,12 +1191,11 @@ class TranslationService:
                 {
                     "role": "system",
                     "content": (
-                        "Translate English document text into Simplified Chinese. "
-                        "Return only a JSON object mapping every supplied unit_id to one "
-                        "non-empty string. Do not add, remove, or rename IDs. Preserve "
-                        "numbers, URLs, paths, and {{PLACEHOLDER}} tokens. "
-                        "Only translate the provided unit_id keys; "
-                        "do not generate or predict any other keys."
+                        "你是一位专业的高质量学术与技术文档翻译专家。请将输入的文档英文文本翻译为规范、地道、学术风格的简体中文。\n"
+                        "必须且仅返回一个合法的 JSON 对象，键为输入的每个 unit_id，值为翻译后的非空字符串。\n"
+                        "严禁增加、删除、遗漏或修改任何 unit_id 键名。\n"
+                        "严格保留文本中的专有名词、公式、代码、数字、URL、文件路径以及形如 {{PLACEHOLDER}} 的占位符格式。\n"
+                        "仅翻译所提供的 unit_id 对应内容，切勿生成或预测任何其他键。"
                     ),
                 },
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},

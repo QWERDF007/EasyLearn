@@ -21,6 +21,7 @@ class AppSettings(_Config):
     port: int = Field(default=8765, ge=1, le=65535)
     data_dir: Path = Path("./data")
     open_browser: bool = False
+    timeout_graceful_shutdown: int = Field(default=2, ge=0, le=60)
 
 
 class TaskSettings(_Config):
@@ -79,7 +80,6 @@ class LLMProviderSettings(_Config):
     local_only: bool = False
     json_mode: bool = False
     reasoning_effort: str | None = None
-    translation_concurrency: int | None = Field(default=None, ge=1, le=16)
 
     @property
     def resolved_qa_model(self) -> str:
@@ -103,7 +103,6 @@ class LLMSettings(_Config):
     local_only: bool = True
     json_mode: bool = False
     reasoning_effort: str | None = None
-    translation_concurrency: int | None = Field(default=None, ge=1, le=16)
     proxy: str | None = None
     max_retries: int = Field(default=5, ge=0, le=10)
     retry_min_delay: float = Field(default=2.0, ge=0.0, le=60.0)
@@ -164,9 +163,6 @@ class LLMSettings(_Config):
             "reasoning_effort", updated.get("reasoning_effort")
         )
         updated["json_mode"] = active_dict.get("json_mode", updated.get("json_mode", False))
-        updated["translation_concurrency"] = active_dict.get(
-            "translation_concurrency", updated.get("translation_concurrency")
-        )
         return updated
 
     def for_provider(self, provider_name: str | None, for_qa: bool = False) -> "LLMSettings":
@@ -185,7 +181,6 @@ class LLMSettings(_Config):
                 "local_only": active.local_only,
                 "reasoning_effort": active.reasoning_effort,
                 "json_mode": active.json_mode,
-                "translation_concurrency": active.translation_concurrency,
             }
         )
 
@@ -342,8 +337,6 @@ class Settings(BaseModel):
 
     @property
     def translation_concurrency(self) -> int:
-        if self.llm.translation_concurrency is not None:
-            return self.llm.translation_concurrency
         return self.tasks.translation_concurrency
 
     @property

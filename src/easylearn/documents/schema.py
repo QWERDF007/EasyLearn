@@ -1,9 +1,12 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from easylearn.jobs.schema import TaskView
+
+TranslationStatus = Literal["none", "partial", "completed"]
 
 
 class ParseResultView(BaseModel):
@@ -15,6 +18,9 @@ class ParseResultView(BaseModel):
     raw_file_id: str | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
     has_translation: bool = False
+    total_units: int = 0
+    translated_units: int = 0
+    translation_status: TranslationStatus = "none"
 
 
 class DocumentView(BaseModel):
@@ -30,6 +36,9 @@ class DocumentView(BaseModel):
     parse_results: tuple[ParseResultView, ...] = ()
     tasks: tuple[TaskView, ...] = ()
     has_translation: bool = False
+    total_units: int = 0
+    translated_units: int = 0
+    translation_status: TranslationStatus = "none"
 
 
 class DocumentListView(BaseModel):

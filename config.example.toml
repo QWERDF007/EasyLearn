@@ -79,7 +79,6 @@ model = "deepseek-chat"
 qa_model = "deepseek-reasoner"
 api_key = "sk-freedeepseek"
 local_only = true
-translation_concurrency = 1
 
 [llm.providers.openai]
 base_url = "https://api.openai.com/v1"
@@ -88,7 +87,6 @@ qa_model = "gpt-4o"
 api_key_env = "OPENAI_API_KEY"
 local_only = false
 reasoning_effort = "low"
-translation_concurrency = 4
 
 [files]
 max_upload_mb = 100

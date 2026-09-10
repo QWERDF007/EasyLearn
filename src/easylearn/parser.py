@@ -36,6 +36,7 @@ from easylearn.mineru.schema import MinerUOptions
 from easylearn.previews.pdf import PdfPreflight
 from easylearn.storage import LocalStorage, StoredObject
 from easylearn.tasks import TaskContext, TaskManager, TaskRecord
+from easylearn.translation import translation_units
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +194,7 @@ class ParseService:
             await context.progress(0.8, "Publishing parsed document")
             await context.check()
             final_directory = task_directory / "published"
-            await run_blocking(
+            total_units = await run_blocking(
                 self._build_published_directory,
                 final_directory,
                 input_pdf,
@@ -206,6 +207,7 @@ class ParseService:
             metadata = {
                 "preview": report.model_dump(mode="json"),
                 "mineru": evidence.manifest.model_dump(mode="json"),
+                "total_units": total_units,
             }
             if office is not None:
                 metadata["office"] = office.model_dump(mode="json")
@@ -445,13 +447,14 @@ class ParseService:
         cas: LocalStorage,
         archive: StoredObject,
         evidence: NormalizedEvidence,
-    ) -> None:
+    ) -> int:
         directory.mkdir(parents=True, exist_ok=False)
         (directory / "images").mkdir()
         shutil.copyfile(input_pdf, directory / "preview.pdf")
         shutil.copyfile(cas.path(archive.key), directory / "mineru.zip")
         shutil.copyfile(cas.path(evidence.document_ir.key), directory / "document.json")
         ir = DocumentIR.model_validate_json(cas.path(evidence.document_ir.key).read_bytes())
+        total_units = len(translation_units(ir))
         for asset in ir.assets:
             member = next(
                 member
@@ -462,6 +465,7 @@ class ParseService:
             destination = directory / asset.export_path
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(cas.path(source.key), destination)
+        return total_units
 
     async def _prune(self, document_id: UUID) -> None:
         await self.manager.run_exclusive(lambda: self._prune_locked(document_id))

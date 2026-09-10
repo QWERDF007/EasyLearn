@@ -26,6 +26,7 @@ def main() -> None:
         workers=1,
         reload=False,
         access_log=False,
+        timeout_graceful_shutdown=settings.app.timeout_graceful_shutdown,
     )
 
 

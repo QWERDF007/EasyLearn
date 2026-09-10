@@ -1288,27 +1288,73 @@ async def test_llm_client_qa_enables_deep_thinking():
 
 
 @pytest.mark.asyncio
-async def test_translation_and_qa_share_document_session_id(feature_context):
+async def test_llm_client_delete_session_and_has_active_session():
+    recorded_requests: list[httpx.Request] = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        recorded_requests.append(request)
+        if request.method == "DELETE" and request.url.path == "/v1/sessions/test-agent":
+            return httpx.Response(
+                200, json={"status": "session_deleted", "agent": "test-agent", "remote_deleted": True}
+            )
+        if request.method == "GET" and request.url.path == "/v1/sessions":
+            return httpx.Response(
+                200, json={"agents": [{"agent": "active-agent", "session_id": "sess-123"}]}
+            )
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(mock_handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        settings = Settings(
+            llm=LLMSettings(
+                base_url="http://127.0.0.1:9655/v1",
+                model="deepseek-chat",
+                local_only=True,
+            )
+        )
+        llm = LLMClient(settings, http=http_client)
+        assert await llm.delete_session("test-agent") is True
+        assert await llm.has_active_session("active-agent") is True
+        assert await llm.has_active_session("missing-agent") is False
+
+
+@pytest.mark.asyncio
+async def test_translation_isolated_and_qa_document_scoped_session_id(feature_context):
     client, document_id, parse_id = feature_context
     application = client._transport.app
 
     class SessionTrackingLLM(FakeLLM):
         def __init__(self):
             self.translation_sessions: list[str | None] = []
+            self.translation_messages: list[list[dict[str, str]]] = []
             self.qa_sessions: list[str | None] = []
+            self.deleted_sessions: list[str] = []
+            self.qa_messages: list[list[dict[str, str]]] = []
+            self.active_probe_result: bool | None = None
 
         async def complete_json(
             self, messages: list[dict[str, str]], session_id: str | None = None
         ) -> str:
             self.translation_sessions.append(session_id)
+            self.translation_messages.append(messages)
             return await super().complete_json(messages)
 
         async def stream(
             self, messages: list[dict[str, str]], session_id: str | None = None
         ):
             self.qa_sessions.append(session_id)
+            self.qa_messages.append(messages)
             async for chunk in super().stream(messages):
                 yield chunk
+
+        async def delete_session(self, session_id: str) -> bool:
+            self.deleted_sessions.append(session_id)
+            return True
+
+        async def has_active_session(self, session_id: str) -> bool | None:
+            if self.active_probe_result is not None:
+                return self.active_probe_result
+            return session_id in self.qa_sessions
 
     tracker = SessionTrackingLLM()
     application.state.services.translation.llm = tracker
@@ -1323,7 +1369,11 @@ async def test_translation_and_qa_share_document_session_id(feature_context):
     t_task = await wait_for_task(client, t_resp.json()["task_id"])
     assert t_task["status"] == "succeeded", t_task
 
-    # 2. Trigger QA
+    # Verify translation prompt is Chinese
+    assert len(tracker.translation_messages) > 0
+    assert "你是一位专业的高质量学术与技术文档翻译专家" in tracker.translation_messages[0][0]["content"]
+
+    # 2. Trigger Turn 1 QA
     q_resp = await client.post(
         f"/api/documents/{document_id}/qa",
         json={"parse_id": str(parse_id), "question": "What is the value?", "block_ids": ["b1"]},
@@ -1332,12 +1382,71 @@ async def test_translation_and_qa_share_document_session_id(feature_context):
     q_task = await wait_for_task(client, q_resp.json()["task_id"])
     assert q_task["status"] == "succeeded", q_task
 
-    expected_session_id = f"easylearn-{document_id}"
+    expected_trans_session = f"easylearn-translate-{document_id}"
+    expected_qa_session = f"easylearn-qa-{document_id}"
+
+    # Translation uses easylearn-translate-{doc_id} and deletes session afterwards
     assert len(tracker.translation_sessions) > 0
-    assert all(s == expected_session_id for s in tracker.translation_sessions)
-    assert len(tracker.qa_sessions) > 0
-    assert all(s == expected_session_id for s in tracker.qa_sessions)
-    assert tracker.translation_sessions[0] == tracker.qa_sessions[0] == expected_session_id
+    assert all(s == expected_trans_session for s in tracker.translation_sessions)
+    assert expected_trans_session in tracker.deleted_sessions
+
+    # QA uses easylearn-qa-{doc_id} and does NOT delete session (persistent per document)
+    assert len(tracker.qa_sessions) == 1
+    assert tracker.qa_sessions[0] == expected_qa_session
+    assert expected_qa_session not in tracker.deleted_sessions
+
+    # QA system prompt is Chinese and instructs combined markdown context
+    qa_sys_prompt = tracker.qa_messages[0][0]["content"]
+    assert "你是一位严谨专业的学术与技术文档阅读解读助手" in qa_sys_prompt
+    assert "结合本文档已投喂的全文 Markdown 上下文" in qa_sys_prompt
+    assert "Answer only from the supplied evidence" not in qa_sys_prompt
+
+    # Turn 1 QA prompt includes full document markdown in Chinese
+    turn1_prompt = tracker.qa_messages[0][-1]["content"]
+    assert "以下是正在阅读的完整文档内容（Markdown）：" in turn1_prompt
+    assert "```markdown" in turn1_prompt
+    assert "【用户问题】\nWhat is the value?" in turn1_prompt
+    assert "【重点参考段落】" in turn1_prompt
+    assert "[1] 段落 b1: 译：The value is 42%." in turn1_prompt
+
+    # 3. Trigger Turn 2 QA for the same document
+    q2_resp = await client.post(
+        f"/api/documents/{document_id}/qa",
+        json={"parse_id": str(parse_id), "question": "What else?", "block_ids": ["b1"], "auto_related": False},
+    )
+    assert q2_resp.status_code == 202, q2_resp.text
+    q2_task = await wait_for_task(client, q2_resp.json()["task_id"])
+    assert q2_task["status"] == "succeeded", q2_task
+
+    # Turn 2 continues in the same QA session
+    assert len(tracker.qa_sessions) == 2
+    assert tracker.qa_sessions[1] == expected_qa_session
+
+    # Turn 2 QA prompt only sends the question and reference blocks, NOT the entire markdown
+    turn2_prompt = tracker.qa_messages[1][-1]["content"]
+    assert "以下是正在阅读的完整文档内容（Markdown）：" not in turn2_prompt
+    assert "```markdown" not in turn2_prompt
+    assert "【用户问题】\nWhat else?" in turn2_prompt
+    assert "[1] 段落 b1: 译：The value is 42%." in turn2_prompt
+    assert "[2] 段落" not in turn2_prompt
+
+    # 4. Remote session is deleted on DeepSeek Web (has_active_session returns False)
+    tracker.active_probe_result = False
+    q3_resp = await client.post(
+        f"/api/documents/{document_id}/qa",
+        json={"parse_id": str(parse_id), "question": "Explain again?", "block_ids": ["b1"]},
+    )
+    assert q3_resp.status_code == 202, q3_resp.text
+    q3_task = await wait_for_task(client, q3_resp.json()["task_id"])
+    assert q3_task["status"] == "succeeded", q3_task
+
+    assert len(tracker.qa_sessions) == 3
+    # Turn 3 resends the full markdown because remote session was deleted
+    turn3_prompt = tracker.qa_messages[2][-1]["content"]
+    assert "以下是正在阅读的完整文档内容（Markdown）：" in turn3_prompt
+    assert "```markdown" in turn3_prompt
+    assert "【用户问题】\nExplain again?" in turn3_prompt
+
 
 
 

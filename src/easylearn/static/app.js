@@ -300,17 +300,36 @@ function createDocumentItemElement(item) {
     } else if (item.active_parse_id || (item.parse_results && item.parse_results.length > 0)) {
       const activeRes = item.parse_results?.find((p) => p.parse_id === item.active_parse_id) || item.parse_results?.[0];
       const pages = activeRes?.pages;
-      const isTranslated = Boolean(
-        activeRes?.has_translation ||
-        item.has_translation ||
-        (state.document?.document_id === item.document_id && hasDocumentTranslation())
+      const totalUnits = typeof activeRes?.total_units === "number" && activeRes.total_units > 0
+        ? activeRes.total_units
+        : (typeof item.total_units === "number" ? item.total_units : 0);
+      const translatedUnits = typeof activeRes?.translated_units === "number"
+        ? activeRes.translated_units
+        : (typeof item.translated_units === "number" ? item.translated_units : 0);
+      const translationStatus = activeRes?.translation_status || item.translation_status || (
+        totalUnits > 0 && translatedUnits >= totalUnits ? "completed" : translatedUnits > 0 ? "partial" : "none"
       );
-      const actionName = isTranslated ? "翻译完成" : "解析完成";
-      statusText = pages ? `✓ ${actionName} · ${pages}页` : `✓ ${actionName}`;
-      statusClass = "is-success";
-      showRing = true;
-      ringVariant = "is-success";
-      progress = 1.0;
+
+      if (translationStatus === "completed") {
+        statusText = pages ? `✓ 翻译完成 · ${pages}页` : `✓ 翻译完成`;
+        statusClass = "is-success";
+        showRing = true;
+        ringVariant = "is-success";
+        progress = 1.0;
+      } else if (translationStatus === "partial") {
+        const pct = totalUnits > 0 ? Math.min(99, Math.max(1, Math.round((translatedUnits / totalUnits) * 100))) : 0;
+        statusText = pages ? `⚡ 已译 ${pct}% · ${pages}页` : `⚡ 已译 ${pct}%`;
+        statusClass = "is-partial";
+        showRing = true;
+        ringVariant = "is-partial";
+        progress = pct / 100;
+      } else {
+        statusText = pages ? `✓ 解析完成 · ${pages}页` : `✓ 解析完成`;
+        statusClass = "is-success";
+        showRing = true;
+        ringVariant = "is-success";
+        progress = 1.0;
+      }
     } else {
       statusText = "待解析";
       statusClass = "is-muted";
@@ -757,7 +776,24 @@ function syncToolbar() {
   if (modelSelect) modelSelect.disabled = !state.models.length || state.busyButtons.has("reparse-button");
 
   const translateBtn = $("#translate-button");
-  if (translateBtn) translateBtn.disabled = !hasParse || state.busyButtons.has("translate-button");
+  if (translateBtn) {
+    translateBtn.disabled = !hasParse || state.busyButtons.has("translate-button");
+    const activeRes = state.document?.parse_results?.find((p) => p.parse_id === state.document?.active_parse_id) || state.document?.parse_results?.[0];
+    const docStatus = activeRes?.translation_status || state.document?.translation_status || "none";
+    if (docStatus === "partial") {
+      const total = activeRes?.total_units || state.document?.total_units || 0;
+      const done = activeRes?.translated_units || state.document?.translated_units || 0;
+      const pct = total > 0 ? Math.min(99, Math.max(1, Math.round((done / total) * 100))) : 0;
+      translateBtn.dataset.tooltip = `继续翻译 (已完成 ${pct}%)`;
+      translateBtn.setAttribute("aria-label", `继续翻译 (已完成 ${pct}%)`);
+    } else if (docStatus === "completed") {
+      translateBtn.dataset.tooltip = "重新翻译全文";
+      translateBtn.setAttribute("aria-label", "重新翻译全文");
+    } else {
+      translateBtn.dataset.tooltip = "翻译全文";
+      translateBtn.setAttribute("aria-label", "翻译全文");
+    }
+  }
 
   const qaBtn = $("#qa-button");
   if (qaBtn) qaBtn.disabled = !hasParse || state.busyButtons.has("ask-button");
@@ -888,10 +924,11 @@ function parseBlockIds(value) {
 
 function qaRequestBody(scope = null) {
   const source = scope || {};
+  const selectedBlocks = Array.isArray(source.block_ids) ? [...source.block_ids] : [...state.selectedBlocks];
   const context = {
     parse_id: source.parse_id || state.parse?.parse_run_id,
     question: typeof source.question === "string" ? source.question : ($("#question-input")?.value || ""),
-    block_ids: Array.isArray(source.block_ids) ? [...source.block_ids] : [...state.selectedBlocks],
+    block_ids: selectedBlocks,
     related_block_ids: Array.isArray(source.related_block_ids)
       ? [...source.related_block_ids]
       : parseBlockIds($("#qa-related-blocks")?.value || ""),
@@ -900,7 +937,8 @@ function qaRequestBody(scope = null) {
       : parseBlockIds($("#qa-exclude-blocks")?.value || ""),
     auto_related: typeof source.auto_related === "boolean"
       ? source.auto_related
-      : Boolean($("#qa-auto-related")?.checked ?? true),
+      : (selectedBlocks.length > 0 ? false : Boolean($("#qa-auto-related")?.checked ?? true)),
+    language: source.language || (state.view === "zh" ? "zh" : (state.view === "source" ? "source" : "auto")),
   };
   if (!scope) {
     state.questionContext = {
@@ -910,6 +948,7 @@ function qaRequestBody(scope = null) {
       related_block_ids: [...context.related_block_ids],
       exclude_block_ids: [...context.exclude_block_ids],
       auto_related: context.auto_related,
+      language: context.language,
     };
   }
   return context;
@@ -2222,7 +2261,8 @@ async function retryTask(task) {
         block_ids: scope.block_ids || scope.context?.filter((item) => item.required).map((item) => item.block_id) || [],
         related_block_ids: scope.related_block_ids || [],
         exclude_block_ids: scope.exclude_block_ids || [],
-        auto_related: scope.auto_related ?? true,
+        auto_related: scope.auto_related ?? false,
+        language: scope.language || "auto",
       });
       await runTask(`/api/documents/${task.document_id}/qa`, body, "回答完成");
     }

@@ -7,6 +7,250 @@
 - 无。
 
 
+### 2026-09-10 — 修复 DeepSeek 远端删除识别与已死会话 502 报错
+
+**目标**
+1. 解决 DeepSeek Web 会话被用户手动删除时返回 HTTP 200 与 `biz_code: 1`（非 404）导致代理未能识别会话失效的问题；
+2. 解决带着失效会话发起提问时因 `isExplicit` 限制导致直接抛出 HTTP 502 Bad Gateway 且无法新建会话的缺陷。
+
+**当前状态**
+- 已完成：DeepSeek 远端删除业务错误识别（`3rdparty/FreeDeepseekAPI-ZH/server.js`）：
+  - 在 `probeRemoteSessionLiveness` 与 `syncSessionParentMessageId` 中，解析响应体识别 `biz_code === 1` 与 `invalid chat session` 错误信息，准确判定会话已失效并清理本地会话缓存；
+- 已完成：死会话提问自愈重建（`3rdparty/FreeDeepseekAPI-ZH/server.js`）：
+  - 在 `askDeepSeekStream` 中增强异常重试条件，当检测到 404 或 `invalid chat session` 时，无论是否为显式会话（`isExplicit`），均立即重置死会话并自动重新调用 `chat_session/create` 创建新会话发起请求，彻底避免抛出 502；
+- 已完成：单元测试补充与回归验证（`3rdparty/FreeDeepseekAPI-ZH/tests/unit.test.js`、`tests/v3/test_runtime.py`）：
+  - 增加对真实 DeepSeek 远端 `{"code":0,"data":{"biz_code":1,"biz_msg":"invalid chat session id"}}` 响应的感知单测，全量 47 项 Node.js 测试与 14 项 Python 运行时单测通过。
+
+**验证证据**
+- `cd 3rdparty/FreeDeepseekAPI-ZH && npm test`：47 passed in 406ms；
+- `python -m pytest tests/v3/test_runtime.py`：14 passed in 0.24s。
+
+**下一步**
+- 重启 FreeDeepseekAPI 代理进程加载最新代码，交付用户验证。
+
+
+### 2026-09-10 — 解除问答证据排他限制与提示词全量中文化
+
+**目标**
+1. 解除问答中“仅根据所提供证据作答”的排他性约束，支持模型结合整篇已投喂的全文 Markdown 全局脉络与选中的重点参考段落综合回答；
+2. 将 AI 解读的系统提示词、用户问题模板与段落标记，以及批量翻译提示词全部重构为严谨的中文提示词。
+
+**当前状态**
+- 已完成：AI 解读提示词中文化与结合全文脉络重构（`src/easylearn/qa.py`）：
+  - System 提示词改为中文，明确要求结合整篇文档全局脉络以及重点参考段落作答，段落未涵盖时可结合全文 Markdown 上下文补充解答；
+  - 证据提示词由 `[1] block p0.b6:` 改为 `[1] 段落 p0.b6:`；
+  - User 提示词模板采用中文标记结构（`【用户问题】` 与 `【重点参考段落】`）；
+- 已完成：翻译服务提示词全量中文化（`src/easylearn/translation.py`）：
+  - 将 `_translate_units` 的英文翻译指令重构为专业的学术技术文档中文翻译提示词，严格保持 JSON 结构、ID 不变与占位符完整；
+- 已完成：单测与端到端回归验证（`tests/v3/test_features.py`、`tests/v3/test_runtime.py`、`tests/v3/test_app.py`、`tests/v3/test_config.py`）：
+  - 更新端到端断言，验证多轮问答与翻译中中文提示词及引用的完整传递；
+  - 全量 81 项 Python 测试与 47 项 Node.js 测试全部通过。
+
+**验证证据**
+- `python -m pytest tests/v3/test_runtime.py tests/v3/test_features.py`：50 passed in 52.19s；
+- `python -m pytest tests/v3/test_app.py tests/v3/test_config.py`：31 passed in 18.28s；
+- `cd 3rdparty/FreeDeepseekAPI-ZH && npm test`：47 passed in 410ms。
+
+**下一步**
+- 交付用户验证。
+
+
+### 2026-09-10 — DeepSeek Web 远端会话删除自动感知与全文 Markdown 重发机制
+
+**目标**
+1. 在用户于 DeepSeek Web 网页端手动删除会话后，AI 解读能够自动感知远端会话失效；
+2. 自动判定当前提问为首轮（`is_first_turn = True`），重新投喂完整全文 Markdown，恢复模型上下文。
+
+**当前状态**
+- 已完成：FreeDeepseekAPI 探活接口实现（`3rdparty/FreeDeepseekAPI-ZH/server.js`）：
+  - 提取并导出 `probeRemoteSessionLiveness(session, account)`，并在 `GET /v1/sessions/:agentId` 与 `GET /sessions/:agentId` 中集成；
+  - 若 DeepSeek 远端接口 `history_messages` 返回 404，自动重置并清理本地 session，返回 `{ active: false, exists: false, remote_deleted: true }`；
+- 已完成：EasyLearn 客户端会话探活与上下文自愈（`src/easylearn/translation.py`、`src/easylearn/qa.py`）：
+  - `LLMClient.has_active_session` 优先探活单个 agent 状态；若代理返回 `active: false`，返回 `False`；
+  - `QAService.execute` 检测到 `is_session_active is False` 时，将 `is_first_turn` 设为 `True`，重新渲染全文 Markdown 并发送首轮系统上下文；
+- 已完成：本地配置清理（`config.toml`）：
+  - 移除 `[llm.providers.deepseek]` 与 `[llm.providers.openai]` 下残留的已废弃 `translation_concurrency` 键，恢复与当前严格类型定义的同步。
+- 已完成：单测与端到端测试覆盖（`3rdparty/FreeDeepseekAPI-ZH/tests/unit.test.js`、`tests/v3/test_runtime.py`、`tests/v3/test_features.py`）：
+  - Node.js 端针对 `probeRemoteSessionLiveness` 的 404 远端删除感知完成覆盖；
+  - Python 端针对 `LLMClient.has_active_session` 单探活与 fallback 完成覆盖；
+  - 端到端测试覆盖用户在 DeepSeek Web 删掉会话后，后续提问自动重新发送全文 Markdown。
+
+**验证证据**
+- `cd 3rdparty/FreeDeepseekAPI-ZH && npm test`：47 tests passed in 581ms；
+- `python -m pytest tests/v3/test_runtime.py tests/v3/test_features.py`：50 passed in 9.88s；
+- `python -m pytest tests/v3/test_app.py tests/v3/test_config.py`：31 passed in 2.61s。
+
+**下一步**
+- 交付用户验证。
+
+
+### 2026-09-10 — 修复 AI 解读过度扩充参考段落与中文 Markdown 下未发译文的缺陷
+
+**目标**
+1. 解决已选定特定段落提问时，仍自动扩散拼装 17 个额外段落发给大模型的缺陷（做到“选中即所发”，杜绝段落发散）；
+2. 解决阅读中文 Markdown / 文档已翻译时，首轮全文 Markdown 与所选证据段落依然发送英文原文的缺陷，实现自动优先投喂中文译文。
+
+**当前状态**
+- 已完成：前端提问参数优化与语言透传（`src/easylearn/static/app.js`）：
+  - 在 `qaRequestBody` 中，当用户显式选定段落（`selectedBlocks.length > 0`）时，`auto_related` 默认设为 `false`，仅在整篇文档模式下保留自动关联；
+  - 自动将当前视图语言透传至请求体（`language: state.view === "zh" ? "zh" : "source"`），并在任务重试时保持透传；
+- 已完成：渲染层与翻译服务解耦支持（`src/easylearn/rendering.py`、`src/easylearn/translation.py`）：
+  - 扩展 `rendering.block_text(block, translations=None, language="source")` 支持单块翻译文本渲染；
+  - `TranslationService` 新增 `effective_map_for_ir(ir)`，避免重复加载 IR，提升执行效率；
+- 已完成：AI 解读服务中文与单段落精准投喂（`src/easylearn/qa.py`、`src/easylearn/main.py`）：
+  - `QARequest` 增加 `language: str = "auto"` 强类型字段；
+  - `QAService` 注入 `TranslationService`；
+  - `build_context` 中：当选定特定段落且 `auto_related=False` 时，严格只包含选中的段落；证据文本优先使用 `block_text` 渲染的中文译文（未翻译时回退原文）；
+  - `execute` 中：首轮若处于中文模式或文档已翻译，使用 `render_markdown(ir, translations, language="chinese")` 投喂中文全文 Markdown；
+- 已完成：单测覆盖与全链路验证（`tests/v3/test_runtime.py`、`tests/v3/test_features.py`）：
+  - 新增 `test_qa_uses_translations_and_isolates_selected_blocks` 验证单段落隔离与译文优先级；
+  - 更新 `test_translation_isolated_and_qa_document_scoped_session_id` 验证端到端首轮中文 Markdown 与次轮单段落投喂。
+
+**验证证据**
+- `python -m pytest tests/v3/test_runtime.py`：13 passed in 0.23s；
+- `python -m pytest tests/v3/test_features.py`：36 passed in 6.83s；
+- `python -m pytest tests/v3/test_app.py tests/v3/test_config.py`：31 passed in 2.26s。
+
+**下一步**
+- 交付用户验证。
+
+
+### 2026-09-10 — 重构 translation_concurrency：收归 tasks 命名空间并与 providers 完全解耦
+
+**目标**
+1. 将 `translation_concurrency` 统一归入 `[tasks]` 节点，默认值设为 4；
+2. 彻底解除与各个 LLM providers 的绑定，保持单一真理源（SSOT）与长期架构整洁。
+
+**当前状态**
+- 已完成：配置模型瘦身与单一真相源统一（`src/easylearn/config.py`）：
+  - 从 `LLMProviderSettings` 与 `LLMSettings` 中彻底删除 `translation_concurrency` 字段定义；
+  - 清理 `LLMSettings.resolve_provider` 与 `for_provider` 中的并发字段拷贝与同步逻辑；
+  - `translation_concurrency` 唯一真相源收归 `TaskSettings`（`translation_concurrency: int = Field(default=4, ge=1, le=16)`）；
+  - `Settings.translation_concurrency` 属性简化为只读委托 `self.tasks.translation_concurrency`；
+- 已完成：配置模板规范化（`config.example.toml`）：
+  - 在 `[tasks]` 节点明确配置 `translation_concurrency = 4`；
+  - 移除 `[llm.providers.deepseek]` 与 `[llm.providers.openai]` 中的 `translation_concurrency` 配置行；
+- 已完成：测试与行为验证（`tests/v3/test_config.py`）：
+  - 在 `test_config_resolves_translation_concurrency` 中覆盖默认值 4 及 TOML 自定义覆盖验证；
+  - 更新 `test_config_llm_provider_switching_deepseek_and_openai`，验证无论 active provider 如何切换，翻译并发数均独立稳定读取 tasks 配置；
+  - 单元测试与端到端测试全量通过。
+
+**验证证据**
+- `python -m pytest tests/v3/test_config.py`：10 passed in 0.87s；
+- `python -m pytest tests/v3/test_app.py tests/v3/test_features.py`：57 passed in 8.35s。
+
+**下一步**
+- 交付用户。
+
+
+### 2026-09-10 — 修复 Ctrl+C 退出服务时卡死在 INFO: Shutting down 的缺陷
+
+**目标**
+1. 解决用户在终端按 `Ctrl + C` 关闭 EasyLearn 服务时卡死在 `INFO: Shutting down` 的缺陷；
+2. 准确定位根因，选用最佳实践在配置层与生命周期层加固，确保一次 Ctrl+C 即可在 2 秒内干净利落地彻底关闭并退出。
+
+**当前状态**
+- 已完成：根因定位与排查验证：
+  - Windows Python 3.12 (`asyncio.ProactorEventLoop`) 下，`server.wait_closed()` 语义是等待 server 关闭且所有活跃连接完全断开；
+  - 浏览器对网页保持 HTTP Keep-Alive 长连接，而 Uvicorn 默认 `timeout_graceful_shutdown=None`；
+  - 在 `Server.shutdown()` 中，`await asyncio.wait_for(self._wait_tasks_to_complete(), timeout=None)` 由于 timeout 为 None，`server.wait_closed()` 会无限阻塞等待浏览器端主动断开 Socket，导致永久死锁停在 `INFO: Shutting down`，甚至无法到达 `lifespan.shutdown()`；
+- 已完成：配置层与启动入口增强（`src/easylearn/config.py`、`src/easylearn/__main__.py`）：
+  - 在 `AppSettings` 中增加强类型字段 `timeout_graceful_shutdown: int = Field(default=2, ge=0, le=60)`；
+  - `uvicorn.run(...)` 中显式传递 `timeout_graceful_shutdown=settings.app.timeout_graceful_shutdown`，超时到达时强制取消残留长连接任务，立即推进到 lifespan 关闭；
+- 已完成：生命周期资源释放超时加固（`src/easylearn/main.py`）：
+  - 在 `lifespan` 的 `finally:` 清理块中，对 `manager.close()`、`parser.close()`、`http.aclose()`、`qa_http.aclose()` 与 `database.close()` 增加 `asyncio.wait_for(..., timeout=2.0)` 保护，确保内部资源清理阶段不发生任何无限等待；
+- 已完成：测试覆盖与验证（`tests/v3/test_config.py`）：
+  - 新增 `test_config_app_timeout_graceful_shutdown` 单元测试，验证配置默认值与 TOML 配置覆盖；
+  - 实测验证在 Keep-Alive 连接保持下，触发退出在 2.2 秒内干净完成关闭并完整输出 `Application shutdown complete.` 与 `Finished server process`。
+
+**验证证据**
+- `pytest tests/v3/test_config.py tests/v3/test_app.py`：31 passed in 2.22s；
+- 服务优雅关闭与并发长连接保持实测：
+  - 启动 Uvicorn 并发长连接，触发 `server.should_exit = True`；
+  - 输出：`INFO: Shutting down` -> `INFO: Waiting for application shutdown.` -> `EasyLearn stopped` -> `INFO: Application shutdown complete.` -> `INFO: Finished server process`；
+  - 全流程耗时 2.23s 干净退出，进程退出码为 0。
+
+**下一步**
+- 交付用户验证。
+
+
+### 2026-09-10 — 翻译临时会话销毁、AI 解读专属多轮会话（模式 B）与全局 Markdown 投喂重构
+
+**目标**
+1. 解决全文翻译在 DeepSeek Web 留下垃圾会话的问题：翻译完成后自动通过远端接口销毁临时会话，保持 Web 侧边栏干净；
+2. 实现 AI 解读每篇文章专属会话（模式 B）：同一篇文章内的多次追问都在同一个 DeepSeek Web 会话窗口内持续多轮，不同文章相互隔离；
+3. 实现 AI 解读差异化投喂策略：首轮提问全量注入 Markdown（自动排除用户明确排除的块）建立整篇认知，后续追问仅发送选定段落与提问；
+4. 翻译与 AI 解读会话标识彻底解耦：翻译使用 `easylearn-translate-{document_id}`，解读使用 `easylearn-qa-{document_id}`。
+
+**当前状态**
+- 已完成：FreeDeepseekAPI-ZH 增加远端会话彻底销毁接口（`3rdparty/FreeDeepseekAPI-ZH/server.js`）：
+  - 实现 `deleteRemoteDeepSeekSession` 函数，调用 DeepSeek Web `POST /api/v0/chat_session/delete`，携带账号 Bearer Token 彻底删除网页端会话；
+  - 路由新增 `DELETE /v1/sessions/:agentId` 与 `DELETE /sessions/:agentId`，同时增强 `/reset-session`（支持 `DELETE` 方法与 `delete_remote=true` 查询参数及 `agent=all` 批量远端销毁）；
+  - CORS 响应头开放 `DELETE` 方法；
+  - 补充 `tests/unit.test.js` 单测覆盖，45 项单测全部通过。
+- 已完成：EasyLearn LLMClient 增加会话删除与存活探测（`src/easylearn/translation.py`）：
+  - 实现 `delete_session(session_id)`：通过 HTTP DELETE / reset-session 向代理发起销毁，优雅处理容错；
+  - 实现 `has_active_session(session_id)`：通过 GET /sessions 探查代理会话池是否具备有效远端会话。
+- 已完成：翻译生命周期会话销毁挂载（`src/easylearn/translation.py`）：
+  - 会话标识变更为独立命名空间 `easylearn-translate-{record.document_id}`；
+  - `TranslationTaskHandler.execute` 增加 `finally` 块，翻译结束（成功、取消或失败）自动触发 `delete_session`，不留垃圾。
+- 已完成：AI 解读多轮会话与首轮全局 Markdown 投喂（`src/easylearn/qa.py`）：
+  - 会话标识统一为 `easylearn-qa-{record.document_id}`（模式 B，单文档专属）；
+  - 查询本地数据库 `qa_records` 结合代理探针判定 `is_first_turn`；
+  - 首轮提问自动提取当前文档 IR，安全剔除 `exclude_block_ids` 后渲染完整 Markdown（超长时平滑中间折叠），在 Prompt 中提供全局视野；
+  - 后续追问仅发送选定段落与问题，沿用已建立的会话树继续对话。
+- 已完成：TDD 测试覆盖与真实服务验证（`tests/v3/test_features.py`）：
+  - 新增 `test_llm_client_delete_session_and_has_active_session` 单元测试；
+  - 更新 `test_translation_isolated_and_qa_document_scoped_session_id` 验证独立会话前缀、翻译会话自动销毁、首轮 Markdown 全量注入与次轮仅段落提示。
+
+**验证证据**
+- `npm test`（FreeDeepseekAPI-ZH）：45 passed in 490ms；
+- 真实代理验证（端口 9655）：
+  - `DELETE /v1/sessions/test-agent` $\to$ `{"status":"session_deleted","agent":"test-agent","remote_deleted":false,"existed":false}`；
+  - `DELETE /reset-session?agent=test-agent` $\to$ `{"status":"session_deleted", ...}`；
+- `pytest tests/v3/test_features.py tests/v3/test_app.py`：57 passed in 8.87s；
+- `pytest tests/v3/test_tasks.py`：12 passed in 1.45s。
+
+**下一步**
+- 开启本地 EasyLearn 服务（如需），向用户演示翻译会话自动销毁与 AI 解读多轮全局认知效果。
+
+
+### 2026-09-09 — 单一真相源（SSOT）重构翻译状态与进度计算，修复“伪翻译完成”展示缺陷
+
+**目标**
+1. 解决左侧最近上传文档列表中，中途断点或部分翻译的文档被简单二值化误导显示为“✓ 翻译完成”的缺陷；
+2. 基于单一真相源（SSOT）重构文档翻译完成度状态，准确区分“未翻译 (none)”、“部分已译 (partial, XX%)”与“全量翻译完成 (completed)”；
+3. 为前端阅读器工具栏提供动态感知能力，断点未完成时提示“继续翻译 (已完成 XX%)”，100% 完成后提示“重新翻译全文”。
+
+**当前状态**
+- 已完成：扩展数据模型（`src/easylearn/documents/schema.py`）：
+  - 在 `ParseResultView` 与 `DocumentView` 增加强类型字段 `total_units: int`、`translated_units: int`、`translation_status: TranslationStatus`（`none` | `partial` | `completed`），同时保留 `has_translation = (translated_units > 0)` 保证向后兼容；
+- 已完成：解析端总单元数提取与持久化（`src/easylearn/parser.py`）：
+  - 解析生成 `DocumentIR` 时直接计算 `total_units = len(translation_units(ir))` 并随元数据写入 `metadata_json`；
+- 已完成：查询端真实统计与旧数据自愈回填（`src/easylearn/documents/service.py`）：
+  - SQL 查询中使用高效聚合统计实际已完成有效译文数量 `translated_units`；
+  - 若历史旧数据未记录 `total_units`，首次查询自动通过 `ir_path` 加载计算并持久化写回 `metadata_json`，后续查询 0 额外开销；
+- 已完成：前端交互与徽标渲染重构（`src/easylearn/static/app.js` & `app.css`）：
+  - 文档列表中针对 `partial` 状态显示 `⚡ 已译 XX% · N页`，环形进度条显示对应百分比并支持专用 `.is-partial` 琥珀色样式；
+  - 仅当 `translation_status === "completed"` 时才显示 `✓ 翻译完成 · N页`；
+  - 工具栏翻译按钮针对断点状态动态提示“继续翻译 (已完成 XX%)”；
+- 已完成：TDD 单元与集成测试覆盖（`tests/v3/test_app.py`）：
+  - 更新 `test_document_and_parse_result_has_translation_status` 严格校验 0%、部分翻译（1/2）与 100% 状态迁移；
+  - 新增 `test_document_total_units_legacy_backfill` 测试旧数据透明自愈回填。
+
+**验证证据**
+- `pytest tests/v3/test_app.py -k "test_document_and_parse_result_has_translation_status or test_document_total_units_legacy_backfill"`：2 passed in 0.94s；
+- `pytest tests/v3/test_app.py tests/v3/test_parser.py tests/v3/test_features.py tests/v3/test_tasks.py`：77 passed in 13.7s；
+- 真实环境数据验证（`F:/tmp/easylearn-data/app.db`）：
+  - `2510.17611v2.pdf`：2215/2215 $\to$ `status=completed`；
+  - `2607.02252v2.pdf`：320/532 $\to$ `status=partial`（精准识别出 60% 中途断点进度，不再误报为完成）；
+  - `HOW DO VISION TRANSFORMERS WORK.pdf`：426/426 $\to$ `status=completed`；
+- 前端语法检查：`node -c src/easylearn/static/app.js` 校验通过，无语法错误。
+
+**下一步**
+- 向用户汇报重构结果及真实环境运行表现。
+
+
 ### 2026-09-09 — 定位并修复 AI 解读/翻译 502 报错、长时间排队及 Web 端无发送消息根因
 
 **目标**
