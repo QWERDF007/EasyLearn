@@ -1036,6 +1036,13 @@ h1, h2 { margin: 0; font-size: 17px; }
 .secondary-button { border: 1px solid #d8e0ec; background: #fff; color: #475569; }
 .danger-button { border: 0; background: #dc2626; color: #fff; }
 .translation-unit { display: grid; gap: 5px; padding: 4px 0; }
+.translation-unit-header { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.translation-stale-badge { font-size: 11px; color: #b45309; background: #fef3c7; border: 1px solid #fde68a; padding: 1px 6px; border-radius: 4px; font-weight: 500; }
+.translation-unit.is-stale textarea { border-color: #f59e0b; background: #fffbeb; }
+.block-edit-nodes { display: grid; gap: 8px; margin-top: 6px; }
+.block-edit-node-item { display: grid; gap: 4px; padding: 6px; border: 1px solid #e2e8f0; border-radius: 6px; background: #fff; }
+.block-edit-node-header { display: flex; align-items: center; justify-content: space-between; }
+.block-edit-node-tag { font-size: 11px; font-weight: 500; color: #475569; background: #f1f5f9; padding: 1px 6px; border-radius: 4px; }
 .translation-actions button, .history-entry button { width: max-content; padding: 4px 8px; border: 0; border-radius: 6px; background: #e7efff; color: #1d4ed8; font-size: 12px; }
 .history { margin-top: 4px; color: var(--ink-soft); font-size: 12px; }
 .history-entry { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 5px 0; }
@@ -1081,6 +1088,27 @@ h1, h2 { margin: 0; font-size: 17px; }
 .dialog-heading .icon-button { width: 28px; height: 28px; font-size: 23px; }
 .toast { position: fixed; right: 24px; bottom: 20px; z-index: 20; max-width: 420px; padding: 10px 14px; border-radius: 8px; color: #fff; background: #334155; opacity: 0; transform: translateY(8px); transition: .2s; pointer-events: none; }
 .toast.is-visible { opacity: 1; transform: translateY(0); }
+
+.citation {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 6px;
+  margin: 0 2px;
+  border: 0;
+  border-radius: 4px;
+  background: #ede9fe;
+  color: #6b21a8;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  vertical-align: baseline;
+  transition: background .15s, color .15s;
+}
+.citation:hover {
+  background: #8b5cf6;
+  color: #ffffff;
+}
 
 @media (max-width: 1280px) {
   .app-shell { grid-template-columns: 210px minmax(420px, 1fr) minmax(360px, .9fr); }

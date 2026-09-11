@@ -1,0 +1,256 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "EasyLearn 当前实现架构",
+    "locale": "zh-CN",
+    "output": "easylearn-architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/QWERDF007/EasyLearn.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "9ea0d7363f49c65d3164ee17d57efc5217e54124"
+    },
+    "viewBox": [1380, 700],
+    "views": [
+      {
+        "id": "runtime-path",
+        "label": "运行主链",
+        "focus": ["browser", "api", "tasks", "parser", "ir"],
+        "note": "从浏览器请求到解析任务和 DocumentIR 快照。"
+      },
+      {
+        "id": "postprocess",
+        "label": "后处理链",
+        "focus": ["api", "tasks", "post", "ir", "llm"],
+        "note": "翻译、问答、导出和原文修订共享解析快照。"
+      },
+      {
+        "id": "persistence",
+        "label": "持久化边界",
+        "focus": ["documents", "sqlite", "files", "parser", "post"],
+        "note": "SQLite 记录关系数据，本地目录保存文档和产物。"
+      },
+      {
+        "id": "external-runtime",
+        "label": "外部运行时",
+        "focus": ["parser", "mineru", "llm", "office"],
+        "note": "解析、LLM 和 Office 能力通过现有适配路径接入。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "browser",
+      "type": "frontend",
+      "label": "浏览器工作台",
+      "sublabel": "index.html + app.js + PDF.js",
+      "tag": "HTTP / SSE / XHR",
+      "pos": [20, 307],
+      "size": [170, 72],
+      "sources": [
+        { "path": "src/easylearn/templates/index.html", "line": 11, "end_line": 532, "label": "页面骨架" },
+        { "path": "src/easylearn/static/app.js", "line": 1, "end_line": 2996, "label": "浏览器状态与交互" }
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "FastAPI 组合根",
+      "sublabel": "main.py / ApplicationState",
+      "tag": "单进程 HTTP",
+      "pos": [240, 307],
+      "size": [190, 72],
+      "sources": [
+        { "path": "src/easylearn/main.py", "line": 60, "end_line": 208, "label": "生命周期与装配" },
+        { "path": "src/easylearn/main.py", "line": 307, "end_line": 571, "label": "HTTP / SSE / 文件路由" }
+      ]
+    },
+    {
+      "id": "tasks",
+      "type": "messagebus",
+      "label": "TaskManager",
+      "sublabel": "tasks.py / asyncio.Queue",
+      "tag": "queued → running → terminal",
+      "pos": [470, 307],
+      "size": [190, 72],
+      "sources": [
+        { "path": "src/easylearn/tasks.py", "line": 112, "end_line": 260, "label": "队列与 admission" },
+        { "path": "src/easylearn/tasks.py", "line": 391, "end_line": 496, "label": "执行与状态" }
+      ]
+    },
+    {
+      "id": "parser",
+      "type": "backend",
+      "label": "ParseService",
+      "sublabel": "parser.py / 解析编排",
+      "tag": "PDF · CAS · 发布",
+      "pos": [700, 307],
+      "size": [205, 72],
+      "sources": [
+        { "path": "src/easylearn/parser.py", "line": 67, "end_line": 220, "label": "submit / execute" },
+        { "path": "src/easylearn/parser.py", "line": 286, "end_line": 506, "label": "MinerU / 发布 / 清理" }
+      ]
+    },
+    {
+      "id": "ir",
+      "type": "backend",
+      "label": "DocumentIR 与解析适配",
+      "sublabel": "schema + preflight + MinerUAdapter",
+      "tag": "不可变 parse snapshot",
+      "pos": [930, 307],
+      "size": [205, 72],
+      "sources": [
+        { "path": "src/easylearn/document_ir/schema.py", "line": 355, "end_line": 474, "label": "快照不变量" },
+        { "path": "src/easylearn/mineru/adapter.py", "line": 257, "end_line": 495, "label": "middle → IR" },
+        { "path": "src/easylearn/previews/pdf.py", "line": 18, "end_line": 104, "label": "PDF 预检" }
+      ]
+    },
+    {
+      "id": "documents",
+      "type": "backend",
+      "label": "DocumentService",
+      "sublabel": "documents/service.py",
+      "tag": "上传 · 视图 · 文件映射",
+      "pos": [240, 450],
+      "size": [220, 72],
+      "sources": [
+        { "path": "src/easylearn/documents/service.py", "line": 32, "end_line": 130, "label": "上传与文档生命周期" },
+        { "path": "src/easylearn/documents/service.py", "line": 144, "end_line": 219, "label": "IR / 文件访问" },
+        { "path": "src/easylearn/documents/service.py", "line": 256, "end_line": 357, "label": "DocumentView 投影" }
+      ]
+    },
+    {
+      "id": "post",
+      "type": "backend",
+      "label": "后处理服务",
+      "sublabel": "translation · QA · export · source edits",
+      "tag": "共享 DocumentIR",
+      "pos": [470, 450],
+      "size": [260, 78],
+      "sources": [
+        { "path": "src/easylearn/translation.py", "line": 581, "end_line": 866, "label": "批量翻译" },
+        { "path": "src/easylearn/qa.py", "line": 72, "end_line": 129, "label": "问答提交" },
+        { "path": "src/easylearn/exports.py", "line": 48, "end_line": 103, "label": "导出任务" }
+      ]
+    },
+    {
+      "id": "sqlite",
+      "type": "database",
+      "label": "SQLite",
+      "sublabel": "app.db / aiosqlite",
+      "tag": "documents · parse_results · translations · QA",
+      "pos": [700, 579],
+      "size": [215, 72],
+      "sources": [
+        { "path": "src/easylearn/database.py", "line": 18, "end_line": 99, "label": "schema" },
+        { "path": "src/easylearn/database.py", "line": 102, "end_line": 172, "label": "connection / transaction" }
+      ]
+    },
+    {
+      "id": "files",
+      "type": "database",
+      "label": "本地文件与 CAS",
+      "sublabel": "DocumentFiles + LocalStorage",
+      "tag": "original / parses / exports / tmp",
+      "pos": [930, 579],
+      "size": [215, 72],
+      "sources": [
+        { "path": "src/easylearn/files.py", "line": 41, "end_line": 116, "label": "文档目录与发布" },
+        { "path": "src/easylearn/storage.py", "line": 21, "end_line": 81, "label": "CAS 与 checksum" }
+      ]
+    },
+    {
+      "id": "mineru",
+      "type": "external",
+      "label": "嵌入式 MinerU",
+      "sublabel": "3rdparty/MinerU + transformers",
+      "tag": "当前生产 backend: vlm-engine",
+      "pos": [700, 123],
+      "size": [220, 72],
+      "sources": [
+        { "path": "src/easylearn/mineru/embedded.py", "line": 25, "end_line": 151, "label": "模型生命周期" },
+        { "path": "src/easylearn/mineru/embedded.py", "line": 154, "end_line": 216, "label": "vendor 动态加载" }
+      ]
+    },
+    {
+      "id": "llm",
+      "type": "external",
+      "label": "OpenAI-compatible LLM",
+      "sublabel": "httpx / configured provider",
+      "tag": "翻译与 QA",
+      "pos": [1130, 450],
+      "size": [210, 72],
+      "sources": [
+        { "path": "src/easylearn/translation.py", "line": 165, "end_line": 579, "label": "LLMClient" },
+        { "path": "src/easylearn/config.py", "line": 74, "end_line": 185, "label": "provider 配置" }
+      ]
+    },
+    {
+      "id": "office",
+      "type": "external",
+      "label": "Office 转换器",
+      "sublabel": "配置的 office_command",
+      "tag": "可选能力",
+      "pos": [930, 123],
+      "size": [210, 72],
+      "sources": [
+        { "path": "src/easylearn/config.py", "line": 225, "end_line": 238, "label": "Office 开关" },
+        { "path": "src/easylearn/parser.py", "line": 308, "end_line": 421, "label": "转换流程" }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "EasyLearn 单进程应用",
+      "wraps": ["api", "tasks", "parser", "ir", "documents", "post"],
+      "pad": 28
+    },
+    {
+      "kind": "region",
+      "label": "外部运行时与 provider",
+      "wraps": ["mineru", "llm", "office"],
+      "pad": 24
+    },
+    {
+      "kind": "region",
+      "label": "本地持久化",
+      "wraps": ["sqlite", "files"],
+      "pad": 24
+    }
+  ],
+  "connections": [
+    { "id": "browser-api", "from": "browser", "to": "api", "label": "HTTP / SSE", "variant": "emphasis", "labelDy": -58 },
+    { "id": "api-tasks", "from": "api", "to": "tasks", "label": "submit / poll / cancel", "labelDy": -58 },
+    { "id": "api-documents", "from": "api", "to": "documents", "label": "document routes", "fromSide": "bottom", "toSide": "top" },
+    { "id": "tasks-parser", "from": "tasks", "to": "parser", "label": "PARSE executor", "labelDy": -58 },
+    { "id": "tasks-post", "from": "tasks", "to": "post", "label": "TRANSLATE / QA / EXPORT", "fromSide": "bottom", "toSide": "top", "labelDx": -100 },
+    { "id": "parser-ir", "from": "parser", "to": "ir", "label": "preflight / normalize", "labelDy": -58 },
+    { "id": "ir-post", "from": "ir", "to": "post", "label": "immutable snapshot", "fromSide": "bottom", "toSide": "top" },
+    { "id": "parser-mineru", "from": "parser", "to": "mineru", "label": "embedded VLM", "fromSide": "top", "toSide": "bottom", "labelDx": -100 },
+    { "id": "parser-office", "from": "parser", "to": "office", "label": "optional Office", "variant": "dashed", "fromSide": "top", "toSide": "bottom" },
+    { "id": "post-llm", "from": "post", "to": "llm", "label": "LLM JSON / stream", "fromSide": "right", "toSide": "left", "labelDy": -58, "labelDx": 100 },
+    { "id": "parser-sqlite", "from": "parser", "to": "sqlite", "label": "parse rows", "fromSide": "top", "toSide": "left", "via": [[802.5, 205], [10, 205], [10, 615], [650, 615]], "labelSegment": 1 },
+    { "id": "post-sqlite", "from": "post", "to": "sqlite", "label": "translations / edits / QA", "fromSide": "bottom", "toSide": "top", "labelDx": -150 },
+    { "id": "post-files", "from": "post", "to": "files", "label": "exports / assets", "fromSide": "top", "toSide": "top", "via": [[600, 385], [740, 385], [740, 540], [1037.5, 540]], "labelSegment": 3 }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "主执行边界",
+      "items": ["FastAPI 与 TaskManager 在同一进程", "任务 executor 连接解析、翻译、问答和导出", "ParseService 与 main.py 编排范围较宽"]
+    },
+    {
+      "dot": "emerald",
+      "title": "数据边界",
+      "items": ["DocumentIR 是不可变 parse snapshot", "SQLite 保存关系数据，本地目录保存二进制产物", "文件发布与 SQLite 提交不是同一可回滚事务"]
+    },
+    {
+      "dot": "amber",
+      "title": "外部依赖",
+      "items": ["MinerU 通过 vendored Python API 动态加载", "LLM 使用配置的 OpenAI-compatible HTTP，Office 为可选 subprocess"]
+    }
+  ]
+}

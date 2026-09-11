@@ -112,6 +112,69 @@ async function api(path, options = {}) {
   return payload;
 }
 
+const wire = {
+  getHealth: () => api("/api/health"),
+  getModels: () => api("/api/mineru/models"),
+  listDocuments: () => api("/api/documents"),
+  getDocument: (docId) => api(`/api/documents/${docId}`),
+  uploadDocument: (formData) => api("/api/documents", { method: "POST", body: formData }),
+  deleteDocument: (docId) => api(`/api/documents/${docId}`, { method: "DELETE" }),
+  setFavorite: (docId, favorite) => api(`/api/documents/${docId}/favorite`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ favorite }),
+  }),
+  getParse: (docId, parseId) => api(`/api/documents/${docId}/parses/${parseId}`),
+  submitParse: (docId, body) => api(`/api/documents/${docId}/parses`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }),
+  listSourceEdits: (docId, parseId) => api(`/api/documents/${docId}/source-edits?parse_id=${encodeURIComponent(parseId)}`),
+  updateSourceEdit: (docId, body) => api(`/api/documents/${docId}/source-edits`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }),
+  listTranslations: (docId, parseId) => api(`/api/documents/${docId}/translations?parse_id=${encodeURIComponent(parseId)}`),
+  updateTranslation: (docId, unitId, body) => api(`/api/documents/${docId}/translations/${unitId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }),
+  getTranslationHistory: (docId, unitId, parseId) => api(
+    `/api/documents/${docId}/translations/${unitId}/history?parse_id=${encodeURIComponent(parseId)}`
+  ),
+  restoreTranslation: (docId, unitId, historyId, body) => api(
+    `/api/documents/${docId}/translations/${unitId}/history/${historyId}/restore`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }
+  ),
+  submitTranslation: (docId, body) => api(`/api/documents/${docId}/translate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }),
+  getTask: (taskId) => api(`/api/tasks/${taskId}`),
+  cancelTask: (taskId) => api(`/api/tasks/${taskId}/cancel`, { method: "POST" }),
+  retryTask: (taskId) => api(`/api/tasks/${taskId}/retry`, { method: "POST" }),
+  listQA: (docId) => api(`/api/documents/${docId}/qa`),
+  submitQA: (docId, body) => api(`/api/documents/${docId}/qa`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }),
+  deleteQA: (docId, qaId) => api(`/api/documents/${docId}/qa/${qaId}`, { method: "DELETE" }),
+  submitExport: (docId, body) => api(`/api/documents/${docId}/exports`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }),
+};
+
 function notify(message) {
   const toast = $("#toast");
   toast.textContent = message;
@@ -122,7 +185,7 @@ function notify(message) {
 
 async function refreshHealth() {
   try {
-    state.health = await api("/api/health");
+    state.health = await wire.getHealth();
     syncToolbar();
   } catch (error) {
     notify(error.message);
@@ -138,7 +201,7 @@ function formatFileSize(bytes) {
 
 async function refreshModels() {
   try {
-    const models = await api("/api/mineru/models");
+    const models = await wire.getModels();
     state.models = Array.isArray(models) ? models : [];
     if (!state.selectedModelId) {
       const defaultModel = state.models.find((m) => m.selected) || state.models[0];
@@ -557,7 +620,7 @@ function renderDocumentList() {
 }
 
 async function refreshDocuments() {
-  state.documents = await api("/api/documents");
+  state.documents = await wire.listDocuments();
   for (const doc of state.documents) {
     if (Array.isArray(doc.tasks)) {
       for (const t of doc.tasks) {
@@ -589,11 +652,7 @@ async function setDocumentFavorite(documentId, favorite) {
   renderDocumentList();
 
   try {
-    const updated = await api(`/api/documents/${documentId}/favorite`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ favorite }),
-    });
+    const updated = await wire.setFavorite(documentId, favorite);
     if (target) {
       Object.assign(target, updated);
     }
@@ -639,7 +698,7 @@ async function openDocument(documentId) {
   }
 
   try {
-    const loaded = await api(`/api/documents/${documentId}`);
+    const loaded = await wire.getDocument(documentId);
     if (generation !== state.documentLoadGeneration) return;
     state.document = loaded;
     state.parse = null;
@@ -692,9 +751,9 @@ async function openParse(parseId, documentGeneration = state.documentLoadGenerat
   const documentId = state.document.document_id;
   try {
     const [parse, translations, sourceEdits] = await Promise.all([
-      api(`/api/documents/${documentId}/parses/${parseId}`),
-      api(`/api/documents/${documentId}/translations?parse_id=${encodeURIComponent(parseId)}`),
-      api(`/api/documents/${documentId}/source-edits?parse_id=${encodeURIComponent(parseId)}`),
+      wire.getParse(documentId, parseId),
+      wire.listTranslations(documentId, parseId),
+      wire.listSourceEdits(documentId, parseId),
     ]);
     if (generation !== state.parseLoadGeneration || documentGeneration !== state.documentLoadGeneration) return;
     state.parse = parse;
@@ -957,7 +1016,7 @@ function qaRequestBody(scope = null) {
 async function loadQaRecords() {
   const documentId = state.document?.document_id;
   if (!documentId) return;
-  const records = await api(`/api/documents/${documentId}/qa`);
+  const records = await wire.listQA(documentId);
   if (state.document?.document_id !== documentId) return;
   state.qaRecords = records;
   const selected = records.find((record) => record.qa_id === state.selectedQaId) || records[0] || null;
@@ -992,6 +1051,50 @@ function renderQaHistory() {
   if (delBtn) delBtn.hidden = !state.selectedQaId;
 }
 
+function renderAnswerContent(container, record) {
+  container.replaceChildren();
+  const text = record.answer || "";
+  const citations = Array.isArray(record.citations) ? record.citations : [];
+  const citationMap = new Map();
+  for (const c of citations) {
+    citationMap.set(c.citation, c);
+  }
+
+  const citationRegex = /\[(?:\^|cite:\s*)(\d+)\]/g;
+  let lastIndex = 0;
+  let match;
+  while ((match = citationRegex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      container.append(document.createTextNode(text.slice(lastIndex, match.index)));
+    }
+    const num = parseInt(match[1], 10);
+    const cite = citationMap.get(num);
+    if (cite && cite.block_id) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "citation";
+      btn.dataset.citation = cite.block_id;
+      btn.dataset.citationNum = String(num);
+      btn.title = `定位至引用段落 ${cite.block_id}`;
+      btn.textContent = `[${num}]`;
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        selectBlock(cite.block_id, false);
+        scrollToResultBlock(cite.block_id);
+        await pdfReader.focusBlock(cite.block_id);
+        notify(`已在原文与解析区域高亮定位块 ${cite.block_id}`);
+      });
+      container.append(btn);
+    } else {
+      container.append(document.createTextNode(match[0]));
+    }
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) {
+    container.append(document.createTextNode(text.slice(lastIndex)));
+  }
+}
+
 function renderQaRecord(record) {
   const answerContent = $("#answer-content");
   const delBtn = $("#delete-qa-button");
@@ -1007,7 +1110,7 @@ function renderQaRecord(record) {
   state.selectedQaId = record.qa_id;
   const questionInput = $("#question-input");
   if (questionInput) questionInput.value = record.question;
-  if (answerContent) answerContent.textContent = record.answer;
+  if (answerContent) renderAnswerContent(answerContent, record);
   if (answerState) answerState.textContent = "已完成";
   if (delBtn) delBtn.hidden = false;
 
@@ -1268,7 +1371,7 @@ function renderResult() {
     actions.append(copyBlockBtn);
     const edit = createSourceEditButton(block);
     if (edit) {
-      edit.className = "result-block-action-btn";
+      edit.classList.add("result-block-action-btn");
       edit.textContent = "纠正";
       actions.append(edit);
     }
@@ -1625,53 +1728,128 @@ function renderBlockEditCard(block) {
   toolbar.append(formatGroup, actionGroup);
   card.append(toolbar);
 
-  const textarea = document.createElement("textarea");
-  textarea.className = "block-edit-textarea";
-  textarea.value = blockSourceText(block);
-  textarea.setAttribute("aria-label", `纠正文本 ${block.block_id}`);
+  const editableNodes = editableSourceNodes(block);
+  let activeTextarea = null;
 
-  titleBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); applyTextareaFormat(textarea, "title"); });
-  boldBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); applyTextareaFormat(textarea, "bold"); });
-  italicBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); applyTextareaFormat(textarea, "italic"); });
-  strikeBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); applyTextareaFormat(textarea, "strike"); });
+  titleBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (activeTextarea) applyTextareaFormat(activeTextarea, "title");
+  });
+  boldBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (activeTextarea) applyTextareaFormat(activeTextarea, "bold");
+  });
+  italicBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (activeTextarea) applyTextareaFormat(activeTextarea, "italic");
+  });
+  strikeBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (activeTextarea) applyTextareaFormat(activeTextarea, "strike");
+  });
 
   saveBtn.addEventListener("click", (e) => {
     e.stopPropagation();
-    void saveBlockEdit(card, block, textarea.value);
-  });
-
-  textarea.addEventListener("input", () => {
-    textarea.style.height = "auto";
-    textarea.style.height = `${Math.max(60, textarea.scrollHeight)}px`;
-  });
-
-  textarea.addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-      e.preventDefault();
-      void saveBlockEdit(card, block, textarea.value);
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      state.editingSourceBlockId = null;
-      renderResult();
-    }
+    void saveBlockEdit(card, block);
   });
 
   card.addEventListener("click", (e) => {
     e.stopPropagation();
   });
 
-  card.append(textarea);
+  if (editableNodes.length <= 1) {
+    const node = editableNodes[0];
+    const textarea = document.createElement("textarea");
+    textarea.className = "block-edit-textarea";
+    if (node) {
+      textarea.dataset.nodeId = node.node_id;
+      const current = state.sourceEdits.get(sourceEditKey(block.block_id, node.node_id));
+      textarea.value = current?.effective_text ?? nodeText(node);
+    } else {
+      textarea.value = blockSourceText(block);
+    }
+    textarea.setAttribute("aria-label", `纠正文本 ${block.block_id}`);
+    activeTextarea = textarea;
 
-  requestAnimationFrame(() => {
-    textarea.style.height = "auto";
-    textarea.style.height = `${Math.max(60, textarea.scrollHeight)}px`;
-    textarea.focus();
-  });
+    textarea.addEventListener("focus", () => { activeTextarea = textarea; });
+    textarea.addEventListener("input", () => {
+      textarea.style.height = "auto";
+      textarea.style.height = `${Math.max(60, textarea.scrollHeight)}px`;
+    });
+    textarea.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        e.preventDefault();
+        void saveBlockEdit(card, block);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        state.editingSourceBlockId = null;
+        renderResult();
+      }
+    });
+
+    card.append(textarea);
+    requestAnimationFrame(() => {
+      textarea.style.height = "auto";
+      textarea.style.height = `${Math.max(60, textarea.scrollHeight)}px`;
+      textarea.focus();
+    });
+  } else {
+    const nodesContainer = document.createElement("div");
+    nodesContainer.className = "block-edit-nodes";
+    for (let i = 0; i < editableNodes.length; i++) {
+      const node = editableNodes[i];
+      const current = state.sourceEdits.get(sourceEditKey(block.block_id, node.node_id));
+      const nodeWrapper = document.createElement("div");
+      nodeWrapper.className = "block-edit-node-item";
+
+      const nodeHeader = document.createElement("div");
+      nodeHeader.className = "block-edit-node-header";
+      const nodeTag = document.createElement("span");
+      nodeTag.className = "block-edit-node-tag";
+      nodeTag.textContent = `${node.type} #${node.node_id}`;
+      nodeHeader.append(nodeTag);
+
+      const textarea = document.createElement("textarea");
+      textarea.className = "block-edit-textarea";
+      textarea.dataset.nodeId = node.node_id;
+      textarea.value = current?.effective_text ?? nodeText(node);
+      textarea.setAttribute("aria-label", `纠正节点 ${node.node_id}`);
+      if (i === 0) activeTextarea = textarea;
+
+      textarea.addEventListener("focus", () => { activeTextarea = textarea; });
+      textarea.addEventListener("input", () => {
+        textarea.style.height = "auto";
+        textarea.style.height = `${Math.max(40, textarea.scrollHeight)}px`;
+      });
+      textarea.addEventListener("keydown", (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+          e.preventDefault();
+          void saveBlockEdit(card, block);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          state.editingSourceBlockId = null;
+          renderResult();
+        }
+      });
+
+      nodeWrapper.append(nodeHeader, textarea);
+      nodesContainer.append(nodeWrapper);
+    }
+    card.append(nodesContainer);
+    requestAnimationFrame(() => {
+      const firstTa = card.querySelector(".block-edit-textarea");
+      if (firstTa) firstTa.focus();
+    });
+  }
 
   return card;
 }
 
-async function saveBlockEdit(card, block, text) {
+async function saveBlockEdit(card, block) {
   if (!state.document || !state.parse) return;
   const parseId = state.parse.parse_run_id;
   const editableNodes = editableSourceNodes(block);
@@ -1684,54 +1862,45 @@ async function saveBlockEdit(card, block, text) {
   }
 
   try {
-    const firstNode = editableNodes[0];
-    const current = state.sourceEdits.get(sourceEditKey(block.block_id, firstNode.node_id));
-    const previousText = editableNodes.length === 1
-      ? (current?.effective_text ?? ((block.source_nodes || []).find((n) => n.node_id === firstNode.node_id) ? nodeText(firstNode) : ""))
-      : blockSourceText(block);
-
-    if (text !== previousText) {
-      const updated = await api(
-        `/api/documents/${state.document.document_id}/source-edits`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            parse_id: parseId,
-            block_id: block.block_id,
-            node_id: firstNode.node_id,
-            expected_revision: current?.revision ?? 0,
-            text: text,
-          }),
-        },
-      );
-      state.sourceEdits.set(sourceEditKey(block.block_id, firstNode.node_id), updated);
-
-      for (let i = 1; i < editableNodes.length; i++) {
-        const extraNode = editableNodes[i];
-        const extraCurrent = state.sourceEdits.get(sourceEditKey(block.block_id, extraNode.node_id));
-        const extraUpdated = await api(
-          `/api/documents/${state.document.document_id}/source-edits`,
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              parse_id: parseId,
-              block_id: block.block_id,
-              node_id: extraNode.node_id,
-              expected_revision: extraCurrent?.revision ?? 0,
-              text: "",
-            }),
-          },
-        );
-        state.sourceEdits.set(sourceEditKey(block.block_id, extraNode.node_id), extraUpdated);
+    const textareas = card.querySelectorAll(".block-edit-textarea");
+    for (const ta of textareas) {
+      if (!ta.value.trim()) {
+        throw new Error("原文内容不能为空");
       }
     }
+
+    let modifiedCount = 0;
+    for (const ta of textareas) {
+      const nodeId = ta.dataset.nodeId;
+      const node = editableNodes.find((n) => n.node_id === nodeId);
+      if (!node) continue;
+      const current = state.sourceEdits.get(sourceEditKey(block.block_id, nodeId));
+      const previousText = current?.effective_text ?? nodeText(node);
+      const newText = ta.value;
+
+      if (newText !== previousText) {
+        const updated = await wire.updateSourceEdit(state.document.document_id, {
+          parse_id: parseId,
+          block_id: block.block_id,
+          node_id: nodeId,
+          expected_revision: current?.revision ?? 0,
+          text: newText,
+        });
+        state.sourceEdits.set(sourceEditKey(block.block_id, nodeId), updated);
+        modifiedCount++;
+      }
+    }
+
     state.editingSourceBlockId = null;
     await openParse(parseId);
-    notify("原文已纠正并保存");
+    notify(modifiedCount > 0 ? "原文已纠正并保存" : "未做任何修改");
   } catch (error) {
-    notify(error.message);
+    if (error.code === "SOURCE_EDIT_CONFLICT") {
+      notify("原文已被并发修改，已重新加载最新内容");
+      await openParse(parseId);
+    } else {
+      notify(error.message);
+    }
     if (saveBtn) {
       saveBtn.disabled = false;
       saveBtn.textContent = "保存";
@@ -1755,9 +1924,25 @@ function addEditor(wrapper, block) {
 function addTranslationUnit(editor, unit, block) {
   const section = document.createElement("section");
   section.className = "translation-unit";
+  if (unit.stale) {
+    section.classList.add("is-stale");
+  }
+
+  const header = document.createElement("div");
+  header.className = "translation-unit-header";
   const label = document.createElement("span");
   label.className = "translation-unit-label";
   label.textContent = unit.unit_id;
+  header.append(label);
+
+  if (unit.stale) {
+    const staleBadge = document.createElement("span");
+    staleBadge.className = "translation-stale-badge";
+    staleBadge.textContent = "待更新（原文已修改）";
+    staleBadge.title = "该单元原文已被纠正，当前翻译待更新";
+    header.append(staleBadge);
+  }
+  section.append(header);
   const textarea = document.createElement("textarea");
   textarea.value = unit.effective_text;
   textarea.disabled = unit.locked;
@@ -1771,15 +1956,11 @@ function addTranslationUnit(editor, unit, block) {
   save.disabled = unit.locked;
   save.addEventListener("click", async () => {
     try {
-      await api(`/api/documents/${state.document.document_id}/translations/${unit.unit_id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          parse_id: state.parse.parse_run_id,
-          block_id: block.block_id,
-          expected_revision: unit.revision,
-          text: textarea.value,
-        }),
+      await wire.updateTranslation(state.document.document_id, unit.unit_id, {
+        parse_id: state.parse.parse_run_id,
+        block_id: block.block_id,
+        expected_revision: unit.revision,
+        text: textarea.value,
       });
       await openParse(state.parse.parse_run_id);
       notify("译文已保存");
@@ -1793,15 +1974,11 @@ function addTranslationUnit(editor, unit, block) {
   lock.textContent = unit.locked ? "解锁" : "锁定";
   lock.addEventListener("click", async () => {
     try {
-      await api(`/api/documents/${state.document.document_id}/translations/${unit.unit_id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          parse_id: state.parse.parse_run_id,
-          block_id: block.block_id,
-          expected_revision: unit.revision,
-          locked: !unit.locked,
-        }),
+      await wire.updateTranslation(state.document.document_id, unit.unit_id, {
+        parse_id: state.parse.parse_run_id,
+        block_id: block.block_id,
+        expected_revision: unit.revision,
+        locked: !unit.locked,
       });
       await openParse(state.parse.parse_run_id);
     } catch (error) {
@@ -1815,16 +1992,12 @@ function addTranslationUnit(editor, unit, block) {
   automatic.disabled = !unit.auto_text;
   automatic.addEventListener("click", async () => {
     try {
-      await api(`/api/documents/${state.document.document_id}/translations/${unit.unit_id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          parse_id: state.parse.parse_run_id,
-          block_id: block.block_id,
-          expected_revision: unit.revision,
-          use_manual: false,
-          locked: false,
-        }),
+      await wire.updateTranslation(state.document.document_id, unit.unit_id, {
+        parse_id: state.parse.parse_run_id,
+        block_id: block.block_id,
+        expected_revision: unit.revision,
+        use_manual: false,
+        locked: false,
       });
       await openParse(state.parse.parse_run_id);
     } catch (error) {
@@ -1842,8 +2015,10 @@ function addTranslationUnit(editor, unit, block) {
     if (!history.open || history.dataset.loaded) return;
     history.dataset.loaded = "true";
     try {
-      const entries = await api(
-        `/api/documents/${state.document.document_id}/translations/${unit.unit_id}/history?parse_id=${encodeURIComponent(state.parse.parse_run_id)}`,
+      const entries = await wire.getTranslationHistory(
+        state.document.document_id,
+        unit.unit_id,
+        state.parse.parse_run_id,
       );
       for (const entry of entries) {
         const row = document.createElement("div");
@@ -1855,15 +2030,16 @@ function addTranslationUnit(editor, unit, block) {
         restore.textContent = "恢复";
         restore.addEventListener("click", async () => {
           try {
-            await api(`/api/documents/${state.document.document_id}/translations/${unit.unit_id}/history/${entry.id}/restore`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
+            await wire.restoreTranslation(
+              state.document.document_id,
+              unit.unit_id,
+              entry.id,
+              {
                 parse_id: state.parse.parse_run_id,
                 block_id: block.block_id,
                 expected_revision: unit.revision,
-              }),
-            });
+              },
+            );
             await openParse(state.parse.parse_run_id);
           } catch (error) {
             notify(error.message);
@@ -2010,7 +2186,7 @@ async function pollTask(taskId) {
   while (true) {
     let task;
     try {
-      task = await api(`/api/tasks/${taskId}`);
+      task = await wire.getTask(taskId);
     } catch (error) {
       if (error?.code !== "TASK_EXPIRED") throw error;
       const previous = state.tasks.get(taskId) || { task_id: taskId };
@@ -2165,7 +2341,7 @@ function renderTasks() {
 
 async function cancelTask(taskId) {
   try {
-    const updated = await api(`/api/tasks/${taskId}/cancel`, { method: "POST" });
+    const updated = await wire.cancelTask(taskId);
     state.tasks.set(taskId, updated);
     renderTasks();
   } catch (error) {
@@ -2344,54 +2520,54 @@ async function uploadDocument(file) {
   }
 }
 
-$("#upload-form").addEventListener("submit", (event) => {
+$("#upload-form")?.addEventListener("submit", (event) => {
   event.preventDefault();
-  void uploadDocument($("#file-input").files[0]);
+  void uploadDocument($("#file-input")?.files?.[0]);
 });
 
-$("#file-input").addEventListener("change", () => {
-  if ($("#file-input").files.length) $("#upload-form").requestSubmit();
+$("#file-input")?.addEventListener("change", () => {
+  if ($("#file-input")?.files?.length) $("#upload-form")?.requestSubmit();
 });
 
 const emptyUploadState = $("#empty-upload-state");
-emptyUploadState.addEventListener("dragover", (event) => {
+emptyUploadState?.addEventListener("dragover", (event) => {
   event.preventDefault();
-  $("#empty-upload-dropzone").classList.add("is-dragover");
+  $("#empty-upload-dropzone")?.classList.add("is-dragover");
 });
-emptyUploadState.addEventListener("dragleave", (event) => {
+emptyUploadState?.addEventListener("dragleave", (event) => {
   if (event.relatedTarget instanceof Node && emptyUploadState.contains(event.relatedTarget)) return;
-  $("#empty-upload-dropzone").classList.remove("is-dragover");
+  $("#empty-upload-dropzone")?.classList.remove("is-dragover");
 });
-emptyUploadState.addEventListener("drop", (event) => {
+emptyUploadState?.addEventListener("drop", (event) => {
   event.preventDefault();
-  $("#empty-upload-dropzone").classList.remove("is-dragover");
+  $("#empty-upload-dropzone")?.classList.remove("is-dragover");
   void uploadDocument(event.dataTransfer?.files?.[0]);
 });
 
-$("#version-select").addEventListener("change", (event) => {
+$("#version-select")?.addEventListener("change", (event) => {
   void openParse(event.target.value);
 });
 
-$("#prev-page").addEventListener("click", () => {
+$("#prev-page")?.addEventListener("click", () => {
   const currentElem = $("#page-current");
   const current = currentElem
     ? Number(currentElem.textContent) - 1
-    : Number($("#page-count").textContent.split("/")[0]) - 1;
+    : Number($("#page-count")?.textContent?.split("/")?.[0]) - 1;
   if (Number.isInteger(current)) void pdfReader.goToPage(current - 1);
 });
 
-$("#next-page").addEventListener("click", () => {
+$("#next-page")?.addEventListener("click", () => {
   const currentElem = $("#page-current");
   const current = currentElem
     ? Number(currentElem.textContent) - 1
-    : Number($("#page-count").textContent.split("/")[0]) - 1;
+    : Number($("#page-count")?.textContent?.split("/")?.[0]) - 1;
   if (Number.isInteger(current)) void pdfReader.goToPage(current + 1);
 });
 
 $("#zoom-out")?.addEventListener("click", () => pdfReader.zoomOut());
 $("#zoom-in")?.addEventListener("click", () => pdfReader.zoomIn());
 $("#reset-zoom")?.addEventListener("click", () => pdfReader.resetScale());
-$("#parse-progress-cancel").addEventListener("click", () => {
+$("#parse-progress-cancel")?.addEventListener("click", () => {
   const task = parseTaskForCurrentDocument();
   if (task) void cancelTask(task.task_id);
 });
@@ -2507,25 +2683,27 @@ $("#delete-button")?.addEventListener("click", async () => {
 
 function openDeleteDialog(documentId, name) {
   state.pendingDeleteDocumentId = documentId;
-  $("#delete-confirm-message").textContent = `确定删除“${name}”吗？此操作会移除该文档的解析版本。`;
-  $("#document-delete-dialog").showModal();
+  const msg = $("#delete-confirm-message");
+  if (msg) msg.textContent = `确定删除“${name}”吗？此操作会移除该文档的解析版本。`;
+  $("#document-delete-dialog")?.showModal();
 }
 
 async function deletePendingDocument() {
   const documentId = state.pendingDeleteDocumentId;
   if (!documentId) return;
-  $("#confirm-delete-button").disabled = true;
+  const confirmBtn = $("#confirm-delete-button");
+  if (confirmBtn) confirmBtn.disabled = true;
   try {
     state.answerAbortController?.abort();
-    await api(`/api/documents/${documentId}`, { method: "DELETE" });
+    await wire.deleteDocument(documentId);
     if (state.document?.document_id === documentId) clearCurrentDocument();
-    $("#document-delete-dialog").close();
+    $("#document-delete-dialog")?.close();
     await refreshDocuments();
     notify("文档已删除");
   } catch (error) {
     notify(error.message);
   } finally {
-    $("#confirm-delete-button").disabled = false;
+    if (confirmBtn) confirmBtn.disabled = false;
     state.pendingDeleteDocumentId = null;
     syncToolbar();
   }
@@ -2543,8 +2721,11 @@ function clearCurrentDocument() {
   state.answerTaskId = null;
   state.answerAbortController?.abort();
   state.answerAbortController = null;
-  $("#stop-answer-button").hidden = true;
-  $("#stop-answer-button").disabled = false;
+  const stopBtn = $("#stop-answer-button");
+  if (stopBtn) {
+    stopBtn.hidden = true;
+    stopBtn.disabled = false;
+  }
   pdfReader.destroy();
   $("#document-name").textContent = "选择一个文档";
   const sizeElem = $("#document-size");
@@ -2566,17 +2747,17 @@ function clearCurrentDocument() {
   syncToolbar();
 }
 
-$("#document-delete-form").addEventListener("submit", (event) => {
+$("#document-delete-form")?.addEventListener("submit", (event) => {
   event.preventDefault();
   void deletePendingDocument();
 });
-$("#cancel-delete-button").addEventListener("click", () => {
+$("#cancel-delete-button")?.addEventListener("click", () => {
   state.pendingDeleteDocumentId = null;
-  $("#document-delete-dialog").close();
+  $("#document-delete-dialog")?.close();
 });
-$("#close-delete-button").addEventListener("click", () => {
+$("#close-delete-button")?.addEventListener("click", () => {
   state.pendingDeleteDocumentId = null;
-  $("#document-delete-dialog").close();
+  $("#document-delete-dialog")?.close();
 });
 
 $("#translate-button")?.addEventListener("click", async () => {
@@ -2605,8 +2786,8 @@ $("#translate-button")?.addEventListener("click", async () => {
   });
 });
 
-$("#download-button").addEventListener("click", async () => {
-  if (!state.document || !state.parse || $("#download-button").disabled) return;
+$("#download-button")?.addEventListener("click", async () => {
+  if (!state.document || !state.parse || $("#download-button")?.disabled) return;
   const documentId = state.document.document_id;
   const parseId = state.parse.parse_run_id;
   await withButtonBusy("download-button", "导出中…", async () => {
@@ -2623,7 +2804,7 @@ $("#download-button").addEventListener("click", async () => {
 });
 
 $("#qa-button")?.addEventListener("click", () => {
-  if (!state.document || !state.parse || $("#qa-button").disabled) return;
+  if (!state.document || !state.parse || $("#qa-button")?.disabled) return;
   const panel = $("#ai-panel");
   if (panel && !panel.hidden) {
     closeQaDrawer();
@@ -2666,7 +2847,7 @@ $("#question-input")?.addEventListener("keydown", (e) => {
   }
 });
 
-$("#qa-form").addEventListener("submit", async (event) => {
+$("#qa-form")?.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!state.document || !state.parse || state.busyButtons.has("ask-button")) return;
   const q = $("#question-input")?.value?.trim();
@@ -2696,18 +2877,17 @@ $("#qa-form").addEventListener("submit", async (event) => {
     answer.textContent = "";
     let taskId = null;
     try {
-      const task = await api(`/api/documents/${documentId}/qa`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const task = await wire.submitQA(documentId, body);
       taskId = task.task_id;
       state.answerTaskId = taskId;
       state.answerAbortController = new AbortController();
       state.tasks.set(taskId, task);
       renderTasks();
-      $("#stop-answer-button").hidden = false;
-      $("#stop-answer-button").disabled = false;
+      const stopBtn = $("#stop-answer-button");
+      if (stopBtn) {
+        stopBtn.hidden = false;
+        stopBtn.disabled = false;
+      }
       const finished = await streamAnswer(
         taskId,
         answer,
@@ -2733,40 +2913,44 @@ $("#qa-form").addEventListener("submit", async (event) => {
       if (state.answerTaskId === taskId) {
         state.answerTaskId = null;
         state.answerAbortController = null;
-        $("#stop-answer-button").hidden = true;
-        $("#stop-answer-button").disabled = false;
+        const stopBtn = $("#stop-answer-button");
+        if (stopBtn) {
+          stopBtn.hidden = true;
+          stopBtn.disabled = false;
+        }
       }
     }
   });
 });
 
-$("#stop-answer-button").addEventListener("click", async () => {
+$("#stop-answer-button")?.addEventListener("click", async () => {
   const taskId = state.answerTaskId;
-  if (!taskId || $("#stop-answer-button").disabled) return;
-  $("#stop-answer-button").disabled = true;
+  const stopBtn = $("#stop-answer-button");
+  if (!taskId || stopBtn?.disabled) return;
+  if (stopBtn) stopBtn.disabled = true;
   state.answerAbortController?.abort();
   try {
-    const updated = await api(`/api/tasks/${taskId}/cancel`, { method: "POST" });
+    const updated = await wire.cancelTask(taskId);
     state.tasks.set(taskId, updated);
     renderTasks();
   } catch (error) {
     notify(error.message);
-    if (state.answerTaskId === taskId) $("#stop-answer-button").disabled = false;
+    if (state.answerTaskId === taskId && stopBtn) stopBtn.disabled = false;
   }
 });
 
-$("#qa-history-select").addEventListener("change", (event) => {
+$("#qa-history-select")?.addEventListener("change", (event) => {
   const record = state.qaRecords.find((item) => item.qa_id === event.target.value) || null;
   state.selectedQaId = record?.qa_id || null;
   renderQaRecord(record);
 });
 
-$("#delete-qa-button").addEventListener("click", async () => {
+$("#delete-qa-button")?.addEventListener("click", async () => {
   const documentId = state.document?.document_id;
   const qaId = state.selectedQaId;
   if (!documentId || !qaId || !window.confirm("确定删除这条问答记录吗？")) return;
   try {
-    await api(`/api/documents/${documentId}/qa/${qaId}`, { method: "DELETE" });
+    await wire.deleteQA(documentId, qaId);
     state.selectedQaId = null;
     await loadQaRecords();
     notify("问答记录已删除");
@@ -2777,18 +2961,19 @@ $("#delete-qa-button").addEventListener("click", async () => {
 
 $("#search-toggle")?.addEventListener("click", () => {
   const search = $("#result-search");
+  if (!search) return;
   const hidden = !search.hidden;
   search.hidden = hidden;
-  $("#search-toggle").setAttribute("aria-expanded", String(!hidden));
-  if (!hidden) $("#result-search-input").focus();
+  $("#search-toggle")?.setAttribute("aria-expanded", String(!hidden));
+  if (!hidden) $("#result-search-input")?.focus();
 });
 
-$("#result-search-input").addEventListener("input", (event) => {
+$("#result-search-input")?.addEventListener("input", (event) => {
   state.searchQuery = event.target.value;
   renderResult();
 });
 
-$("#clear-selection").addEventListener("click", () => {
+$("#clear-selection")?.addEventListener("click", () => {
   clearBlockSelection();
 });
 
@@ -2986,6 +3171,7 @@ void Promise.all([refreshHealth(), refreshModels(), refreshDocuments()]).catch((
 
 window.__easyLearn = {
   state,
+  wire,
   renderDocumentList,
   getFilteredAndSortedDocuments,
   createDocumentItemElement,

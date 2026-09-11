@@ -21,6 +21,8 @@ class ParseResultView(BaseModel):
     total_units: int = 0
     translated_units: int = 0
     translation_status: TranslationStatus = "none"
+    integrity_status: Literal["valid", "corrupt"] = "valid"
+    corrupt_reasons: tuple[str, ...] = ()
 
 
 class DocumentView(BaseModel):

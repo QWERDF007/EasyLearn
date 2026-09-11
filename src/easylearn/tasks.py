@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
@@ -11,8 +12,10 @@ from uuid import UUID, uuid4
 
 from pydantic import JsonValue
 
+from easylearn.database import Database
 from easylearn.errors import DomainError
 from easylearn.jobs.schema import JobFailure, JobKind, JobStatus, TaskView
+from easylearn.persistence.tasks import TaskStore
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +113,7 @@ class TaskContext:
 
 
 class TaskManager:
-    """Owns all transient work and never reconstructs it from the database."""
+    """Owns in-process task execution with durable lifecycle records and restart recovery."""
 
     _CONFLICTING = frozenset({JobKind.PARSE, JobKind.TRANSLATE})
 
@@ -121,6 +124,7 @@ class TaskManager:
         queue_limit: int = 8,
         concurrency: dict[JobKind, int] | None = None,
         retention_seconds: int = 1800,
+        database: Database | None = None,
     ) -> None:
         if queue_limit < 1 or retention_seconds < 1:
             raise ValueError("Task limits must be positive")
@@ -134,6 +138,8 @@ class TaskManager:
         self.queue: asyncio.Queue[TaskRecord] = asyncio.Queue(maxsize=queue_limit)
         self.concurrency = {**defaults, **(concurrency or {})}
         self.retention_seconds = retention_seconds
+        self.database = database
+        self.store = TaskStore(database) if database is not None else None
         self._records: dict[UUID, TaskRecord] = {}
         self._executors: dict[JobKind, TaskExecutor] = {}
         self._semaphores = {
@@ -156,8 +162,30 @@ class TaskManager:
         missing = set(JobKind) - set(self._executors)
         if missing:
             raise RuntimeError(f"No executor registered for: {sorted(missing)}")
+        if self.store is not None:
+            await self._reconcile_restart()
         self.stopping = False
         self._dispatcher = asyncio.create_task(self._dispatch(), name="easylearn-task-dispatcher")
+
+    async def _reconcile_restart(self) -> None:
+        if self.store is None:
+            return
+        now_iso = datetime.now(UTC).isoformat()
+        interrupted_failure = json.dumps(
+            {"code": "TASK_INTERRUPTED", "message": "Task interrupted by server restart", "retryable": True},
+            ensure_ascii=False,
+        )
+        await self.store.reconcile_orphans(interrupted_failure, now_iso)
+
+    async def _persist_record(self, record: TaskRecord) -> None:
+        if self.store is None:
+            return
+        await self.store.upsert(record)
+
+    async def _load_from_db(self, task_id: UUID) -> TaskRecord | None:
+        if self.store is None:
+            return None
+        return await self.store.load(task_id)
 
     async def close(self) -> None:
         self.stopping = True
@@ -176,6 +204,9 @@ class TaskManager:
                     record.cancel_requested = True
                     record.message = "Cancellation requested during shutdown"
             active = tuple(self._active)
+            to_persist = list(self._records.values())
+        for record in to_persist:
+            await self._persist_record(record)
         for task in active:
             task.cancel()
         if active:
@@ -195,7 +226,22 @@ class TaskManager:
         async with self._state_lock:
             if admission is not None:
                 await admission()
-            return self._submit_locked(document_id, kind, scope)
+            view = self._submit_locked(document_id, kind, scope)
+            record = self._records[view.task_id]
+        await self._persist_record(record)
+        return view
+
+    async def retry(self, task_id: UUID) -> TaskView:
+        view = await self.get(task_id)
+        if not view.status.terminal:
+            raise DomainError("TASK_BUSY", "Cannot retry an active task", status=409)
+        if view.failure is None or not view.failure.retryable:
+            raise DomainError("TASK_NOT_RETRYABLE", "Task is not retryable", status=409)
+        return await self.submit(
+            document_id=view.document_id,
+            kind=view.kind,
+            scope=dict(view.scope),
+        )
 
     async def run_exclusive[T](self, operation: Callable[[], Awaitable[T]]) -> T:
         """Run a short maintenance operation beside task admission atomically."""
@@ -255,9 +301,17 @@ class TaskManager:
         async with self._state_lock:
             self._purge_locked()
             record = self._records.get(task_id)
-            if record is None:
-                raise DomainError("TASK_EXPIRED", "Task is no longer available", status=410)
-            return record.view()
+            if record is not None:
+                return record.view()
+        if self.store is not None:
+            record_from_db = await self._load_from_db(task_id)
+            if record_from_db is not None:
+                async with self._state_lock:
+                    self._records[task_id] = record_from_db
+                    self._purge_locked()
+                    if task_id in self._records:
+                        return record_from_db.view()
+        raise DomainError("TASK_EXPIRED", "Task is no longer available", status=410)
 
     async def answer_stream(self, task_id: UUID) -> AsyncIterator[tuple[str, TaskView]]:
         """Poll the in-memory answer without persisting token events."""
@@ -297,11 +351,16 @@ class TaskManager:
                 record.message = "Cancellation requested"
                 if record.execution is not None:
                     record.execution.cancel()
-            return record.view()
+            view = record.view()
+        await self._persist_record(record)
+        return view
 
     async def cancel_document(self, document_id: UUID) -> None:
         async with self._state_lock:
             self._request_document_cancel_locked(document_id)
+            affected = [r for r in self._records.values() if r.document_id == document_id]
+        for record in affected:
+            await self._persist_record(record)
         await self._wait_for_document_idle(document_id)
 
     async def begin_document_deletion(self, document_id: UUID) -> None:
@@ -402,6 +461,7 @@ class TaskManager:
             await context.check()
             record.status = JobStatus.RUNNING
             record.message = "Running"
+            await self._persist_record(record)
             result = await self._executors[record.kind](record, context)
             await self._finish_success(record, result, context._follow_ups)
         except TaskCancelled:
@@ -438,6 +498,7 @@ class TaskManager:
                 logger.exception("Task %s failed unexpectedly", record.task_id)
         finally:
             record.finished_at = datetime.now(UTC) if record.status.terminal else None
+            await self._persist_record(record)
             if acquired:
                 semaphore.release()
             self._active.discard(current)
@@ -485,6 +546,12 @@ class TaskManager:
             record.status = JobStatus.SUCCEEDED
             if not record.message.startswith("Completed; follow-up was not queued:"):
                 record.message = "Completed"
+            new_follow_ups = [
+                self._records[UUID(fid)] for fid in follow_up_ids if UUID(fid) in self._records
+            ]
+        for follow_up_record in new_follow_ups:
+            await self._persist_record(follow_up_record)
+        await self._persist_record(record)
 
     def _purge_locked(self) -> None:
         now = datetime.now(UTC)

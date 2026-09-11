@@ -1,5 +1,11 @@
 # 文档与实现索引
 
+- [EasyLearn 项目结构总结](project-structure.md)：目录与模块职责、核心入口、调用链、数据流、异步/GPU 流程、依赖关系和当前架构问题。
+- [EasyLearn 当前实现架构图](easylearn-architecture.html)：可交互架构图；规格源为 [easylearn-architecture.json](easylearn-architecture.json)。
+- [当前架构问题优先级清单](architecture-priorities.md)：按 P1/P2 排列的正确性、契约和结构问题；仅记录分析与建议，不替代项目结构文档。
+- [架构可靠性整改规格](architecture-remediation-spec.md)：将当前问题清单收敛为可验收的可靠性合同、实施决策、测试决策与后续范围；source edit 已确认采用全链路传播。
+- [架构可靠性整改工单](architecture-remediation-tickets/README.md)：9 个已确认粒度的垂直实施工单草稿及其唯一阻塞关系。
+
 - [FastAPI + MinerU 完整架构方案 v3](FastAPI_MinerU方案与交互示例_v3/FastAPI_MinerU完整开发方案_v3.md)：系统总体架构设计、数据链路与实现规格（直连单一代码真相源）。
 - [FastAPI + MinerU 工作台交互原型与设计说明 v3](FastAPI_MinerU方案与交互示例_v3/FastAPI_MinerU交互示例_v3_说明.md)：工作台五态环形进度、原文折叠可视切换与学术排版交互说明（原型文件：[FastAPI_MinerU工作台交互示例_v3.html](FastAPI_MinerU方案与交互示例_v3/FastAPI_MinerU工作台交互示例_v3.html)）。
 - [本机运行指南](native.md)：`learn` Conda 环境、服务启动、配置与测试方法。

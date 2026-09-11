@@ -6,7 +6,7 @@ from easylearn.database import Database
 
 
 @pytest.mark.asyncio
-async def test_database_initializes_the_v3_schema_without_external_services(tmp_path):
+async def test_database_initializes_the_v5_schema_without_external_services(tmp_path):
     database = Database(tmp_path / "app.db")
     await database.open()
     try:
@@ -17,7 +17,7 @@ async def test_database_initializes_the_v3_schema_without_external_services(tmp_
                     "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
                 )
             ).fetchall()
-        assert version[0] == 3
+        assert version[0] == 5
         assert {row[0] for row in tables} == {
             "documents",
             "parse_results",
@@ -25,9 +25,12 @@ async def test_database_initializes_the_v3_schema_without_external_services(tmp_
             "translation_history",
             "source_edits",
             "qa_records",
+            "publications",
+            "tasks",
         }
     finally:
         await database.close()
+
 
 
 @pytest.mark.asyncio

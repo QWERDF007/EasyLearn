@@ -41,6 +41,7 @@ from easylearn.maintenance import MaintenanceService
 from easylearn.mineru.models import MinerUModelView
 from easylearn.parser import ParseRequest, ParseService
 from easylearn.paths import DataPaths
+from easylearn.publication import ArtifactPublisher
 from easylearn.qa import QARecordView, QARequest, QAService
 from easylearn.source_edits import SourceEditRequest, SourceEditService, SourceEditView
 from easylearn.tasks import TaskManager
@@ -88,12 +89,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         paths = DataPaths(settings.data_dir, settings.tmp_dir).ensure()
         instance_lock = InstanceLock(paths.lock)
-        instance_lock.acquire()
-        logging_controller: LoggingController = configure_logging(
-            settings.log_dir,
-        )
+        logging_controller: LoggingController | None = None
         database = Database(paths.database)
         manager = TaskManager(
+            database=database,
             queue_limit=settings.tasks.queue_limit,
             concurrency={
                 JobKind.PARSE: settings.tasks.parse_concurrency,
@@ -104,8 +103,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             retention_seconds=settings.tasks.finished_task_retention_minutes * 60,
         )
         http: httpx.AsyncClient | None = None
+        qa_http: httpx.AsyncClient | None = None
         parser: ParseService | None = None
         try:
+            instance_lock.acquire()
+            logging_controller = configure_logging(settings.log_dir)
             await database.open()
             maintenance = MaintenanceService(
                 database,
@@ -120,6 +122,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 max_bytes=settings.cache.max_mb * 1024 * 1024,
             )
             files = DocumentFiles(paths)
+            publisher = ArtifactPublisher(database, files)
+            await publisher.reconcile()
             documents = DocumentService(
                 database,
                 files,
@@ -132,12 +136,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 proxy=proxy,
                 follow_redirects=False,
             )
-            parser = ParseService(database, files, documents, manager, settings)
+            parser = ParseService(database, files, documents, manager, settings, publisher=publisher)
             source_edits = SourceEditService(database, documents)
             translation = TranslationService(
                 database, documents, manager, settings, llm=LLMClient(settings, http)
             )
-            exporter = ExportService(database, documents, manager)
+            exporter = ExportService(database, documents, manager, publisher=publisher)
             qa_llm_settings = settings.qa_llm
             qa_proxy = qa_llm_settings.resolved_proxy
             qa_http = (
@@ -178,32 +182,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             logger.info("EasyLearn started at %s:%s", settings.app.host, settings.app.port)
             yield
         finally:
+            timeout = settings.app.timeout_graceful_shutdown
             try:
-                await asyncio.wait_for(manager.close(), timeout=2.0)
+                await asyncio.wait_for(manager.close(), timeout=timeout)
             except Exception as exc:
                 logger.warning("Error closing task manager during shutdown: %s", exc)
             if parser is not None:
                 try:
-                    await asyncio.wait_for(parser.close(), timeout=2.0)
+                    await asyncio.wait_for(parser.close(), timeout=timeout)
                 except Exception as exc:
                     logger.warning("Error closing parser during shutdown: %s", exc)
             if http is not None:
                 try:
-                    await asyncio.wait_for(http.aclose(), timeout=2.0)
+                    await asyncio.wait_for(http.aclose(), timeout=timeout)
                 except Exception as exc:
                     logger.warning("Error closing http client during shutdown: %s", exc)
             if qa_http is not None and qa_http is not http:
                 try:
-                    await asyncio.wait_for(qa_http.aclose(), timeout=2.0)
+                    await asyncio.wait_for(qa_http.aclose(), timeout=timeout)
                 except Exception as exc:
                     logger.warning("Error closing qa http client during shutdown: %s", exc)
             try:
-                await asyncio.wait_for(database.close(), timeout=2.0)
+                await asyncio.wait_for(database.close(), timeout=timeout)
             except Exception as exc:
                 logger.warning("Error closing database during shutdown: %s", exc)
             logger.info("EasyLearn stopped")
-            logging_controller.close()
-            instance_lock.release()
+            if logging_controller is not None:
+                try:
+                    logging_controller.close()
+                except Exception as exc:
+                    logger.warning("Error closing logging controller during shutdown: %s", exc)
+            try:
+                instance_lock.release()
+            except Exception as exc:
+                logger.warning("Error releasing instance lock during shutdown: %s", exc)
 
     app = FastAPI(title="EasyLearn", version="0.1.0", lifespan=lifespan)
     templates = Jinja2Templates(directory=str(Path(__file__).with_name("templates")))
@@ -279,8 +291,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "mineru": {
                 "mode": "embedded",
                 "backend": "transformers",
-                "configured": _state(request).parser.mineru.configured,
-                "models": len(_state(request).parser.model_catalog.list()),
+                "supported_backends": sorted(state.parser.mineru.supported_backends),
+                "configured": state.parser.mineru.configured,
+                "models": len(state.parser.model_catalog.list()),
             },
             "llm": {
                 "configured": bool(
@@ -525,6 +538,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/tasks/{task_id}/cancel", response_model=TaskView)
     async def cancel_task(task_id: UUID, request: Request) -> TaskView:
         return await _state(request).tasks.cancel(task_id)
+
+    @app.post("/api/tasks/{task_id}/retry", response_model=TaskView, status_code=202)
+    async def retry_task(task_id: UUID, request: Request) -> TaskView:
+        return await _state(request).tasks.retry(task_id)
 
     @app.get("/api/tasks/{task_id}/answer-stream")
     async def answer_stream(task_id: UUID, request: Request) -> StreamingResponse:

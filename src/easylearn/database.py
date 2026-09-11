@@ -13,7 +13,7 @@ from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 _DOCUMENTS_COLUMNS = """
 (
@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS translations (
     use_manual INTEGER NOT NULL DEFAULT 0 CHECK (use_manual IN (0, 1)),
     locked INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0, 1)),
     revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+    source_fingerprint TEXT,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (parse_id, block_id, unit_id)
 );
@@ -96,6 +97,45 @@ CREATE TABLE IF NOT EXISTS qa_records (
 
 CREATE INDEX IF NOT EXISTS ix_qa_records_document_created
     ON qa_records(document_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS publications (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('parse', 'export')),
+    staging_path TEXT NOT NULL,
+    destination_path TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (
+        status IN ('staged', 'validated', 'published', 'recorded', 'abandoned', 'reconciled')
+    ),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (kind, artifact_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_publications_status
+    ON publications(status, created_at);
+
+CREATE TABLE IF NOT EXISTS tasks (
+    task_id TEXT PRIMARY KEY,
+    server_boot_id TEXT NOT NULL,
+    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    scope_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    progress REAL,
+    message TEXT NOT NULL,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    finished_at TEXT,
+    result_ref_json TEXT,
+    failure_json TEXT,
+    answer TEXT
+);
+
+CREATE INDEX IF NOT EXISTS ix_tasks_document_created
+    ON tasks(document_id, created_at DESC);
 """
 
 
@@ -113,28 +153,42 @@ class Database:
                 return
             self.path.parent.mkdir(parents=True, exist_ok=True)
             connection = await aiosqlite.connect(self.path)
-            connection.row_factory = aiosqlite.Row
-            await connection.execute("PRAGMA foreign_keys = ON")
-            await connection.execute("PRAGMA busy_timeout = 5000")
-            await connection.execute("PRAGMA journal_mode = WAL")
-            cursor = await connection.execute("PRAGMA user_version")
-            row = await cursor.fetchone()
-            version = int(row[0]) if row else 0
-            await cursor.close()
-            if version > SCHEMA_VERSION:
-                await connection.close()
-                raise RuntimeError(
-                    f"Database version {version} is newer than supported version {SCHEMA_VERSION}"
-                )
-            if version == 0:
-                await connection.executescript(_SCHEMA)
-                await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-            elif version == 1:
-                await _migrate_v1_to_v2(connection)
-                await _migrate_v2_to_v3(connection)
-            elif version == 2:
-                await _migrate_v2_to_v3(connection)
-            await connection.commit()
+            try:
+                connection.row_factory = aiosqlite.Row
+                await connection.execute("PRAGMA foreign_keys = ON")
+                await connection.execute("PRAGMA busy_timeout = 5000")
+                await connection.execute("PRAGMA journal_mode = WAL")
+                cursor = await connection.execute("PRAGMA user_version")
+                row = await cursor.fetchone()
+                version = int(row[0]) if row else 0
+                await cursor.close()
+                if version > SCHEMA_VERSION:
+                    raise RuntimeError(
+                        f"Database version {version} is newer than supported version {SCHEMA_VERSION}"
+                    )
+                if version == 0:
+                    await connection.executescript(_SCHEMA)
+                    await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                elif version == 1:
+                    await _migrate_v1_to_v2(connection)
+                    await _migrate_v2_to_v3(connection)
+                    await _migrate_v3_to_v4(connection)
+                    await _migrate_v4_to_v5(connection)
+                elif version == 2:
+                    await _migrate_v2_to_v3(connection)
+                    await _migrate_v3_to_v4(connection)
+                    await _migrate_v4_to_v5(connection)
+                elif version == 3:
+                    await _migrate_v3_to_v4(connection)
+                    await _migrate_v4_to_v5(connection)
+                elif version == 4:
+                    await _migrate_v4_to_v5(connection)
+            except BaseException:
+                try:
+                    await connection.close()
+                except BaseException:
+                    pass
+                raise
             self.connection = connection
 
     async def close(self) -> None:
@@ -187,7 +241,7 @@ async def _migrate_v1_to_v2(connection: aiosqlite.Connection) -> None:
         )
         await connection.execute("DROP TABLE documents")
         await connection.execute("ALTER TABLE documents_v2 RENAME TO documents")
-        await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        await connection.execute("PRAGMA user_version = 2")
         await connection.commit()
     except BaseException:
         await connection.rollback()
@@ -204,4 +258,51 @@ async def _migrate_v2_to_v3(connection: aiosqlite.Connection) -> None:
         "revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),"
         "updated_at TEXT NOT NULL, PRIMARY KEY (parse_id, block_id, node_id))"
     )
-    await connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    await connection.execute("PRAGMA user_version = 3")
+
+
+async def _migrate_v3_to_v4(connection: aiosqlite.Connection) -> None:
+    await connection.execute(
+        "CREATE TABLE IF NOT EXISTS publications ("
+        "id TEXT PRIMARY KEY, document_id TEXT NOT NULL, artifact_id TEXT NOT NULL,"
+        "kind TEXT NOT NULL CHECK (kind IN ('parse', 'export')),"
+        "staging_path TEXT NOT NULL, destination_path TEXT NOT NULL, payload_json TEXT NOT NULL,"
+        "status TEXT NOT NULL CHECK (status IN ('staged', 'validated', 'published',"
+        "'recorded', 'abandoned', 'reconciled')), created_at TEXT NOT NULL,"
+        "updated_at TEXT NOT NULL, UNIQUE (kind, artifact_id))"
+    )
+    await connection.execute(
+        "CREATE INDEX IF NOT EXISTS ix_publications_status "
+        "ON publications(status, created_at)"
+    )
+    table_info = await (await connection.execute("PRAGMA table_info(translations)")).fetchall()
+    columns = {row[1] for row in table_info}
+    if columns and "source_fingerprint" not in columns:
+        await connection.execute("ALTER TABLE translations ADD COLUMN source_fingerprint TEXT")
+    await connection.execute("PRAGMA user_version = 4")
+
+
+async def _migrate_v4_to_v5(connection: aiosqlite.Connection) -> None:
+    await connection.execute(
+        "CREATE TABLE IF NOT EXISTS tasks ("
+        "task_id TEXT PRIMARY KEY, "
+        "server_boot_id TEXT NOT NULL, "
+        "document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE, "
+        "kind TEXT NOT NULL, "
+        "scope_json TEXT NOT NULL, "
+        "status TEXT NOT NULL, "
+        "progress REAL, "
+        "message TEXT NOT NULL, "
+        "cancel_requested INTEGER NOT NULL DEFAULT 0, "
+        "created_at TEXT NOT NULL, "
+        "finished_at TEXT, "
+        "result_ref_json TEXT, "
+        "failure_json TEXT, "
+        "answer TEXT)"
+    )
+    await connection.execute(
+        "CREATE INDEX IF NOT EXISTS ix_tasks_document_created "
+        "ON tasks(document_id, created_at DESC)"
+    )
+    await connection.execute("PRAGMA user_version = 5")
+

@@ -32,6 +32,7 @@ from easylearn.document_ir.schema import (
 from easylearn.documents.service import DocumentService
 from easylearn.errors import DomainError
 from easylearn.jobs.schema import JobKind, TaskView
+from easylearn.source_edits import compute_unit_fingerprint
 from easylearn.tasks import TaskContext, TaskManager, TaskRecord
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,8 @@ class TranslationUnitView(BaseModel):
     use_manual: bool
     locked: bool
     revision: int
+    source_fingerprint: str | None = None
+    stale: bool = False
 
 
 class TranslationHistoryView(BaseModel):
@@ -578,6 +581,9 @@ class LLMClient:
                 yield client
 
 
+from easylearn.persistence.translations import TranslationStore
+
+
 class TranslationService:
     def __init__(
         self,
@@ -586,15 +592,18 @@ class TranslationService:
         manager: TaskManager,
         settings: Settings,
         llm: LLMClient | None = None,
+        store: TranslationStore | None = None,
     ) -> None:
         self.database = database
+        self.store = store or TranslationStore(database)
         self.documents = documents
         self.manager = manager
         self.settings = settings
         self.llm = llm or LLMClient(settings)
 
     async def submit(self, document_id: UUID, request: TranslateRequest) -> TaskView:
-        ir = await self.documents.load_ir(document_id, request.parse_id)
+        snapshot = await self.documents.effective_snapshot(document_id, request.parse_id)
+        ir = snapshot.ir
         selected = set(request.block_ids) if request.block_ids is not None else None
         if selected is not None and any(
             block_id not in {block.block_id for block in ir.blocks} for block_id in selected
@@ -607,13 +616,14 @@ class TranslationService:
             )
 
         async def admit() -> None:
-            await self.documents.load_ir(document_id, request.parse_id)
+            await self.documents.effective_snapshot(document_id, request.parse_id)
 
         task_view = await self.manager.submit(
             document_id,
             JobKind.TRANSLATE,
             {
                 "parse_id": str(request.parse_id),
+                "source_fingerprint": snapshot.source_fingerprint,
                 "block_ids": list(request.block_ids) if request.block_ids is not None else None,
                 "force": request.force,
             },
@@ -640,27 +650,43 @@ class TranslationService:
             selected = set(string_ids)
         else:
             raise DomainError("TRANSLATION_SCOPE_INVALID", "Translation scope is invalid")
-        ir = await self.documents.load_ir(record.document_id, parse_id)
+        snapshot = await self.documents.effective_snapshot(record.document_id, parse_id)
+        ir = snapshot.ir
         units = translation_units(ir, selected)
         if not units:
             raise DomainError(
                 "TRANSLATION_SCOPE_EMPTY", "The selected blocks contain no translatable text"
             )
-        async with self.database.read() as connection:
-            rows = await (
-                await connection.execute(
-                    "SELECT block_id, unit_id, revision, manual_text, use_manual, "
-                    "locked, auto_text FROM translations WHERE parse_id = ?",
-                    (str(parse_id),),
-                )
-            ).fetchall()
-        snapshots = {row[1]: (row[2], row[3], bool(row[4]), bool(row[5])) for row in rows}
-        existing_auto = {row[1]: row[6] for row in rows if row[6] is not None}
+        from easylearn.source_edits import compute_unit_fingerprint
+        rows = await self.store.get_translations(parse_id)
+        snapshots = {
+            row["unit_id"]: (
+                row["revision"],
+                row["manual_text"],
+                bool(row["use_manual"]),
+                bool(row["locked"]),
+            )
+            for row in rows
+        }
+        existing_auto = {row["unit_id"]: row["auto_text"] for row in rows if row["auto_text"] is not None}
+        fps = {row["unit_id"]: row["source_fingerprint"] for row in rows}
+
+        def _is_stale(u: TranslationUnit) -> bool:
+            if u.unit_id not in existing_auto:
+                return True
+            stored_fp = fps.get(u.unit_id)
+            curr_fp = compute_unit_fingerprint(u.unit_id, u.source_text)
+            if stored_fp is not None:
+                return stored_fp != curr_fp
+            return any(
+                e.block_id == u.block_id and f"{e.block_id}:{e.node_id}" == u.unit_id
+                for e in snapshot.edits
+            )
 
         if force:
             units_to_translate = units
         else:
-            units_to_translate = tuple(u for u in units if u.unit_id not in existing_auto)
+            units_to_translate = tuple(u for u in units if _is_stale(u))
 
         conflict_count = 0
         total_units = len(units)
@@ -729,55 +755,23 @@ class TranslationService:
         ) -> None:
             nonlocal conflict_count
             timestamp = _now()
-            async with self.database.transaction() as connection:
-                for unit in batch:
-                    value = batch_result[unit.unit_id]
-                    row = await (
-                        await connection.execute(
-                            "SELECT auto_text, manual_text, use_manual, locked, revision "
-                            "FROM translations WHERE parse_id = ? AND block_id = ? AND unit_id = ?",
-                            (str(parse_id), unit.block_id, unit.unit_id),
-                        )
-                    ).fetchone()
-                    if row is None:
-                        await connection.execute(
-                            "INSERT INTO translations "
-                            "(parse_id, block_id, unit_id, auto_text, manual_text, use_manual, "
-                            "locked, revision, updated_at) "
-                            "VALUES (?, ?, ?, ?, NULL, 0, 0, 0, ?)",
-                            (str(parse_id), unit.block_id, unit.unit_id, value, timestamp),
-                        )
-                        revision = 0
-                    else:
-                        revision = row[4]
-                        if revision != snapshots.get(unit.unit_id, (0, None, False, False))[0]:
-                            conflict_count += 1
-                        await connection.execute(
-                            "UPDATE translations SET auto_text = ?, updated_at = ? "
-                            "WHERE parse_id = ? AND block_id = ? AND unit_id = ?",
-                            (value, timestamp, str(parse_id), unit.block_id, unit.unit_id),
-                        )
-                    await connection.execute(
-                        "INSERT INTO translation_history "
-                        "(id, parse_id, block_id, unit_id, text, origin, revision, created_at) "
-                        "VALUES (?, ?, ?, ?, ?, 'auto', ?, ?)",
-                        (
-                            str(uuid4()),
-                            str(parse_id),
-                            unit.block_id,
-                            unit.unit_id,
-                            value,
-                            revision,
-                            timestamp,
-                        ),
-                    )
-                    await _trim_history(
-                        connection,
-                        parse_id,
-                        unit.block_id,
-                        unit.unit_id,
-                        self.settings.files.revision_history_limit,
-                    )
+            batch_items = [
+                {
+                    "block_id": unit.block_id,
+                    "unit_id": unit.unit_id,
+                    "value": batch_result[unit.unit_id],
+                    "fingerprint": compute_unit_fingerprint(unit.unit_id, unit.source_text),
+                }
+                for unit in batch
+            ]
+            conflicts = await self.store.save_batch(
+                parse_id=parse_id,
+                batch=batch_items,
+                snapshots=snapshots,
+                timestamp=timestamp,
+                history_limit=self.settings.files.revision_history_limit,
+            )
+            conflict_count += conflicts
 
         async def translate_worker(
             index: int, batch: tuple[TranslationUnit, ...]
@@ -865,161 +859,102 @@ class TranslationService:
                     )
 
     async def list(self, document_id: UUID, parse_id: UUID) -> tuple[TranslationUnitView, ...]:
-        ir = await self.documents.load_ir(document_id, parse_id)
+        snapshot = await self.documents.effective_snapshot(document_id, parse_id)
+        ir = snapshot.ir
         units = translation_units(ir)
-        async with self.database.read() as connection:
-            rows = await (
-                await connection.execute(
-                    "SELECT block_id, unit_id, auto_text, manual_text, use_manual, locked, "
-                    "revision "
-                    "FROM translations WHERE parse_id = ?",
-                    (str(parse_id),),
-                )
-            ).fetchall()
+        from easylearn.source_edits import compute_unit_fingerprint
+        rows = await self.store.get_translations(parse_id)
         values = {row[1]: row for row in rows}
-        return tuple(
-            TranslationUnitView(
-                parse_id=parse_id,
-                block_id=unit.block_id,
-                unit_id=unit.unit_id,
-                source_text=unit.source_text,
-                auto_text=values[unit.unit_id][2] if unit.unit_id in values else None,
-                manual_text=values[unit.unit_id][3] if unit.unit_id in values else None,
-                effective_text=_effective(unit, values.get(unit.unit_id)),
-                use_manual=bool(values[unit.unit_id][4]) if unit.unit_id in values else False,
-                locked=bool(values[unit.unit_id][5]) if unit.unit_id in values else False,
-                revision=values[unit.unit_id][6] if unit.unit_id in values else 0,
+        result: list[TranslationUnitView] = []
+        for unit in units:
+            row = values.get(unit.unit_id)
+            current_fp = compute_unit_fingerprint(unit.unit_id, unit.source_text)
+            stale = False
+            if row is not None:
+                row_fp = row[7] if len(row) > 7 else None
+                if row_fp is not None:
+                    stale = (row_fp != current_fp)
+                else:
+                    stale = any(
+                        e.block_id == unit.block_id and f"{e.block_id}:{e.node_id}" == unit.unit_id
+                        for e in snapshot.edits
+                    )
+            effective_text = unit.source_text if stale else _effective(unit, row)
+            result.append(
+                TranslationUnitView(
+                    parse_id=parse_id,
+                    block_id=unit.block_id,
+                    unit_id=unit.unit_id,
+                    source_text=unit.source_text,
+                    auto_text=row[2] if row else None,
+                    manual_text=row[3] if row else None,
+                    effective_text=effective_text,
+                    use_manual=bool(row[4]) if row else False,
+                    locked=bool(row[5]) if row else False,
+                    revision=row[6] if row else 0,
+                    source_fingerprint=row[7] if row and len(row) > 7 else None,
+                    stale=stale,
+                )
             )
-            for unit in units
-        )
+        return tuple(result)
 
-    async def effective_map_for_ir(self, ir: DocumentIR) -> dict[str, str]:
+    async def effective_map_for_ir(
+        self, ir: DocumentIR, edits: tuple[object, ...] | None = None
+    ) -> dict[str, str]:
         units = translation_units(ir)
-        async with self.database.read() as connection:
-            rows = await (
-                await connection.execute(
-                    "SELECT block_id, unit_id, auto_text, manual_text, use_manual, locked, revision "
-                    "FROM translations WHERE parse_id = ?",
-                    (str(ir.parse_run_id),),
-                )
-            ).fetchall()
+        from easylearn.source_edits import compute_unit_fingerprint
+        rows = await self.store.get_translations(ir.parse_run_id)
         values = {row[1]: row for row in rows}
-        return {
-            unit.unit_id: _effective(unit, values[unit.unit_id])
-            for unit in units
-            if unit.unit_id in values
-            and (values[unit.unit_id][2] is not None or values[unit.unit_id][3] is not None)
-        }
+        result: dict[str, str] = {}
+        for unit in units:
+            if unit.unit_id in values:
+                row = values[unit.unit_id]
+                if row[2] is not None or row[3] is not None:
+                    current_fp = compute_unit_fingerprint(unit.unit_id, unit.source_text)
+                    row_fp = row[7] if len(row) > 7 else None
+                    if row_fp is not None:
+                        stale = (row_fp != current_fp)
+                    elif edits is not None:
+                        stale = any(
+                            getattr(e, "block_id", None) == unit.block_id
+                            and f"{getattr(e, 'block_id', '')}:{getattr(e, 'node_id', '')}" == unit.unit_id
+                            for e in edits
+                        )
+                    else:
+                        stale = False
+                    if not stale:
+                        result[unit.unit_id] = _effective(unit, row)
+        return result
 
     async def effective_map(self, document_id: UUID, parse_id: UUID) -> dict[str, str]:
-        ir = await self.documents.load_ir(document_id, parse_id)
-        return await self.effective_map_for_ir(ir)
+        snapshot = await self.documents.effective_snapshot(document_id, parse_id)
+        return await self.effective_map_for_ir(snapshot.ir, snapshot.edits)
 
     async def edit(
         self, document_id: UUID, unit_id: str, request: EditTranslationRequest
     ) -> TranslationUnitView:
-        ir = await self.documents.load_ir(document_id, request.parse_id)
-        unit = next((item for item in translation_units(ir) if item.unit_id == unit_id), None)
+        snapshot = await self.documents.effective_snapshot(document_id, request.parse_id)
+        unit = next((item for item in translation_units(snapshot.ir) if item.unit_id == unit_id), None)
         if unit is None or unit.block_id != request.block_id:
             raise DomainError(
                 "TRANSLATION_UNIT_NOT_FOUND", "Translation unit not found", status=404
             )
-        async with self.database.transaction() as connection:
-            row = await (
-                await connection.execute(
-                    "SELECT auto_text, manual_text, use_manual, locked, revision "
-                    "FROM translations WHERE parse_id = ? AND block_id = ? AND unit_id = ?",
-                    (str(request.parse_id), request.block_id, unit_id),
-                )
-            ).fetchone()
-            current_revision = row[4] if row else 0
-            if current_revision != request.expected_revision:
-                raise DomainError(
-                    "TRANSLATION_REVISION_CONFLICT",
-                    "Translation changed; keep the submitted draft and reload the current value",
-                    status=409,
-                )
-            if row and row[3] and request.text is not None and request.locked is not False:
-                raise DomainError(
-                    "TRANSLATION_LOCKED", "Unlock the translation before editing", status=409
-                )
-            auto_text = row[0] if row else None
-            old_manual = row[1] if row else None
-            old_use_manual = bool(row[2]) if row else False
-            old_locked = bool(row[3]) if row else False
-            manual_text = request.text if request.text is not None else old_manual
-            use_manual = (
-                request.use_manual
-                if request.use_manual is not None
-                else request.text is not None or old_use_manual
-            )
-            locked = (
-                request.locked
-                if request.locked is not None
-                else (False if use_manual is False else old_locked)
-            )
-            if request.text is not None and not request.text.strip():
-                raise DomainError("TRANSLATION_TEXT_EMPTY", "Manual translation cannot be empty")
-            new_revision = current_revision + 1
-            effective_before = (
-                old_manual
-                if old_use_manual and old_manual is not None
-                else auto_text or unit.source_text
-            )
-            await connection.execute(
-                "INSERT INTO translation_history "
-                "(id, parse_id, block_id, unit_id, text, origin, revision, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 'manual', ?, ?)",
-                (
-                    str(uuid4()),
-                    str(request.parse_id),
-                    request.block_id,
-                    unit_id,
-                    effective_before,
-                    new_revision,
-                    _now(),
-                ),
-            )
-            if row is not None:
-                await connection.execute(
-                    "UPDATE translations SET manual_text = ?, use_manual = ?, locked = ?, "
-                    "revision = ?, updated_at = ? WHERE parse_id = ? AND block_id = ? "
-                    "AND unit_id = ?",
-                    (
-                        manual_text,
-                        int(use_manual),
-                        int(locked),
-                        new_revision,
-                        _now(),
-                        str(request.parse_id),
-                        request.block_id,
-                        unit_id,
-                    ),
-                )
-            else:
-                await connection.execute(
-                    "INSERT INTO translations "
-                    "(parse_id, block_id, unit_id, auto_text, manual_text, use_manual, locked, "
-                    "revision, updated_at) "
-                    "VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)",
-                    (
-                        str(request.parse_id),
-                        request.block_id,
-                        unit_id,
-                        manual_text,
-                        int(use_manual),
-                        int(locked),
-                        new_revision,
-                        _now(),
-                    ),
-                )
-            await _trim_history(
-                connection,
-                request.parse_id,
-                request.block_id,
-                unit_id,
-                self.settings.files.revision_history_limit,
-            )
+        if request.text is not None and not request.text.strip():
+            raise DomainError("TRANSLATION_TEXT_EMPTY", "Manual translation cannot be empty")
+        unit_fp = compute_unit_fingerprint(unit.unit_id, unit.source_text)
+        new_revision, timestamp, auto_text, manual_text, use_manual, locked = await self.store.edit(
+            parse_id=request.parse_id,
+            block_id=request.block_id,
+            unit_id=unit_id,
+            text=request.text,
+            use_manual=request.use_manual,
+            locked=request.locked,
+            expected_revision=request.expected_revision,
+            unit_fingerprint=unit_fp,
+            default_source_text=unit.source_text,
+            timestamp=_now(),
+            history_limit=self.settings.files.revision_history_limit,
+        )
         values = await self.list(document_id, request.parse_id)
         result = next(item for item in values if item.unit_id == unit_id)
         logger.info(
@@ -1040,103 +975,24 @@ class TranslationService:
     ) -> TranslationUnitView:
         """Restore a history value as a new manual revision."""
 
-        ir = await self.documents.load_ir(document_id, request.parse_id)
-        unit = next((item for item in translation_units(ir) if item.unit_id == unit_id), None)
+        snapshot = await self.documents.effective_snapshot(document_id, request.parse_id)
+        unit = next((item for item in translation_units(snapshot.ir) if item.unit_id == unit_id), None)
         if unit is None or unit.block_id != request.block_id:
             raise DomainError(
                 "TRANSLATION_UNIT_NOT_FOUND", "Translation unit not found", status=404
             )
-        async with self.database.transaction() as connection:
-            history = await (
-                await connection.execute(
-                    "SELECT text FROM translation_history WHERE id = ? AND parse_id = ? "
-                    "AND block_id = ? AND unit_id = ?",
-                    (str(history_id), str(request.parse_id), request.block_id, unit_id),
-                )
-            ).fetchone()
-            if history is None:
-                raise DomainError(
-                    "TRANSLATION_HISTORY_NOT_FOUND", "Translation history not found", status=404
-                )
-            row = await (
-                await connection.execute(
-                    "SELECT auto_text, manual_text, use_manual, locked, revision "
-                    "FROM translations WHERE parse_id = ? AND block_id = ? AND unit_id = ?",
-                    (str(request.parse_id), request.block_id, unit_id),
-                )
-            ).fetchone()
-            current_revision = row[4] if row else 0
-            if current_revision != request.expected_revision:
-                raise DomainError(
-                    "TRANSLATION_REVISION_CONFLICT",
-                    "Translation changed; keep the submitted draft and reload the current value",
-                    status=409,
-                )
-            if row is not None and row[3]:
-                raise DomainError(
-                    "TRANSLATION_LOCKED",
-                    "Unlock the translation before restoring a revision",
-                    status=409,
-                )
-            previous = (
-                row[1]
-                if row is not None and row[2] and row[1] is not None
-                else row[0]
-                if row is not None and row[0] is not None
-                else unit.source_text
-            )
-            revision = current_revision + 1
-            timestamp = _now()
-            await connection.execute(
-                "INSERT INTO translation_history "
-                "(id, parse_id, block_id, unit_id, text, origin, revision, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 'restore', ?, ?)",
-                (
-                    str(uuid4()),
-                    str(request.parse_id),
-                    request.block_id,
-                    unit_id,
-                    previous,
-                    revision,
-                    timestamp,
-                ),
-            )
-            if row is None:
-                await connection.execute(
-                    "INSERT INTO translations "
-                    "(parse_id, block_id, unit_id, auto_text, manual_text, use_manual, locked, "
-                    "revision, updated_at) "
-                    "VALUES (?, ?, ?, NULL, ?, 1, 0, ?, ?)",
-                    (
-                        str(request.parse_id),
-                        request.block_id,
-                        unit_id,
-                        history[0],
-                        revision,
-                        timestamp,
-                    ),
-                )
-            else:
-                await connection.execute(
-                    "UPDATE translations SET manual_text = ?, use_manual = 1, revision = ?, "
-                    "updated_at = ? "
-                    "WHERE parse_id = ? AND block_id = ? AND unit_id = ?",
-                    (
-                        history[0],
-                        revision,
-                        timestamp,
-                        str(request.parse_id),
-                        request.block_id,
-                        unit_id,
-                    ),
-                )
-            await _trim_history(
-                connection,
-                request.parse_id,
-                request.block_id,
-                unit_id,
-                self.settings.files.revision_history_limit,
-            )
+        unit_fp = compute_unit_fingerprint(unit.unit_id, unit.source_text)
+        revision, timestamp, auto_text, man_text, use_manual, locked = await self.store.restore(
+            parse_id=request.parse_id,
+            block_id=request.block_id,
+            unit_id=unit_id,
+            history_id=history_id,
+            expected_revision=request.expected_revision,
+            unit_fingerprint=unit_fp,
+            default_source_text=unit.source_text,
+            timestamp=_now(),
+            history_limit=self.settings.files.revision_history_limit,
+        )
         values = await self.list(document_id, request.parse_id)
         result = next(item for item in values if item.unit_id == unit_id)
         logger.info(
@@ -1152,25 +1008,21 @@ class TranslationService:
         self, document_id: UUID, parse_id: UUID, unit_id: str
     ) -> tuple[TranslationHistoryView, ...]:
         await self.documents.load_ir(document_id, parse_id)
-        async with self.database.read() as connection:
-            rows = await (
-                await connection.execute(
-                    "SELECT id, block_id, unit_id, text, origin, revision, created_at "
-                    "FROM translation_history WHERE parse_id = ? AND unit_id = ? "
-                    "ORDER BY created_at DESC LIMIT ?",
-                    (str(parse_id), unit_id, self.settings.files.revision_history_limit),
-                )
-            ).fetchall()
+        rows = await self.store.get_history(
+            parse_id=parse_id,
+            unit_id=unit_id,
+            limit=self.settings.files.revision_history_limit,
+        )
         return tuple(
             TranslationHistoryView(
-                id=UUID(row[0]),
+                id=UUID(str(row["id"])),
                 parse_id=parse_id,
-                block_id=row[1],
-                unit_id=row[2],
-                text=row[3],
-                origin=row[4],
-                revision=row[5],
-                created_at=datetime.fromisoformat(row[6]),
+                block_id=row["block_id"],
+                unit_id=row["unit_id"],
+                text=row["text"],
+                origin=row["origin"],
+                revision=row["revision"],
+                created_at=datetime.fromisoformat(row["created_at"]),
             )
             for row in rows
         )
@@ -1352,18 +1204,6 @@ def _effective(unit: TranslationUnit, row: Row | None) -> str:
     if row is None:
         return unit.source_text
     return row[3] if row[4] and row[3] is not None else row[2] or unit.source_text
-
-
-async def _trim_history(
-    connection: Any, parse_id: UUID, block_id: str, unit_id: str, limit: int
-) -> None:
-    await connection.execute(
-        "DELETE FROM translation_history WHERE parse_id = ? AND block_id = ? AND unit_id = ? "
-        "AND id NOT IN (SELECT id FROM translation_history "
-        "WHERE parse_id = ? AND block_id = ? AND unit_id = ? "
-        "ORDER BY created_at DESC, id DESC LIMIT ?)",
-        (str(parse_id), block_id, unit_id, str(parse_id), block_id, unit_id, limit),
-    )
 
 
 def _ensure_local_policy(base_url: str, local_only: bool) -> None:

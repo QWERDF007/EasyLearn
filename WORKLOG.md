@@ -7,6 +7,54 @@
 - 无。
 
 
+### 2026-09-11 — 完成架构可靠性整改全量 9 个工单 (Tickets 001-009)
+
+**目标**
+- 按照 `docs/architecture-remediation-tickets/` 与 `docs/architecture-remediation-spec.md` 落地完成全部 9 个可靠性重构工单：
+  1. 启动失败根因保留与生命周期资源可靠释放 (Ticket 001)
+  2. MinerU 配置能力与真实后端执行能力一致性校验 (Ticket 002)
+  3. 解析与导出发布两阶段状态机与补偿机制 (Ticket 003)
+  4. 原文修订全链路快照与指纹传播机制 (Ticket 004)
+  5. 前端原文编辑与工作台浏览器契约对齐 (Ticket 005)
+  6. QA 会话契约、流式重试与结构化引用定位校验 (Ticket 006)
+  7. 进程重启后任务状态对齐与任务重试 (Ticket 007)
+  8. 资产完整性哈希校验与孤立文件自动对齐 (Ticket 008)
+  9. 持久化存储深度封装与解析器真实变化轴解耦 (Ticket 009)
+
+**当前状态**
+- 已完成：全量 9 个工单的所有验收标准，所有业务服务中的直接 SQL 拼接被彻底移除并收敛至 `easylearn.persistence` 领域 Store；
+- 已完成：解析流程按真实变化轴解耦为 `ParsePreflight`、`ParseBackendExecutor`、`ParseResultNormalizer`、`ParsePublisher`，由 `ParseService` 统一编排并保持测试兼容；
+- 已完成：单元测试、集成测试、组件测试及浏览器冒烟全量回归验证通过。
+
+**验证证据**
+- `pytest tests/v3/ -v`：146 passed in 17.75s（0 failed, 0 errors）；
+- `pytest tests/mineru/ tests/document_ir/ -q`：300 passed, 5 skipped in 31.74s；
+- `set EASYLEARN_RUN_BROWSER_TESTS=1 && pytest tests/browser/test_upload.py -v`：8 passed in 39.40s。
+
+**下一步**
+- 9 个工单已全量无状态交付完成，可直接交付用户验收或部署。
+
+
+### 2026-09-11 — 完成 EasyLearn 代码结构、依赖与核心执行流程分析
+
+**目标**
+- 交付当前仓库的模块职责地图、依赖方向、浏览器到任务执行的数据流与按证据排序的架构风险。
+
+**当前状态**
+- 已完成：只读梳理入口、组合根、TaskManager、DocumentService、ParseService、DocumentIR、MinerU、翻译、问答、导出、源修订、前端和测试边界；完整导航见 [`docs/project-structure.md`](docs/project-structure.md)。
+- 已完成：生成当前实现架构图规格与可交互 HTML，并在 `docs/README.md` 建立索引。
+- 关键结论：`main.py`/`parser.py` 扇出最高；任务与流式答案仅驻留进程内；解析主链为预检 → CAS → Embedded MinerU → 结果验证 → IR 归一化 → 文件/SQLite 发布；主要维护风险是具体 SQLite/raw SQL 横穿服务、文件与数据库发布非原子、`DocumentService` 与翻译单元逻辑反向耦合，以及声明的 MinerU backend 与生产接线不一致。
+
+**验证证据**
+- `node bin/archify.mjs validate architecture ... --quality showcase --json`：9/9 检查通过，0 errors，0 warnings。
+- `node bin/archify.mjs deliver architecture ... --repo-root F:/Projects/EasyLearn --quality showcase --json`：交付成功；规格 SHA-256 为 `893656bd06cf305033ee580b8493a2e2547fe854d846d5abb2b76e00438a771d`，HTML SHA-256 为 `021cd14112e05a8be0d2230afa4133e787765e37113eb86ac9224e20f54d5325`。
+- `node bin/archify.mjs visual-check docs/easylearn-architecture.html --json`：Chrome 自动浏览证据通过；1440×900、1600×1000、1920×1080、2048×1320 均无溢出，浅色/深色截图均已生成并完成视觉检查。
+- 本轮为静态结构分析与文档/图表交付，未运行 pytest、ruff、mypy 或真实 MinerU/LLM 流程。
+
+**下一步**
+- 若进入整改，优先根据报告确认 source-edit 是否应成为翻译、问答和导出的统一输入，再决定是否收窄持久化与翻译单元 seam；当前分析交付无未完成调查项。
+
+
 ### 2026-09-10 — 修复 DeepSeek 远端删除识别与已死会话 502 报错
 
 **目标**

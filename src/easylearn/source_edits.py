@@ -1,6 +1,6 @@
-from __future__ import annotations
-
+import hashlib
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -45,27 +45,52 @@ class SourceEditView(BaseModel):
     updated_at: datetime
 
 
+@dataclass(frozen=True)
+class EffectiveDocumentSnapshot:
+    document_id: UUID
+    parse_id: UUID
+    ir: DocumentIR
+    source_fingerprint: str
+    revision: int
+    edits: tuple[SourceEditView, ...]
+
+
+def compute_source_fingerprint(parse_id: UUID, edits: tuple[SourceEditView, ...]) -> str:
+    hasher = hashlib.sha256(f"parse:{parse_id}".encode("utf-8"))
+    for edit in sorted(edits, key=lambda e: (e.block_id, e.node_id)):
+        hasher.update(
+            f":{edit.block_id}:{edit.node_id}:{edit.revision}:{edit.effective_text}".encode("utf-8")
+        )
+    return hasher.hexdigest()
+
+
+def compute_unit_fingerprint(unit_id: str, source_text: str) -> str:
+    return hashlib.sha256(f"{unit_id}:{source_text.strip()}".encode("utf-8")).hexdigest()[:16]
+
+
 EditableNode = TextNode | MathNode | CodeNode | LinkNode | ReferenceNode | ImageNode
+
+
+from easylearn.persistence.source_edits import SourceEditStore
 
 
 class SourceEditService:
     """Persist editable text overlays while keeping the parsed IR immutable."""
 
-    def __init__(self, database: Database, documents: DocumentService) -> None:
+    def __init__(
+        self,
+        database: Database,
+        documents: DocumentService,
+        store: SourceEditStore | None = None,
+    ) -> None:
         self.database = database
+        self.store = store or SourceEditStore(database)
         self.documents = documents
 
     async def list(self, document_id: UUID, parse_id: UUID) -> tuple[SourceEditView, ...]:
         ir = await self.documents.load_ir(document_id, parse_id)
         blocks = _editable_nodes(ir)
-        async with self.database.read() as connection:
-            rows = await (
-                await connection.execute(
-                    "SELECT block_id, node_id, text, revision, updated_at "
-                    "FROM source_edits WHERE parse_id = ? ORDER BY block_id, node_id",
-                    (str(parse_id),),
-                )
-            ).fetchall()
+        rows = await self.store.list_edits(parse_id)
         result: list[SourceEditView] = []
         for row in rows:
             node = blocks.get((row[0], row[1]))
@@ -84,10 +109,26 @@ class SourceEditService:
             )
         return tuple(result)
 
-    async def effective_ir(self, document_id: UUID, parse_id: UUID) -> DocumentIR:
+    async def effective_snapshot(
+        self, document_id: UUID, parse_id: UUID
+    ) -> EffectiveDocumentSnapshot:
         ir = await self.documents.load_ir(document_id, parse_id)
         edits = await self.list(document_id, parse_id)
-        return apply_source_edits(ir, edits)
+        effective_ir = apply_source_edits(ir, edits)
+        fingerprint = compute_source_fingerprint(parse_id, edits)
+        revision = sum(edit.revision for edit in edits)
+        return EffectiveDocumentSnapshot(
+            document_id=document_id,
+            parse_id=parse_id,
+            ir=effective_ir,
+            source_fingerprint=fingerprint,
+            revision=revision,
+            edits=edits,
+        )
+
+    async def effective_ir(self, document_id: UUID, parse_id: UUID) -> DocumentIR:
+        snapshot = await self.effective_snapshot(document_id, parse_id)
+        return snapshot.ir
 
     async def edit(self, document_id: UUID, request: SourceEditRequest) -> SourceEditView:
         ir = await self.documents.load_ir(document_id, request.parse_id)
@@ -97,38 +138,14 @@ class SourceEditService:
         if not request.text.strip():
             raise DomainError("SOURCE_TEXT_EMPTY", "Edited source text cannot be empty")
         now = datetime.now(UTC).isoformat()
-        async with self.database.transaction() as connection:
-            row = await (
-                await connection.execute(
-                    "SELECT text, revision, updated_at FROM source_edits "
-                    "WHERE parse_id = ? AND block_id = ? AND node_id = ?",
-                    (str(request.parse_id), request.block_id, request.node_id),
-                )
-            ).fetchone()
-            current_revision = int(row[1]) if row is not None else 0
-            if current_revision != request.expected_revision:
-                raise DomainError(
-                    "SOURCE_EDIT_CONFLICT",
-                    "Source text changed; reload the block before saving",
-                    status=409,
-                )
-            revision = current_revision + 1
-            await connection.execute(
-                "INSERT INTO source_edits "
-                "(parse_id, block_id, node_id, text, revision, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(parse_id, block_id, node_id) DO UPDATE SET "
-                "text = excluded.text, revision = excluded.revision, "
-                "updated_at = excluded.updated_at",
-                (
-                    str(request.parse_id),
-                    request.block_id,
-                    request.node_id,
-                    request.text,
-                    revision,
-                    now,
-                ),
-            )
+        revision, _ = await self.store.save_edit(
+            parse_id=request.parse_id,
+            block_id=request.block_id,
+            node_id=request.node_id,
+            text=request.text,
+            expected_revision=request.expected_revision,
+            updated_at=now,
+        )
         logger.info(
             "Source edit saved: document_id=%s, parse_id=%s, block_id=%s, node_id=%s, revision=%d",
             document_id,

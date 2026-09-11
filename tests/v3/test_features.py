@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import shutil
 import threading
@@ -49,7 +50,7 @@ class FakeLLM:
 
     async def stream(self, messages: list[dict[str, str]]):
         del messages
-        for chunk in ("该值是 42%。", " [1]"):
+        for chunk in ("该值是 42%。", " [^1]"):
             await asyncio.sleep(0)
             yield chunk
 
@@ -57,7 +58,7 @@ class FakeLLM:
 class InvalidCitationLLM(FakeLLM):
     async def stream(self, messages: list[dict[str, str]]):
         del messages
-        yield "依据不足 [99]"
+        yield "依据不足 [^99]"
 
 
 class BlockingTranslationLLM(FakeLLM):
@@ -687,9 +688,13 @@ async def test_export_zip_contains_image_assets_and_usable_markdown_links(featur
     client, document_id, parse_id = feature_context
     application = client._transport.app
     asset_id = uuid4()
+    image_bytes = BytesIO()
+    with Image.new("RGB", (2, 2), "red") as image:
+        image.save(image_bytes, format="PNG")
+    raw_image = image_bytes.getvalue()
     asset = AssetDescriptor(
         asset_id=asset_id,
-        sha256="1" * 64,
+        sha256=hashlib.sha256(raw_image).hexdigest(),
         mime="image/png",
         export_path="images/figure.png",
     )
@@ -704,11 +709,8 @@ async def test_export_zip_contains_image_assets_and_usable_markdown_links(featur
         update={"blocks": (*current.blocks, image_block), "assets": (asset,)}
     )
     parse_directory = application.state.services.files.paths.parse(document_id, parse_id)
-    image_bytes = BytesIO()
-    with Image.new("RGB", (2, 2), "red") as image:
-        image.save(image_bytes, format="PNG")
     (parse_directory / asset.export_path).parent.mkdir(parents=True, exist_ok=True)
-    (parse_directory / asset.export_path).write_bytes(image_bytes.getvalue())
+    (parse_directory / asset.export_path).write_bytes(raw_image)
     (parse_directory / "document.json").write_bytes(
         updated.model_dump_json(exclude_computed_fields=True).encode("utf-8")
     )
@@ -849,7 +851,7 @@ async def test_qa_freezes_evidence_validates_citations_and_streams_answer(featur
     task_id = accepted.json()["task_id"]
     task = await wait_for_task(client, task_id)
     assert task["status"] == "succeeded", task
-    assert task["answer"].endswith("[1]")
+    assert task["answer"].endswith("[^1]")
     stream = await client.get(f"/api/tasks/{task_id}/answer-stream")
     assert stream.status_code == 200
     assert "该值是 42%" in stream.text
@@ -1407,7 +1409,7 @@ async def test_translation_isolated_and_qa_document_scoped_session_id(feature_co
     assert "```markdown" in turn1_prompt
     assert "【用户问题】\nWhat is the value?" in turn1_prompt
     assert "【重点参考段落】" in turn1_prompt
-    assert "[1] 段落 b1: 译：The value is 42%." in turn1_prompt
+    assert "[^1] 段落 b1: 译：The value is 42%." in turn1_prompt
 
     # 3. Trigger Turn 2 QA for the same document
     q2_resp = await client.post(
@@ -1427,8 +1429,8 @@ async def test_translation_isolated_and_qa_document_scoped_session_id(feature_co
     assert "以下是正在阅读的完整文档内容（Markdown）：" not in turn2_prompt
     assert "```markdown" not in turn2_prompt
     assert "【用户问题】\nWhat else?" in turn2_prompt
-    assert "[1] 段落 b1: 译：The value is 42%." in turn2_prompt
-    assert "[2] 段落" not in turn2_prompt
+    assert "[^1] 段落 b1: 译：The value is 42%." in turn2_prompt
+    assert "[^2] 段落" not in turn2_prompt
 
     # 4. Remote session is deleted on DeepSeek Web (has_active_session returns False)
     tracker.active_probe_result = False

@@ -18,6 +18,7 @@ from easylearn.document_ir.schema import Block, BlockRef, DocumentIR
 from easylearn.documents.service import DocumentService
 from easylearn.errors import DomainError
 from easylearn.jobs.schema import JobKind, TaskView
+from easylearn.persistence.qa import QAStore
 from easylearn.rendering import block_text, render_markdown
 from easylearn.tasks import TaskContext, TaskManager, TaskRecord
 from easylearn.translation import LLMClient, TranslationService
@@ -85,13 +86,15 @@ class QAService:
         self.settings = settings
         self.llm = llm or LLMClient(settings)
         self.translation = translation
+        self.store = QAStore(database)
 
     async def submit(self, document_id: UUID, request: QARequest) -> TaskView:
         if not self.settings.extensions.qa_enabled:
             raise DomainError("QA_DISABLED", "AI question answering is disabled", status=503)
-        ir = await self.documents.load_ir(document_id, request.parse_id)
+        snapshot = await self.documents.effective_snapshot(document_id, request.parse_id)
+        ir = snapshot.ir
         translations = (
-            await self.translation.effective_map_for_ir(ir)
+            await self.translation.effective_map_for_ir(ir, snapshot.edits)
             if self.translation is not None
             else {}
         )
@@ -108,7 +111,7 @@ class QAService:
         qa_id = uuid4()
 
         async def admit() -> None:
-            await self.documents.load_ir(document_id, request.parse_id)
+            await self.documents.effective_snapshot(document_id, request.parse_id)
 
         return await self.manager.submit(
             document_id,
@@ -291,14 +294,7 @@ class QAService:
             len(evidence),
         )
         doc_session_id = f"easylearn-qa-{record.document_id}"
-        async with self.database.read() as connection:
-            row = await (
-                await connection.execute(
-                    "SELECT COUNT(*) FROM qa_records WHERE document_id = ?",
-                    (str(record.document_id),),
-                )
-            ).fetchone()
-            prior_qa_count = int(row[0]) if row else 0
+        prior_qa_count = await self.store.count(record.document_id)
 
         is_session_active = None
         if hasattr(self.llm, "has_active_session"):
@@ -307,9 +303,12 @@ class QAService:
             except Exception as exc:
                 logger.debug("Error checking active session for %s: %s", doc_session_id, exc)
 
-        is_first_turn = (prior_qa_count == 0) or (is_session_active is False)
+        # Context continuity is guaranteed ONLY when there are prior QA turns AND the session is known to be active
+        is_continuous = (prior_qa_count > 0) and (is_session_active is True)
+        is_first_turn = not is_continuous
         if is_first_turn:
-            ir = await self.documents.load_ir(record.document_id, parse_id)
+            snapshot = await self.documents.effective_snapshot(record.document_id, parse_id)
+            ir = snapshot.ir
             excluded_set = set(record.scope.get("exclude_block_ids") or ())
             if excluded_set:
                 ir_for_md = ir.model_copy(
@@ -318,7 +317,7 @@ class QAService:
             else:
                 ir_for_md = ir
             translations = (
-                await self.translation.effective_map_for_ir(ir_for_md)
+                await self.translation.effective_map_for_ir(ir_for_md, snapshot.edits)
                 if self.translation is not None
                 else {}
             )
@@ -358,19 +357,38 @@ class QAService:
                     "content": (
                         "你是一位严谨专业的学术与技术文档阅读解读助手。\n"
                         "请结合整篇文档的全局脉络以及下方提供的重点参考段落，深入、客观地回答用户问题：\n"
-                        "1. 若回答内容直接引用或依据了选定的参考段落，请使用类似 [1] 的方括号标明引用出处；\n"
+                        "1. 若回答内容直接引用或依据了选定的参考段落，请使用类似 [^1] 或 [cite:1] 的保留引用标记标明引用出处；\n"
                         "2. 若参考段落未详尽涵盖问题的全部细节，应充分结合本文档已投喂的全文 Markdown 上下文进行补充说明与全局综合解答；\n"
                         "3. 保持回答客观严谨，严禁捏造文档中不存在的事实。"
                     ),
                 },
                 {"role": "user", "content": user_content},
             ]
-            try:
-                stream_iter = self.llm.stream(messages, session_id=doc_session_id)
-            except TypeError:
-                stream_iter = self.llm.stream(messages)
-            async for chunk in stream_iter:
-                await context.append_answer(chunk)
+            emitted_any_delta = False
+            max_stream_retries = 1
+            for attempt in range(max_stream_retries + 1):
+                try:
+                    try:
+                        stream_iter = self.llm.stream(messages, session_id=doc_session_id)
+                    except TypeError:
+                        stream_iter = self.llm.stream(messages)
+                    async for chunk in stream_iter:
+                        emitted_any_delta = True
+                        await context.append_answer(chunk)
+                    break
+                except Exception as exc:
+                    if emitted_any_delta or attempt >= max_stream_retries:
+                        logger.warning(
+                            "QA stream failed (emitted_delta=%s, attempt=%d): %s",
+                            emitted_any_delta,
+                            attempt,
+                            exc,
+                        )
+                        raise
+                    logger.info(
+                        "QA stream failed before first delta on attempt %d, retrying...",
+                        attempt + 1,
+                    )
             await context.check()
             answer = record.answer or ""
             if not answer.strip():
@@ -389,24 +407,22 @@ class QAService:
                 "citations": cast(JsonValue, citations),
             }
 
+            qa_record = QARecordView(
+                qa_id=qa_id,
+                document_id=record.document_id,
+                parse_id=parse_id,
+                question=question,
+                answer=answer,
+                context=tuple(evidence),
+                citations=tuple(
+                    item if isinstance(item, QACitation) else QACitation.model_validate(item)
+                    for item in citation_views
+                ),
+                created_at=datetime.fromisoformat(timestamp),
+            )
+
             async def publish() -> None:
-                async with self.database.transaction() as connection:
-                    await connection.execute(
-                        "INSERT INTO qa_records "
-                        "(id, document_id, parse_id, question, answer, context_json, "
-                        "citations_json, created_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        (
-                            str(qa_id),
-                            str(record.document_id),
-                            str(parse_id),
-                            question,
-                            answer,
-                            json.dumps(evidence, ensure_ascii=False, separators=(",", ":")),
-                            json.dumps(citation_views, ensure_ascii=False, separators=(",", ":")),
-                            timestamp,
-                        ),
-                    )
+                await self.store.save(qa_record)
 
             await context.publish(result_ref, publish)
             logger.info(
@@ -427,38 +443,12 @@ class QAService:
 
     async def list(self, document_id: UUID) -> tuple[QARecordView, ...]:
         await self.documents.get(document_id)
-        async with self.database.read() as connection:
-            rows = await (
-                await connection.execute(
-                    "SELECT id, document_id, parse_id, question, answer, context_json, "
-                    "citations_json, created_at FROM qa_records WHERE document_id = ? "
-                    "ORDER BY created_at DESC, id DESC",
-                    (str(document_id),),
-                )
-            ).fetchall()
-        return tuple(
-            QARecordView(
-                qa_id=UUID(row[0]),
-                document_id=UUID(row[1]),
-                parse_id=UUID(row[2]),
-                question=row[3],
-                answer=row[4],
-                context=tuple(json.loads(row[5])),
-                citations=tuple(QACitation.model_validate(item) for item in json.loads(row[6])),
-                created_at=datetime.fromisoformat(row[7]),
-            )
-            for row in rows
-        )
+        records = await self.store.list(document_id)
+        return tuple(records)
 
     async def delete(self, document_id: UUID, qa_id: UUID) -> None:
         await self.documents.get(document_id)
-        async with self.database.transaction() as connection:
-            cursor = await connection.execute(
-                "DELETE FROM qa_records WHERE id = ? AND document_id = ?",
-                (str(qa_id), str(document_id)),
-            )
-            if cursor.rowcount != 1:
-                raise DomainError("QA_NOT_FOUND", "Question record not found", status=404)
+        await self.store.delete(document_id, qa_id)
 
 
 def _unique(values: Iterable[str]) -> tuple[str, ...]:
@@ -477,14 +467,17 @@ def _score(block: Block, keywords: tuple[str, ...]) -> int:
     return sum(_keyword_hits(keyword, block.source_text) for keyword in keywords)
 
 
+RESERVED_CITATION_PATTERN = re.compile(r"\[(?:\^|cite:\s*)(\d+)\]")
+
+
 def _prompt(evidence: list[dict[str, JsonValue]]) -> str:
     return "\n\n".join(
-        f"[{item['citation']}] 段落 {item['block_id']}: {item['text']}" for item in evidence
+        f"[^{item['citation']}] 段落 {item['block_id']}: {item['text']}" for item in evidence
     )
 
 
 def _extract_citations(answer: str, maximum: int) -> list[int] | None:
-    values = [int(value) for value in re.findall(r"\[(\d+)\]", answer)]
+    values = [int(val) for val in RESERVED_CITATION_PATTERN.findall(answer)]
     if any(value < 1 or value > maximum for value in values):
         return None
     return list(dict.fromkeys(values))

@@ -261,6 +261,27 @@ async def test_parse_does_not_depend_on_an_external_mineru_command(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_parse_rejects_backend_before_queue_admission(tmp_path):
+    app = create_app(Settings(app=AppSettings(data_dir=tmp_path)))
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        source = Path("3rdparty/MinerU/tests/unittest/pdfs/test.pdf").read_bytes()
+        created = await client.post(
+            "/api/documents", files={"file": ("paper.pdf", source, "application/pdf")}
+        )
+        document_id = created.json()["document_id"]
+        rejected = await client.post(
+            f"/api/documents/{document_id}/parse",
+            json={"options": {"backend": "pipeline"}},
+        )
+
+        assert rejected.status_code == 422, rejected.text
+        assert rejected.json()["code"] == "MINERU_BACKEND_UNSUPPORTED"
+        assert (await client.get(f"/api/documents/{document_id}")).json()["tasks"] == []
+
+@pytest.mark.asyncio
 async def test_parse_version_cleanup_keeps_versions_used_by_active_tasks(tmp_path):
     settings = Settings(
         app=AppSettings(data_dir=tmp_path),

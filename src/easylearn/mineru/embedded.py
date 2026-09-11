@@ -10,14 +10,14 @@ import sys
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Final, cast
 
 from loguru import logger
 
 from easylearn.errors import DomainError
 from easylearn.execution import run_blocking
 from easylearn.mineru.archive import result_root
-from easylearn.mineru.schema import MinerUOptions
+from easylearn.mineru.schema import MinerUBackend, MinerUOptions, MinerUParseOptions
 
 type Analyzer = Callable[..., Awaitable[tuple[dict[str, Any], Any]]]
 
@@ -41,6 +41,20 @@ class EmbeddedMinerU:
         self._runtime_loaded = False
 
     @property
+    def supported_backends(self) -> frozenset[MinerUBackend]:
+        return frozenset({"vlm-engine"})
+
+    def validate_options(self, options: MinerUParseOptions) -> None:
+        if options.backend not in self.supported_backends:
+            supported = ", ".join(sorted(self.supported_backends))
+            raise DomainError(
+                "MINERU_BACKEND_UNSUPPORTED",
+                f"Embedded MinerU does not support backend '{options.backend}'; supported: {supported}",
+                status=422,
+            )
+
+
+    @property
     def configured(self) -> bool:
         return self.model_path.is_dir() and (mineru_source_root() / "mineru").is_dir()
 
@@ -58,11 +72,7 @@ class EmbeddedMinerU:
                 "MINERU_MODEL_UNAVAILABLE",
                 f"MinerU model directory does not exist: {selected_model_path}",
             )
-        if options.backend != "vlm-engine":
-            raise DomainError(
-                "MINERU_BACKEND_UNSUPPORTED",
-                "Embedded MinerU currently supports the vlm-engine backend",
-            )
+        self.validate_options(options)
         if check is not None:
             await check()
 

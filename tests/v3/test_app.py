@@ -134,6 +134,7 @@ async def test_health_exposes_a_new_boot_id(client):
     response = await client.get("/api/health")
     assert response.status_code == 200
     assert response.json()["server_boot_id"]
+    assert response.json()["mineru"]["supported_backends"] == ["vlm-engine"]
 
 
 @pytest.mark.asyncio
@@ -380,6 +381,45 @@ async def test_second_instance_with_the_same_data_directory_is_rejected(tmp_path
         with pytest.raises(RuntimeError, match="already uses this data directory"):
             async with second.router.lifespan_context(second):
                 pass
+
+
+@pytest.mark.asyncio
+async def test_startup_failure_preserves_root_error_and_releases_instance_lock(tmp_path, monkeypatch):
+    async def fail_open(database):
+        del database
+        raise RuntimeError("database migration exploded")
+
+    monkeypatch.setattr("easylearn.main.Database.open", fail_open)
+    settings = Settings(app=AppSettings(data_dir=tmp_path))
+    failed = create_app(settings)
+
+    with pytest.raises(RuntimeError, match="database migration exploded"):
+        async with failed.router.lifespan_context(failed):
+            pass
+
+    monkeypatch.undo()
+    recovered = create_app(settings)
+    async with recovered.router.lifespan_context(recovered):
+        assert recovered.state.services.database.connection is not None
+
+
+@pytest.mark.asyncio
+async def test_shutdown_failure_in_subservice_does_not_prevent_releasing_instance_lock(tmp_path, monkeypatch):
+    settings = Settings(app=AppSettings(data_dir=tmp_path))
+    app = create_app(settings)
+
+    async def fail_manager_close(self):
+        raise RuntimeError("manager close exploded")
+
+    monkeypatch.setattr("easylearn.tasks.TaskManager.close", fail_manager_close)
+    async with app.router.lifespan_context(app):
+        pass
+
+    monkeypatch.undo()
+    # Next startup must succeed immediately because lock was released despite manager close failure
+    recovered = create_app(settings)
+    async with recovered.router.lifespan_context(recovered):
+        assert recovered.state.services.database.connection is not None
 
 
 @pytest.mark.asyncio

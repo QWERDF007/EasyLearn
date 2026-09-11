@@ -21,7 +21,10 @@ from easylearn.documents.service import DocumentService
 from easylearn.errors import DomainError
 from easylearn.execution import run_blocking
 from easylearn.jobs.schema import JobKind, TaskView
+from easylearn.persistence.translations import TranslationStore
+from easylearn.publication import ArtifactPublisher, PublicationKind
 from easylearn.rendering import render_markdown
+from easylearn.source_edits import compute_unit_fingerprint
 from easylearn.tasks import TaskContext, TaskManager, TaskRecord
 from easylearn.translation import translation_units
 
@@ -51,17 +54,21 @@ class ExportService:
         database: Database,
         documents: DocumentService,
         manager: TaskManager,
+        publisher: ArtifactPublisher | None = None,
+        translation_store: TranslationStore | None = None,
     ) -> None:
         self.database = database
         self.documents = documents
         self.manager = manager
+        self.publisher = publisher or ArtifactPublisher(database, documents.files)
+        self.translation_store = translation_store or TranslationStore(database)
 
     async def submit(self, document_id: UUID, request: ExportRequest) -> TaskView:
-        await self.documents.load_ir(document_id, request.parse_id)
+        await self.documents.effective_snapshot(document_id, request.parse_id)
         export_id = uuid4()
 
         async def admit() -> None:
-            await self.documents.load_ir(document_id, request.parse_id)
+            await self.documents.effective_snapshot(document_id, request.parse_id)
 
         task_view = await self.manager.submit(
             document_id,
@@ -86,6 +93,25 @@ class ExportService:
         parse_id = UUID(str(record.scope["parse_id"]))
         export_id = UUID(str(record.scope["export_id"]))
         selected = ExportFormat(str(record.scope["format"]))
+
+        file_name = {
+            ExportFormat.ZIP: "export.zip",
+            ExportFormat.SOURCE_MARKDOWN: "source.md",
+            ExportFormat.CHINESE_MARKDOWN: "中文.md",
+            ExportFormat.BILINGUAL_MARKDOWN: "中英对照.md",
+            ExportFormat.JSON: "document.json",
+            ExportFormat.IMAGES: "images.zip",
+        }[selected]
+        result_ref: dict[str, JsonValue] = {
+            "export_id": str(export_id),
+            "file_id": f"export:{export_id}:{file_name}",
+            "manifest_file_id": f"export:{export_id}:manifest.json",
+        }
+
+        if await self.publisher.is_recorded("export", export_id):
+            logger.info("Export %s is already recorded; skipping duplicate execution", export_id)
+            return result_ref
+
         logger.info(
             "Export started: document_id=%s, parse_id=%s, format=%s",
             record.document_id,
@@ -144,8 +170,24 @@ class ExportService:
                 "manifest_file_id": f"export:{export_id}:manifest.json",
             }
 
-            async def publish() -> None:
-                await run_blocking(self.documents.files.publish_directory, output, destination)
+            async def record_export(_connection: object) -> None:
+                pass
+
+            async def publish() -> object:
+                return await self.publisher.publish(
+                    document_id=record.document_id,
+                    artifact_id=export_id,
+                    kind=PublicationKind.EXPORT,
+                    staging=output,
+                    destination=destination,
+                    payload={
+                        "export_id": str(export_id),
+                        "format": selected.value,
+                        "file_name": file_name,
+                        "created_at": datetime.now(UTC).isoformat(),
+                    },
+                    record=record_export,
+                )
 
             await context.publish(result_ref, publish)
             logger.info(
@@ -169,32 +211,27 @@ class ExportService:
     async def _snapshot(
         self, document_id: UUID, parse_id: UUID
     ) -> tuple[DocumentIR, dict[str, str], dict[str, int]]:
-        ir = await self.documents.load_ir(document_id, parse_id)
-        async with self.database.read() as connection:
-            rows = await (
-                await connection.execute(
-                    "SELECT unit_id, auto_text, manual_text, use_manual, revision "
-                    "FROM translations WHERE parse_id = ?",
-                    (str(parse_id),),
-                )
-            ).fetchall()
+        snapshot = await self.documents.effective_snapshot(document_id, parse_id)
+        ir = snapshot.ir
+        rows = await self.translation_store.get_translations(parse_id)
         values = {
-            row[0]: (
-                row[2] if row[3] and row[2] is not None else row[1],
-                int(row[4]),
+            row["unit_id"]: (
+                row["manual_text"] if row["use_manual"] and row["manual_text"] is not None else row["auto_text"],
+                int(row["revision"]),
+                row["source_fingerprint"],
             )
             for row in rows
         }
-        effective = {
-            unit.unit_id: values[unit.unit_id][0]
-            for unit in translation_units(ir)
-            if unit.unit_id in values and values[unit.unit_id][0] is not None
-        }
-        revisions = {
-            unit.unit_id: values[unit.unit_id][1]
-            for unit in translation_units(ir)
-            if unit.unit_id in values
-        }
+        effective: dict[str, str] = {}
+        revisions: dict[str, int] = {}
+        for unit in translation_units(ir):
+            if unit.unit_id in values:
+                val, rev, fp = values[unit.unit_id]
+                expected_fp = compute_unit_fingerprint(unit.unit_id, unit.source_text)
+                is_stale = fp is not None and fp != expected_fp
+                if not is_stale and val is not None:
+                    effective[unit.unit_id] = val
+                revisions[unit.unit_id] = rev
         return ir, effective, revisions
 
     async def _copy_assets(

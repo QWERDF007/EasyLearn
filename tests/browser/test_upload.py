@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import os
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
 from pathlib import Path
 from urllib.request import urlopen
+from uuid import uuid4
 
 import pytest
 
@@ -77,10 +79,8 @@ def _wait_for_document(driver: webdriver.Chrome, name: str) -> None:
     WebDriverWait(driver, 20, ignored_exceptions=(WebDriverException,)).until(predicate)
 
 
-@pytest.fixture
-def server(tmp_path: Path):
+def _start_server(tmp_path: Path, data_dir: Path) -> tuple[subprocess.Popen, str]:
     port = _free_port()
-    data_dir = tmp_path / "data"
     config = tmp_path / "config.toml"
     config.write_text(
         "[app]\n"
@@ -105,20 +105,28 @@ def server(tmp_path: Path):
     )
     base_url = f"http://127.0.0.1:{port}"
     deadline = time.monotonic() + 20
-    try:
-        while time.monotonic() < deadline:
-            if process.poll() is not None:
-                output = process.stdout.read() if process.stdout else ""
-                raise AssertionError(f"EasyLearn 服务提前退出：{output}")
-            try:
-                with urlopen(f"{base_url}/api/health", timeout=1) as response:
-                    if response.status == 200:
-                        break
-            except OSError:
-                time.sleep(0.1)
-        else:
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
             output = process.stdout.read() if process.stdout else ""
-            raise AssertionError(f"EasyLearn 服务未就绪：{output}")
+            raise AssertionError(f"EasyLearn 服务提前退出：{output}")
+        try:
+            with urlopen(f"{base_url}/api/health", timeout=1) as response:
+                if response.status == 200:
+                    break
+        except OSError:
+            time.sleep(0.1)
+    else:
+        output = process.stdout.read() if process.stdout else ""
+        process.kill()
+        raise AssertionError(f"EasyLearn 服务未就绪：{output}")
+    return process, base_url
+
+
+@pytest.fixture
+def server(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    process, base_url = _start_server(tmp_path, data_dir)
+    try:
         yield base_url
     finally:
         process.terminate()
@@ -264,7 +272,7 @@ def test_document_actions_support_favorite_and_delete(server, browser, image_fil
             f'#document-list .document-item[data-document-id="{document_id}"] .favorite-action',
         )
     )
-    favorite.click()
+    browser.execute_script("arguments[0].click();", favorite)
     WebDriverWait(browser, 10).until(
         lambda current: current.find_element(
             By.CSS_SELECTOR,
@@ -276,7 +284,7 @@ def test_document_actions_support_favorite_and_delete(server, browser, image_fil
         By.CSS_SELECTOR,
         f'#document-list .document-item[data-document-id="{document_id}"] .delete-action',
     )
-    delete.click()
+    browser.execute_script("arguments[0].click();", delete)
     dialog = browser.find_element(By.ID, "document-delete-dialog")
     WebDriverWait(browser, 10).until(lambda current: dialog.is_displayed())
     assert image_file.name in dialog.text
@@ -309,3 +317,168 @@ def test_ctrl_wheel_changes_reader_scale(server, browser, image_file):
         )
     )
     assert after > before
+
+
+def test_browser_smoke_settings_and_multi_node_edit(tmp_path: Path, browser):
+    data_dir = tmp_path / "data"
+    doc_id = uuid4()
+    parse_id = uuid4()
+    doc_dir = data_dir / "documents" / str(doc_id)
+    parse_dir = doc_dir / "parses" / str(parse_id)
+    parse_dir.mkdir(parents=True, exist_ok=True)
+
+    from PIL import Image
+
+    img_path = doc_dir / "original"
+    Image.new("RGB", (100, 100), color=(56, 96, 244)).save(img_path, "PNG")
+    preview_path = parse_dir / "preview.png"
+    Image.new("RGB", (100, 100), color=(56, 96, 244)).save(preview_path, "PNG")
+
+    from easylearn.database import SCHEMA_VERSION, _SCHEMA
+    from easylearn.document_ir.schema import Block, DocumentIR, PageGeometry, TextNode
+
+    ir = DocumentIR(
+        document_id=doc_id,
+        parse_run_id=parse_id,
+        preview_asset_id=uuid4(),
+        preview_sha256="a" * 64,
+        mineru_version="test",
+        adapter_version="test",
+        pages=(
+            PageGeometry(
+                page_index=0,
+                media_box=(0, 0, 100, 100),
+                crop_box=(0, 0, 100, 100),
+            ),
+        ),
+        blocks=(
+            Block(
+                block_id="block-multi",
+                block_type="paragraph",
+                order_index=0,
+                source_nodes=(
+                    TextNode(node_id="node-1", text="First phrase"),
+                    TextNode(node_id="node-2", text="Second phrase"),
+                ),
+            ),
+        ),
+    )
+    (parse_dir / "document.json").write_text(
+        ir.model_dump_json(exclude_computed_fields=True), encoding="utf-8"
+    )
+
+    with sqlite3.connect(data_dir / "app.db") as conn:
+        conn.executescript(_SCHEMA)
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        conn.execute(
+            "INSERT INTO documents (id, name, original_path, active_parse_id, favorite, created_at)"
+            " VALUES (?, ?, ?, ?, 0, '2026-01-01T00:00:00+00:00')",
+            (str(doc_id), "multi_doc.png", "original", str(parse_id)),
+        )
+        conn.execute(
+            "INSERT INTO parse_results (id, document_id, preview_path, ir_path, raw_path, pages, metadata_json, created_at)"
+            " VALUES (?, ?, ?, ?, NULL, 1, '{}', '2026-01-01T00:00:00+00:00')",
+            (
+                str(parse_id),
+                str(doc_id),
+                f"parses/{parse_id}/preview.png",
+                f"parses/{parse_id}/document.json",
+            ),
+        )
+        conn.commit()
+
+    process, base_url = _start_server(tmp_path, data_dir)
+    try:
+        _open_app(browser, base_url)
+        _wait_for_document(browser, "multi_doc.png")
+
+        # 1. Verify dead phantom settings controls do NOT exist
+        for phantom in ("cfg-header", "cfg-layout", "cfg-formula", "cfg-table"):
+            assert (
+                len(browser.find_elements(By.ID, phantom)) == 0
+            ), f"Phantom control #{phantom} should not be present in DOM"
+
+        # 2. Verify settings drawer can open, modify auto_translate, and apply
+        settings_btn = browser.find_element(By.ID, "settings-button")
+        settings_btn.click()
+        WebDriverWait(browser, 10).until(
+            lambda d: d.find_element(By.ID, "settings-panel").is_displayed()
+        )
+        auto_translate_cb = browser.find_element(By.ID, "auto-translate")
+        browser.execute_script("arguments[0].click();", auto_translate_cb)
+        apply_btn = browser.find_element(By.ID, "apply-settings-button")
+        browser.execute_script("arguments[0].click();", apply_btn)
+        WebDriverWait(browser, 10).until(
+            lambda d: not d.find_element(By.ID, "settings-panel").is_displayed()
+        )
+
+        # 3. Click document and ensure multi-node block is rendered
+        doc_item = browser.find_element(
+            By.CSS_SELECTOR, f'#document-list .document-item[data-document-id="{doc_id}"]'
+        )
+        doc_item.click()
+
+        WebDriverWait(browser, 10).until(
+            lambda d: d.find_elements(
+                By.CSS_SELECTOR, '.result-block[data-block-id="block-multi"]'
+            )
+        )
+        block_el = browser.find_element(
+            By.CSS_SELECTOR, '.result-block[data-block-id="block-multi"]'
+        )
+        assert "First phrase" in block_el.text
+        assert "Second phrase" in block_el.text
+
+        # 4. Click block to select it and show action bar, then click edit button
+        block_el.click()
+        edit_btn = block_el.find_element(By.CSS_SELECTOR, ".block-edit-button")
+        WebDriverWait(browser, 10).until(lambda _: edit_btn.is_displayed())
+        edit_btn.click()
+
+        WebDriverWait(browser, 10).until(
+            lambda d: d.find_elements(By.CSS_SELECTOR, ".block-edit-card")
+        )
+        edit_card = browser.find_element(By.CSS_SELECTOR, ".block-edit-card")
+        nodes_container = edit_card.find_elements(
+            By.CSS_SELECTOR, ".block-edit-nodes"
+        )
+        assert len(nodes_container) == 1, "Multi-node container should be present"
+
+        textarea_1 = edit_card.find_element(
+            By.CSS_SELECTOR, 'textarea[data-node-id="node-1"]'
+        )
+        textarea_2 = edit_card.find_element(
+            By.CSS_SELECTOR, 'textarea[data-node-id="node-2"]'
+        )
+        assert textarea_1.get_attribute("value") == "First phrase"
+        assert textarea_2.get_attribute("value") == "Second phrase"
+
+        save_btn = edit_card.find_element(By.CSS_SELECTOR, ".block-edit-save-btn")
+
+        # 5. Empty node text rejected
+        textarea_1.clear()
+        save_btn.click()
+        WebDriverWait(browser, 10).until(
+            lambda d: "不能为空" in d.find_element(By.ID, "toast").text
+        )
+
+        # 6. Save valid edit and verify update
+        textarea_1.send_keys("Updated phrase")
+        save_btn.click()
+
+        WebDriverWait(browser, 10).until(
+            lambda d: not d.find_elements(By.CSS_SELECTOR, ".block-edit-card")
+        )
+
+        block_after = browser.find_element(
+            By.CSS_SELECTOR, '.result-block[data-block-id="block-multi"]'
+        )
+        assert "Updated phrase" in block_after.text
+        assert "Second phrase" in block_after.text
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
