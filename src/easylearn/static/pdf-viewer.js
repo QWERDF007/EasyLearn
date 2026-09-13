@@ -5,7 +5,35 @@ GlobalWorkerOptions.workerSrc = "/static/pdfjs/pdf.worker.min.mjs";
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 2;
 
-export function blockTypeLabel(type) {
+export function blockTypeLabel(type, block = null) {
+  const normType = (type || block?.block_type || "").toLowerCase();
+  const parentId = (block?.parent_block_id || "").toLowerCase();
+  const warnings = Array.isArray(block?.parse_warnings) ? block.parse_warnings : [];
+  const hasPageNumberWarning = warnings.some(
+    (w) => typeof w === "string" && w.toLowerCase().includes("page_number")
+  );
+
+  if (normType === "page_number" || hasPageNumberWarning) {
+    return "页码";
+  }
+
+  if (normType === "caption") {
+    if (parentId.includes("table") || parentId.includes(".t")) {
+      return "表格标题";
+    }
+    return "图片标题";
+  }
+
+  if (normType === "footnote") {
+    if (parentId.includes("table") || parentId.includes(".t")) {
+      return "表格描述";
+    }
+    if (parentId.includes("img") || parentId.includes("image") || parentId.includes("fig")) {
+      return "图片描述";
+    }
+    return "脚注";
+  }
+
   const map = {
     title: "标题",
     heading: "标题",
@@ -21,9 +49,13 @@ export function blockTypeLabel(type) {
     formula: "公式",
     code: "代码",
     reference: "参考文献",
+    page_number: "页码",
+    caption: "图片标题",
     footnote: "脚注",
+    list: "列表",
+    list_item: "列表",
   };
-  return map[type?.toLowerCase()] || type || "块";
+  return map[normType] || type || "块";
 }
 
 export class PdfReader {
@@ -200,14 +232,33 @@ export class PdfReader {
     void this.#rerenderVisible();
   }
 
-  async goToPage(pageIndex) {
+  async goToPage(pageIndex, { align = "start" } = {}) {
     const generation = ++this.focusGeneration;
     const state = this.pageStates[pageIndex];
     if (!state) return;
-    state.shell.scrollIntoView({ block: "start", behavior: "auto" });
+    state.shell.scrollIntoView({ block: align, behavior: "smooth" });
     await this.#renderPage(state);
     if (generation !== this.focusGeneration) return;
     this.#updatePageCounter(pageIndex, false);
+  }
+
+  async focusPageNumber(pageIndex) {
+    if (!Number.isInteger(pageIndex)) return;
+    const pageBlock = (this.blocks || []).find((b) => {
+      const p = b?.source_regions?.[0]?.page_index ?? b?.source_locator?.page_indices?.[0];
+      if (p !== pageIndex) return false;
+      const btype = (b.block_type || "").toLowerCase();
+      const warnings = Array.isArray(b.parse_warnings) ? b.parse_warnings : [];
+      return btype === "page_number"
+        || warnings.some((w) => typeof w === "string" && w.toLowerCase().includes("page_number"))
+        || blockTypeLabel(b.block_type, b) === "页码";
+    });
+
+    if (pageBlock) {
+      await this.focusBlock(pageBlock.block_id);
+    } else {
+      await this.goToPage(pageIndex, { align: "end" });
+    }
   }
 
   async focusBlock(blockId) {
@@ -405,6 +456,7 @@ export class PdfReader {
 
   #renderRegions(state, viewport, layer) {
     for (const block of this.blocks) {
+      if (block.block_type === "list") continue;
       for (const region of block.source_regions || []) {
         if (region.page_index !== state.index) continue;
         const rectangle = viewport.convertToViewportRectangle(region.bbox_pdf);
@@ -416,8 +468,8 @@ export class PdfReader {
         regionElement.style.background = "transparent";
         regionElement.dataset.blockId = block.block_id;
         regionElement.dataset.blockType = block.block_type || "paragraph";
-        regionElement.dataset.label = blockTypeLabel(block.block_type);
-        regionElement.title = `${blockTypeLabel(block.block_type)} (${block.block_id})`;
+        regionElement.dataset.label = blockTypeLabel(block.block_type, block);
+        regionElement.title = `${blockTypeLabel(block.block_type, block)} (${block.block_id})`;
         regionElement.style.left = `${left}px`;
         regionElement.style.top = `${top}px`;
         regionElement.style.width = `${Math.abs(rectangle[2] - rectangle[0])}px`;

@@ -933,3 +933,240 @@ def test_atomic_inline_nodes_reject_nested_content_they_cannot_represent(
     span["html"] = f"<table><tr><td>{markup}</td></tr></table>"
     with pytest.raises(DomainError, match="MINERU_TABLE_INVALID"):
         MinerUAdapter().normalize(json.dumps(table_middle).encode(), context=context)
+
+
+def test_composite_figure_groups_sub_images_and_binds_primary_caption(context, middle):
+    asset_a = AssetDescriptor(
+        asset_id=UUID(int=11), sha256="c" * 64, mime="image/jpeg", export_path="images/sub_a.jpg"
+    )
+    asset_b = AssetDescriptor(
+        asset_id=UUID(int=12), sha256="d" * 64, mime="image/jpeg", export_path="images/sub_b.jpg"
+    )
+    asset_c = AssetDescriptor(
+        asset_id=UUID(int=13), sha256="e" * 64, mime="image/jpeg", export_path="images/sub_c.jpg"
+    )
+    context = context.model_copy(
+        update={"assets": {"sub_a.jpg": asset_a, "sub_b.jpg": asset_b, "sub_c.jpg": asset_c}}
+    )
+    middle["pdf_info"][0]["para_blocks"] = [
+        {
+            "type": "image",
+            "bbox": [50, 50, 200, 150],
+            "blocks": [
+                {
+                    "type": "image_caption",
+                    "bbox": [50, 30, 200, 45],
+                    "lines": [
+                        {
+                            "bbox": [50, 30, 200, 45],
+                            "spans": [{"type": "text", "content": "Method A (Ours)"}],
+                        }
+                    ],
+                },
+                {
+                    "type": "image_body",
+                    "bbox": [50, 50, 200, 150],
+                    "lines": [
+                        {
+                            "bbox": [50, 50, 200, 150],
+                            "spans": [{"type": "image", "image_path": "sub_a.jpg", "content": "A"}],
+                        }
+                    ],
+                },
+            ],
+        },
+        {
+            "type": "image",
+            "bbox": [210, 50, 350, 150],
+            "blocks": [
+                {
+                    "type": "image_body",
+                    "bbox": [210, 50, 350, 150],
+                    "lines": [
+                        {
+                            "bbox": [210, 50, 350, 150],
+                            "spans": [{"type": "image", "image_path": "sub_b.jpg", "content": "B"}],
+                        }
+                    ],
+                },
+            ],
+        },
+        {
+            "type": "image",
+            "bbox": [50, 160, 350, 300],
+            "blocks": [
+                {
+                    "type": "image_body",
+                    "bbox": [50, 160, 350, 300],
+                    "lines": [
+                        {
+                            "bbox": [50, 160, 350, 300],
+                            "spans": [{"type": "image", "image_path": "sub_c.jpg", "content": "C"}],
+                        }
+                    ],
+                },
+                {
+                    "type": "image_caption",
+                    "bbox": [50, 310, 350, 330],
+                    "lines": [
+                        {
+                            "bbox": [50, 310, 350, 330],
+                            "spans": [{"type": "text", "content": "Figure 1: Comparison of methods."}],
+                        }
+                    ],
+                },
+            ],
+        },
+        {
+            "type": "text",
+            "bbox": [50, 350, 550, 400],
+            "lines": [
+                {
+                    "bbox": [50, 350, 550, 400],
+                    "spans": [{"type": "text", "content": "Here is the next section text."}],
+                }
+            ],
+        },
+    ]
+    document = MinerUAdapter().normalize(json.dumps(middle).encode(), context=context)
+    assert len(document.blocks) == 3
+    figure, caption, paragraph = document.blocks
+    assert figure.block_type == "image"
+    assert len(figure.source_regions) == 1
+    assert figure.source_regions[0].source_bbox == (50, 30, 350, 300)
+    assert figure.source_regions[0].bbox_pdf == (50, 500, 350, 770)
+    assert caption.block_type == "caption"
+    assert caption.source_text == "Figure 1: Comparison of methods."
+    assert caption.parent_block_id == figure.block_id
+    assert paragraph.block_type == "paragraph"
+    assert paragraph.source_text == "Here is the next section text."
+    assert paragraph.order_index == 2
+    relations = [r for r in document.relations if r.kind == "caption_of"]
+    assert len(relations) == 1
+    assert relations[0].source.block_id == caption.block_id
+    assert relations[0].target.block_id == figure.block_id
+
+
+def test_distinct_figures_on_same_page_are_not_merged(context, middle):
+    asset_a = AssetDescriptor(
+        asset_id=UUID(int=21), sha256="f" * 64, mime="image/jpeg", export_path="images/fig7.jpg"
+    )
+    asset_b = AssetDescriptor(
+        asset_id=UUID(int=22), sha256="0" * 64, mime="image/jpeg", export_path="images/fig8.jpg"
+    )
+    context = context.model_copy(update={"assets": {"fig7.jpg": asset_a, "fig8.jpg": asset_b}})
+    middle["pdf_info"][0]["para_blocks"] = [
+        {
+            "type": "image",
+            "bbox": [50, 50, 500, 200],
+            "blocks": [
+                {
+                    "type": "image_body",
+                    "bbox": [50, 50, 500, 200],
+                    "lines": [
+                        {
+                            "bbox": [50, 50, 500, 200],
+                            "spans": [{"type": "image", "image_path": "fig7.jpg", "content": "Fig 7"}],
+                        }
+                    ],
+                },
+                {
+                    "type": "image_caption",
+                    "bbox": [50, 210, 500, 230],
+                    "lines": [
+                        {
+                            "bbox": [50, 210, 500, 230],
+                            "spans": [{"type": "text", "content": "Figure 7: First figure."}],
+                        }
+                    ],
+                },
+            ],
+        },
+        {
+            "type": "image",
+            "bbox": [50, 300, 500, 450],
+            "blocks": [
+                {
+                    "type": "image_body",
+                    "bbox": [50, 300, 500, 450],
+                    "lines": [
+                        {
+                            "bbox": [50, 300, 500, 450],
+                            "spans": [{"type": "image", "image_path": "fig8.jpg", "content": "Fig 8"}],
+                        }
+                    ],
+                },
+                {
+                    "type": "image_caption",
+                    "bbox": [50, 460, 500, 480],
+                    "lines": [
+                        {
+                            "bbox": [50, 460, 500, 480],
+                            "spans": [{"type": "text", "content": "Figure 8: Second figure."}],
+                        }
+                    ],
+                },
+            ],
+        },
+    ]
+    document = MinerUAdapter().normalize(json.dumps(middle).encode(), context=context)
+    assert len(document.blocks) == 4
+    fig1, cap1, fig2, cap2 = document.blocks
+    assert fig1.block_type == "image"
+    assert cap1.source_text == "Figure 7: First figure."
+    assert cap1.parent_block_id == fig1.block_id
+    assert fig2.block_type == "image"
+    assert cap2.source_text == "Figure 8: Second figure."
+    assert cap2.parent_block_id == fig2.block_id
+
+
+def test_adjacent_images_without_figure_caption_are_not_merged(context, middle):
+    asset_a = AssetDescriptor(
+        asset_id=UUID(int=31), sha256="1" * 64, mime="image/jpeg", export_path="images/img1.jpg"
+    )
+    asset_b = AssetDescriptor(
+        asset_id=UUID(int=32), sha256="2" * 64, mime="image/jpeg", export_path="images/img2.jpg"
+    )
+    context = context.model_copy(update={"assets": {"img1.jpg": asset_a, "img2.jpg": asset_b}})
+    middle["pdf_info"][0]["para_blocks"] = [
+        {
+            "type": "image",
+            "bbox": [50, 50, 200, 150],
+            "blocks": [
+                {
+                    "type": "image_body",
+                    "bbox": [50, 50, 200, 150],
+                    "lines": [
+                        {
+                            "bbox": [50, 50, 200, 150],
+                            "spans": [{"type": "image", "image_path": "img1.jpg", "content": "1"}],
+                        }
+                    ],
+                }
+            ],
+        },
+        {
+            "type": "image",
+            "bbox": [210, 50, 350, 150],
+            "blocks": [
+                {
+                    "type": "image_body",
+                    "bbox": [210, 50, 350, 150],
+                    "lines": [
+                        {
+                            "bbox": [210, 50, 350, 150],
+                            "spans": [{"type": "image", "image_path": "img2.jpg", "content": "2"}],
+                        }
+                    ],
+                }
+            ],
+        },
+    ]
+    document = MinerUAdapter().normalize(json.dumps(middle).encode(), context=context)
+    # Both uncaptioned images must remain distinct blocks
+    assert len(document.blocks) == 2
+    assert document.blocks[0].block_type == "image"
+    assert document.blocks[1].block_type == "image"
+    assert document.blocks[0].block_id != document.blocks[1].block_id
+
+

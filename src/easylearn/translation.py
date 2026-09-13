@@ -196,7 +196,10 @@ class LLMClient:
         return os.environ.get(cfg.api_key_env) if cfg.api_key_env else None
 
     async def complete_json(
-        self, messages: list[dict[str, str]], session_id: str | None = None
+        self,
+        messages: list[dict[str, str]],
+        session_id: str | None = None,
+        stateless: bool = False,
     ) -> str:
         configuration = self.configuration
         if not configuration.model or not configuration.base_url:
@@ -212,6 +215,8 @@ class LLMClient:
         )
         if session_id:
             headers["x-agent-session"] = session_id
+        if stateless:
+            headers["x-stateless"] = "true"
         if self.for_qa:
             headers["x-thinking-enabled"] = "true"
         payload: dict[str, Any] = {
@@ -318,7 +323,10 @@ class LLMClient:
         return content
 
     async def stream(
-        self, messages: list[dict[str, str]], session_id: str | None = None
+        self,
+        messages: list[dict[str, str]],
+        session_id: str | None = None,
+        stateless: bool = False,
     ) -> AsyncIterator[str]:
         """Yield content deltas from an OpenAI-compatible streaming response."""
 
@@ -336,6 +344,8 @@ class LLMClient:
         )
         if session_id:
             headers["x-agent-session"] = session_id
+        if stateless:
+            headers["x-stateless"] = "true"
         if self.for_qa:
             headers["x-thinking-enabled"] = "true"
         payload: dict[str, Any] = {
@@ -748,7 +758,12 @@ class TranslationService:
         completed_units = already_completed
         progress_lock = asyncio.Lock()
         start_time = time.monotonic()
-        doc_session_id = f"easylearn-translate-{record.document_id}"
+        worker_queue: asyncio.Queue[int] = asyncio.Queue()
+        for wid in range(concurrency):
+            worker_queue.put_nowait(wid)
+        worker_turn_counts = [0] * concurrency
+        active_sessions: set[str] = set()
+        batches_per_session = 5
 
         async def publish_batch(
             batch: tuple[TranslationUnit, ...], batch_result: dict[str, str]
@@ -778,37 +793,54 @@ class TranslationService:
         ) -> dict[str, str]:
             nonlocal completed_batches, completed_units
             async with semaphore:
-                await context.check()
-                t0 = time.monotonic()
-                batch_result = await self._translate_batch(batch, session_id=doc_session_id)
-                elapsed = time.monotonic() - t0
-                await publish_batch(batch, batch_result)
-                async with progress_lock:
-                    completed_batches += 1
-                    completed_units += len(batch)
-                    curr_completed_units = completed_units
-                logger.info(
-                    "Translation batch %d/%d completed (%d units, %.2fs, progress %d/%d units)",
-                    index + 1,
-                    len(batches),
-                    len(batch),
-                    elapsed,
-                    curr_completed_units,
-                    total_units,
-                )
-                fraction = curr_completed_units / total_units
-                percent = int(fraction * 100)
-                await context.progress(
-                    fraction,
-                    f"已翻译 {curr_completed_units}/{total_units} 单元 ({percent}%)",
-                )
-                active_prov = (getattr(self.settings.llm, "active_provider", None) or "").lower()
-                active_url = (getattr(self.settings.llm, "base_url", None) or "").lower()
-                if (
-                    "deepseek" in active_prov or "deepseek" in active_url
-                ) and index + 1 < len(batches):
-                    await asyncio.sleep(1.0)
-                return batch_result
+                worker_id = await worker_queue.get()
+                try:
+                    await context.check()
+                    turn = worker_turn_counts[worker_id]
+                    worker_turn_counts[worker_id] += 1
+                    segment = turn // batches_per_session
+                    session_id = f"easylearn-translate-{record.document_id}-w{worker_id}-s{segment}"
+                    active_sessions.add(session_id)
+
+                    if turn > 0 and turn % batches_per_session == 0:
+                        old_session_id = f"easylearn-translate-{record.document_id}-w{worker_id}-s{segment - 1}"
+                        if hasattr(self.llm, "delete_session"):
+                            asyncio.create_task(self.llm.delete_session(old_session_id))
+
+                    t0 = time.monotonic()
+                    batch_result = await self._translate_batch(
+                        batch, session_id=session_id, stateless=True
+                    )
+                    elapsed = time.monotonic() - t0
+                    await publish_batch(batch, batch_result)
+                    async with progress_lock:
+                        completed_batches += 1
+                        completed_units += len(batch)
+                        curr_completed_units = completed_units
+                    logger.info(
+                        "Translation batch %d/%d completed (%d units, %.2fs, progress %d/%d units)",
+                        index + 1,
+                        len(batches),
+                        len(batch),
+                        elapsed,
+                        curr_completed_units,
+                        total_units,
+                    )
+                    fraction = curr_completed_units / total_units
+                    percent = int(fraction * 100)
+                    await context.progress(
+                        fraction,
+                        f"已翻译 {curr_completed_units}/{total_units} 单元 ({percent}%)",
+                    )
+                    active_prov = (getattr(self.settings.llm, "active_provider", None) or "").lower()
+                    active_url = (getattr(self.settings.llm, "base_url", None) or "").lower()
+                    if (
+                        "deepseek" in active_prov or "deepseek" in active_url
+                    ) and index + 1 < len(batches):
+                        await asyncio.sleep(0.5)
+                    return batch_result
+                finally:
+                    worker_queue.put_nowait(worker_id)
 
         tasks = [
             asyncio.create_task(translate_worker(index, batch))
@@ -851,12 +883,13 @@ class TranslationService:
             return result_ref
         finally:
             if hasattr(self.llm, "delete_session"):
-                try:
-                    await self.llm.delete_session(doc_session_id)
-                except Exception as exc:
-                    logger.debug(
-                        "Error cleaning up translation session %s: %s", doc_session_id, exc
-                    )
+                for sid in list(active_sessions):
+                    try:
+                        await self.llm.delete_session(sid)
+                    except Exception as exc:
+                        logger.debug(
+                            "Error cleaning up translation session %s: %s", sid, exc
+                        )
 
     async def list(self, document_id: UUID, parse_id: UUID) -> tuple[TranslationUnitView, ...]:
         snapshot = await self.documents.effective_snapshot(document_id, parse_id)
@@ -1028,7 +1061,10 @@ class TranslationService:
         )
 
     async def _translate_batch(
-        self, units: tuple[TranslationUnit, ...], session_id: str | None = None
+        self,
+        units: tuple[TranslationUnit, ...],
+        session_id: str | None = None,
+        stateless: bool = True,
     ) -> dict[str, str]:
         completed_results: dict[str, str] = {}
         pending_units: list[TranslationUnit] = list(units)
@@ -1053,9 +1089,14 @@ class TranslationService:
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ]
             try:
-                content = await self.llm.complete_json(prompt_messages, session_id=session_id)
+                content = await self.llm.complete_json(
+                    prompt_messages, session_id=session_id, stateless=stateless
+                )
             except TypeError:
-                content = await self.llm.complete_json(prompt_messages)
+                try:
+                    content = await self.llm.complete_json(prompt_messages, session_id=session_id)
+                except TypeError:
+                    content = await self.llm.complete_json(prompt_messages)
             content = _strip_code_fence(content)
             try:
                 raw_value = json.loads(content, object_pairs_hook=_unique_json_object)

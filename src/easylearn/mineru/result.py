@@ -1,3 +1,4 @@
+import io
 import json
 import math
 import sys
@@ -9,10 +10,10 @@ import pypdfium2 as pdfium  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 from pypdf.errors import PyPdfError
 
-from easylearn.document_ir.schema import AssetDescriptor
+from easylearn.document_ir.schema import AssetDescriptor, DocumentIR, ImageNode
 from easylearn.errors import DomainError
 from easylearn.execution import run_validation
-from easylearn.images import ImageLimits
+from easylearn.images import ImageLimits, ImageMetadata
 from easylearn.jobs.schema import JobFailure
 from easylearn.mineru.adapter import MinerUAdapter, NormalizationContext
 from easylearn.mineru.archive import JSON_ARTIFACT_KINDS, MinerUArchive, result_root
@@ -21,6 +22,7 @@ from easylearn.mineru.schema import (
     MINERU_VALIDATION_TIMEOUT_SECONDS,
     MinerUArchiveLimits,
     MinerUArchiveManifest,
+    MinerUArchiveMember,
     MinerUOptions,
     MinerUTableLimits,
 )
@@ -209,6 +211,9 @@ def normalize_result(
             table_limits=request.table_limits,
         ),
     )
+    ir, evidence = _materialize_composite_figures(
+        ir, preview_path, storage, source, evidence, request.options
+    )
     stored_ir = storage.write([ir.model_dump_json(exclude_computed_fields=True).encode()])
     return NormalizedEvidence(
         manifest=evidence.manifest,
@@ -217,6 +222,117 @@ def normalize_result(
         registration=registration,
         document_ir=stored_ir,
     )
+
+
+def _materialize_composite_figures(
+    ir: DocumentIR,
+    preview_path: Path,
+    storage: LocalStorage,
+    source: ParseSource,
+    evidence: ResultEvidence,
+    options: MinerUOptions,
+) -> tuple[DocumentIR, ResultEvidence]:
+    composite_indices = [
+        idx
+        for idx, b in enumerate(ir.blocks)
+        if "COMPOSITE_FIGURE" in b.parse_warnings and b.source_regions
+    ]
+    if not composite_indices or not preview_path.is_file():
+        return ir, evidence
+
+    try:
+        doc = pdfium.PdfDocument(preview_path)
+    except Exception:
+        return ir, evidence
+
+    root = result_root(options)
+    updated_blocks = list(ir.blocks)
+    new_members: list[MinerUArchiveMember] = []
+    new_objects: dict[PortablePath, StoredObject] = {}
+    new_assets: list[AssetDescriptor] = []
+
+    for idx in composite_indices:
+        block = ir.blocks[idx]
+        region = block.source_regions[0]
+        if not (0 <= region.page_index < len(doc)):
+            continue
+        try:
+            page = doc[region.page_index]
+            scale = 200.0 / 72.0
+            bitmap = page.render(scale=scale)
+            page_image = bitmap.to_pil()
+            img_w, img_h = page_image.size
+            x0, y0, x1, y1 = region.bbox_norm
+            crop_x0 = max(0, int(math.floor(x0 * img_w)))
+            crop_y0 = max(0, int(math.floor(y0 * img_h)))
+            crop_x1 = min(img_w, int(math.ceil(x1 * img_w)))
+            crop_y1 = min(img_h, int(math.ceil(y1 * img_h)))
+            if crop_x1 <= crop_x0 or crop_y1 <= crop_y0:
+                continue
+
+            cropped = page_image.crop((crop_x0, crop_y0, crop_x1, crop_y1))
+            buffer = io.BytesIO()
+            cropped.save(buffer, format="JPEG", quality=95)
+            image_bytes = buffer.getvalue()
+        except Exception:
+            continue
+
+        stored_crop = storage.write([image_bytes])
+        clean_id = block.block_id.replace(".", "_")
+        member_name = f"composite_{clean_id}.jpg"
+        member_path = f"{root}/images/{member_name}"
+
+        member = MinerUArchiveMember(
+            path=member_path,
+            kind="image",
+            sha256=stored_crop.sha256,
+            size=stored_crop.size,
+            image=ImageMetadata(
+                mime="image/jpeg",
+                format="JPEG",
+                width=cropped.width,
+                height=cropped.height,
+                frames=1,
+                decoded_pixels=cropped.width * cropped.height,
+            ),
+        )
+        new_members.append(member)
+        new_objects[member_path] = stored_crop
+
+        descriptor = AssetDescriptor(
+            asset_id=member.asset_id(source.parse_run_id),
+            sha256=stored_crop.sha256,
+            mime="image/jpeg",
+            export_path=f"images/{member_name}",
+        )
+        new_assets.append(descriptor)
+
+        new_node = ImageNode(
+            node_id=f"{block.block_id}.crop",
+            asset_id=descriptor.asset_id,
+            alt=block.source_text or "",
+        )
+        updated_blocks[idx] = block.model_copy(update={"source_nodes": (new_node,)})
+
+    if not new_assets:
+        return ir, evidence
+
+    updated_ir = ir.model_copy(
+        update={
+            "blocks": tuple(updated_blocks),
+            "assets": (*ir.assets, *new_assets),
+        }
+    )
+    updated_evidence = evidence.model_copy(
+        update={
+            "manifest": evidence.manifest.model_copy(
+                update={"members": (*evidence.manifest.members, *new_members)}
+            ),
+            "objects": {**evidence.objects, **new_objects},
+        }
+    )
+    return updated_ir, updated_evidence
+
 
 
 def _image_assets(

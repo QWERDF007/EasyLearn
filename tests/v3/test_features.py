@@ -1389,8 +1389,8 @@ async def test_translation_isolated_and_qa_document_scoped_session_id(feature_co
 
     # Translation uses easylearn-translate-{doc_id} and deletes session afterwards
     assert len(tracker.translation_sessions) > 0
-    assert all(s == expected_trans_session for s in tracker.translation_sessions)
-    assert expected_trans_session in tracker.deleted_sessions
+    assert all(s and s.startswith(expected_trans_session) for s in tracker.translation_sessions)
+    assert any(s and s.startswith(expected_trans_session) for s in tracker.deleted_sessions)
 
     # QA uses easylearn-qa-{doc_id} and does NOT delete session (persistent per document)
     assert len(tracker.qa_sessions) == 1

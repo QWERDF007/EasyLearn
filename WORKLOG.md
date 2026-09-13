@@ -6,6 +6,318 @@
 
 - 无。
 
+### 2026-09-13 — 修复翻译进度卡在 99% 且继续翻译空转问题与 SSOT 自愈机制
+
+**目标**
+- 解决用户反馈的文档翻译进度显示“已译 99%”，点击“继续翻译”屏幕一闪而过无动作、重复点击依旧卡在 99% 的问题；
+- 确立翻译单元计数与状态判断的单一真相源（SSOT），在加载 IR 时自愈校准 metadata 中的 `total_units`；完善前端针对“重新翻译全文”与选块重译时的 `force` 参数传递。
+
+**当前状态**
+- 已完成：排查根因，发现复合图成组消除散碎子标签后，DocumentIR 的实际单元数由 1073 降至 1066，且数据库中 1066 个单元已全部翻译完成；但 `parse_results.metadata_json` 中残留旧计数 1073（1066/1073 = 99.34%），导致显示为 99% 且状态被判为 `partial`，而翻译调度层校验 IR 发现无待译单元直接退出形成死循环；
+- 已完成：在 `src/easylearn/documents/service.py` 的 `_view` 中重构 IR 加载与元数据校验，比对 `len(translation_units(ir))`，若发现 `total_units` 漂移则自动自愈校正并写回数据库 `metadata_json`；同时复用单一 `ir` 实例消除重复反序列化；
+- 已完成：在 `src/easylearn/static/app.js` 的翻译按钮事件中补充 `force` 逻辑，当文档状态为 `completed`（文案为“重新翻译全文”）或显式选中局部块时传递 `force: true`；
+- 已完成：数据库中当前文档记录已自愈对齐为 1066/1066（`completed`），浏览器 UI 实时恢复为绿色的“✓ 翻译完成 · 27页”。
+
+**验证证据**
+- API 响应验证：`GET /api/documents/e4f2e1f3-a17d-4b30-9e1d-be9d3288fe9f` 返回 `total_units: 1066, translated_units: 1066, translation_status: "completed"`；
+- 浏览器截图验证：通过 Selenium 生成 `completed_status_ui.png`，左侧侧边栏第一篇文档状态呈现 `✓ 翻译完成 · 27页`，右侧操作栏按钮文案变更为“重新翻译全文”；
+- 单元与集成测试：`pytest tests/v3/test_app.py tests/v3/test_features.py` 全部 60 passed (10.01s)。
+
+**下一步**
+- 在浏览器中刷新 EasyLearn 工作台，确认文档状态已是完整翻译，无需额外操作。
+
+### 2026-09-13 — 修复复合图重排导致的翻译错位并优化列表容器渲染
+
+**目标**
+- 解决复合图合并后部分旧翻译因 `block_id` 顺序平移导致的不对齐/消失问题（如 Page 1、Page 3、Page 9 上的图题注、段落和列表项）；
+- 消除右侧阅读面板上 `list` 容器空卡片与蓝框、左侧 PDF 上 `list` 容器多重重叠框，规范列表项（`list_item`）的中文标签“列表”与交互呈现。
+
+**当前状态**
+- 已完成：深入排查翻译数据流，确诊根因为复合图成组（例如 Page 3 上 2 张子图合并为 1 个复合块）导致同页后续块的索引（`p3.b2`, `p3.b3` 等）向前平移，而数据库中原翻译记录仍保留旧的 `(block_id, unit_id)`；编写数据库对齐迁移逻辑，通过内容与行内特征对齐 1066 个翻译单元，更新 `block_id`、`unit_id` 与 `source_fingerprint`，清理 7 个过期子标签记录，当前 1066/1066 单元 100% 命中且 0 stale；
+- 已完成：在 `src/easylearn/static/app.js` 的 `renderResult` 和复制逻辑中过滤 `block.block_type === "list"` 结构容器，消除空白无内容的空边框卡片；
+- 已完成：在 `src/easylearn/static/pdf-viewer.js` 的 `#renderRegions` 中跳过 `list` 容器，保留各子列表项（`list_item`）独立高亮与点击聚焦，消除整组列表重复画框与相互遮挡；
+- 已完成：在 `src/easylearn/static/pdf-viewer.js` 的 `blockTypeLabel` 中将 `list` 和 `list_item` 统一本地化映射为“列表”；
+- 已完成：编写测试 `test_list_container_blocks_and_static_labels`，全量测试 24 passed；并通过真实无头浏览器验证与截图确认。
+
+**验证证据**
+- `pytest tests/v3/test_app.py`：24 passed；
+- `pytest tests/mineru/test_adapter.py tests/mineru/test_result.py`：129 passed, 3 skipped；
+- 接口验证：`GET /api/documents/.../translations` 返回 1066 个单元，Page 3 的 10 个单元全量返回 `stale: False` 及完整中文译文；
+- 真实 UI 截图验证：`page3_verification.png` 确认 Figure 2 题注、下方段落与 1~4 项列表全部恢复中文翻译，中间无多余空白卡片；`item1_selected.png` 确认点击列表项 1 时左右两侧均呈现精准、单一、标签为“列表”的高亮卡片与 PDF 视口框。
+
+**下一步**
+- 在浏览器中刷新工作台（按 Ctrl+F5 刷新前端静态资源），验证 Page 3 翻译与列表交互完全恢复正常。
+
+
+### 2026-09-13 — 实现同一页多子图的复合图成组与高清物理整图裁切（方案 A）
+
+**目标**
+- 解决用户反馈的复合图（如 Figure 1、Figure 2、Figure 6）在解析和阅读流中被切散成碎图、中间穿插局部标签碎片（如 `COCO-2017`、`COCO-ReM (ours)`、`(a) Holes`）的问题；
+- 遵循方案 A：在后端数据层识别同页空间紧邻并共同归属于同一个主图题注的连续子图，聚合成统一的复合 figure 语义块，计算 Union BBox 生成单一外接矩形高亮区域；在物理资产层通过 PDFium 高保真（200 DPI）裁切原 PDF，生成单一完整大图绑定至 CAS 与资产清单，呈现整洁完整的论文级图表体验。
+
+**当前状态**
+- 已完成：在 `src/easylearn/mineru/adapter.py` 中实现 `_group_composite_para_blocks`，自动探测同一页上属于同一个主图题注（`_PRIMARY_FIGURE_CAPTION_RE`）的连续 visual blocks，计算包含子块与子标签的 Union BBox，收拢子图体并提取唯一的主图题注建立 `caption_of` 关联；
+- 已完成：在 `src/easylearn/mineru/adapter.py` 中规范 `image`/`chart` 块的 `SourceRegion` 映射逻辑，保证复合图在 PDF 视口中呈现为单一干净的外接矩形（与 `102237.png` 像素级一致）；
+- 已完成：在 `src/easylearn/mineru/result.py` 的 `normalize_result` 中增加 `_materialize_composite_figures`，当检测到带有 `COMPOSITE_FIGURE` 的语义块且存在 PDF 预览时，使用 `pypdfium2` 渲染该外接矩形并输出高质量 JPEG 存入 CAS，注册 `MinerUArchiveMember` 与 `AssetDescriptor`，使解析卡片与 Markdown 导出天然引用完整复合大图；
+- 已完成：针对现有文档 `e4f2e1f3-a17d-4b30-9e1d-be9d3288fe9f` 重算归一化产物，Figure 1、Figure 2、Figure 6 成功生成高清完整复合大图（Figure 1 尺寸 1292x825），并通过 100% 资产完整性与校验和测试；
+- 已完成：TDD 编写 4 项专项测试：`test_composite_figure_groups_sub_images_and_binds_primary_caption`、`test_distinct_figures_on_same_page_are_not_merged`、`test_adjacent_images_without_figure_caption_are_not_merged`、`test_normalized_result_materializes_composite_figure_image_crop`，全量测试均通过。
+
+**验证证据**
+- `pytest tests/mineru/test_adapter.py -v`：69 passed, 1 skipped；
+- `pytest tests/mineru/test_result.py -v`：60 passed, 2 skipped；
+- `pytest tests/v3/test_app.py -v`：23 passed；
+- `pytest tests/v3/test_table_editor.py -v`：7 passed；
+- 真实产物校验脚本：1054 个内容块、28 个资产文件校验和一致，Figure 1（`p1.b0`）单块单一外接矩形 `[71.0, 72.0, 536.0, 369.0]`，完全重现 `102237.png` 视觉排版。
+
+**下一步**
+- 在浏览器中刷新文档工作台查看 Figure 1，左侧高亮单一完整大框，右侧显示高清整张大图及对应题注，不再被散碎小图切片割裂。
+
+
+### 2026-09-13 — 取消页码分割线点击跳转交互，改为纯静态视觉分页
+
+**目标**
+- 取消点击每页底部“第 x 页”居中页码分割线时的跳转行为，回归纯净沉浸的静态学术分页视觉提示。
+
+**当前状态**
+- 已完成：在 `src/easylearn/static/app.js` 的 `appendPageDivider` 中移除 `click` 监听器与跳转逻辑，同时移除 `title` 浮层提示；
+- 已完成：在 `src/easylearn/static/app.css` 中将 `.result-page-divider` 调整为静态展示，设置 `cursor: default;` 并移除 `:hover` 变蓝伪类交互效果；
+- 已完成：在 `tests/v3/test_table_editor.py` 中更新测试 `test_page_divider_is_static_without_navigation`，7/7 项测试全部通过。
+
+**验证证据**
+- `pytest tests/v3/test_table_editor.py -v`：7/7 全部通过；
+- `pytest tests/v3/test_app.py -v`：23/23 全部通过。
+
+**下一步**
+- 在浏览器中刷新工作台，页码分割线作为静止优雅的分界线，不再响应点击。
+
+
+### 2026-09-13 — 修复点击“第 x 页”跳转至对应页码物理位置而非整页顶部
+
+**目标**
+- 解决用户点击右侧“第 x 页”居中页码线后，左侧 PDF 仅粗暴滚动到该页最顶部（显示标题/作者），而无法精准定位到该页页码物理所在位置的问题。
+
+**当前状态**
+- 已完成：在 `src/easylearn/static/pdf-viewer.js` 中重构 `goToPage` 支持 `{ align = "start" | "end" }` 对齐配置；
+- 已完成：在 `src/easylearn/static/pdf-viewer.js` 中实现 `focusPageNumber(pageIndex)`，优先寻找该页真实的页码块（`page_number`、带页码 warnings 或映射为页码标签的块）并调用 `focusBlock` 居中平滑聚焦至页码坐标；若无独立页码块则平滑滚动至该页底端页脚区域（`align: "end"`）；
+- 已完成：在 `src/easylearn/static/app.js` 的 `appendPageDivider` 中将跳转绑定更新为 `pdfReader.focusPageNumber(targetPageIndex)`；
+- 已完成：在 `tests/v3/test_table_editor.py` 中编写 `test_page_divider_navigates_to_page_number_position` 单元测试，全量 7/7 项测试全部通过。
+
+**验证证据**
+- `pytest tests/v3/test_table_editor.py -v`：7/7 全部通过；
+- `pytest tests/v3/test_app.py -v`：23/23 全部通过。
+
+**下一步**
+- 在浏览器中刷新工作台，点击右侧任意“第 x 页”即可观察左侧 PDF 视口平滑居中聚焦至该页底部对应页码。
+
+
+### 2026-09-12 — 规范每页底部居中页码线（第 x 页）并隐藏正文流孤立页码卡片
+
+**目标**
+- 解决原文档提取的页码孤立数字（如 5）与分页线并存导致的冗余问题；
+- 统一在每页内容末尾（页脚位置）居中呈现 `────── 第 x 页 ──────` 分页线（包含文档最后一页），点击直达对应 PDF 页面；
+- 正文阅读流中不再渲染独立的页码数字卡片。
+
+**当前状态**
+- 已完成：在 `src/easylearn/static/app.js` 中抽象 `appendPageDivider(targetPageIndex)`，当内容块跨页时在上一页末尾追加本页的居中页码线，循环结束后自动为全篇最后一页追加页码线；
+- 已完成：在 `renderResult` 中判定页码块（`isPageNumber`）跳过正文卡片渲染，避免孤立数字（如 5）出现在正文流中；
+- 已完成：在 `src/easylearn/static/app.css` 中将 `.result-block.page-number-block` 显式设为 `display: none !important;` 双重保障界面纯净；
+- 已完成：在 `tests/v3/test_table_editor.py` 中编写 `test_page_footer_divider_and_suppress_standalone_number`，6/6 项测试全部通过。
+
+**验证证据**
+- `pytest tests/v3/test_table_editor.py -v`：6/6 全部通过；
+- `pytest tests/v3/test_app.py -v`：23/23 全部通过。
+
+**下一步**
+- 在浏览器中刷新工作台页面查看干净的每页底部页码线。
+
+
+### 2026-09-12 — 优化页码弱化与跨页线、标题描述中文标签与学术图文排版
+
+**目标**
+- 将页码、图片标题、图片排版与描述调整为学术规范与目标截图样式：
+  1. 内容跨页处插入居中分页分割线（`────── 第 N 页 ──────`），支持点击直接联动跳转至对应 PDF 页面；
+  2. 弱化页码块（`page_number`），去除卡片边框、标签与操作底栏，以浅灰微型文本纯净呈现；
+  3. PDF 原文标注与结果区标签将 `caption` 转换为中文「图片标题」/「表格标题」，细分「图片描述」/「表格描述」/「脚注」；
+  4. 图片排版自适应全宽展示（解除 520px 宽度卡死，`max-width: 100%`），居中贴合下方 Caption，去除绿色色块边框、移除常驻遮挡操作按钮。
+
+**当前状态**
+- 已完成：在 `src/easylearn/static/pdf-viewer.js` 中重构 `blockTypeLabel(type, block)`，支持根据 `parent_block_id` 和 warnings 智能将 `caption` 映射为「图片标题」/「表格标题」，`footnote` 映射为「图片描述」/「表格描述」/「脚注」，`page_number` 映射为「页码」；
+- 已完成：在 `src/easylearn/static/app.js` 的 `renderResult` 中加入跨页检测，相邻块所属页变更时自动插入 `.result-page-divider` 分割线并绑定 `pdfReader.goToPage(pageIndex)` 快速定位；为页码块添加 `.page-number-block` 类；
+- 已完成：在 `src/easylearn/static/app.css` 中重构图片与图表排版，解除 520px 宽硬编码，支持大图横向自适应铺展；去除浓重绿色边框与遮挡文本角标，紧贴下方 Caption；将操作底栏收敛为仅 hover 时显示，选中态不遮挡阅读；
+- 已完成：在 `src/easylearn/static/app.css` 中实现精致两端延展的 `.result-page-divider` 样式、`.page-number-block` 弱化样式；
+- 已完成：在 `tests/v3/test_table_editor.py` 中补充响应式全宽与约束验证，5/5 项全部通过。
+
+**验证证据**
+- `pytest tests/v3/test_table_editor.py -v`：5/5 全部通过；
+- `pytest tests/v3/test_app.py tests/v3/test_features.py -v`：59/59 全部通过。
+
+**下一步**
+- 在浏览器中刷新工作台页面查看图片自适应展开效果。
+
+
+### 2026-09-12 — 取消表格单元格独立选中事件，实现整表统一块级高亮与联动
+
+**目标**
+- 取消表格中单个单元格被单独点击选中的逻辑，保持整表统一的块级选中效果与高亮联动。
+
+**当前状态**
+- 已完成：从 `src/easylearn/static/app.js` 的 `appendTable` 中移除各单元格上的 `dataset.blockId` 与 `bindResultBlock`，点击表格内任意单元格直接自然冒泡至表格外层容器 `.result-block`；
+- 已完成：调整 `updateResultSelection` 仅针对 `.result-block` 进行块级选中切换；
+- 已完成：在 `src/easylearn/static/app.css` 中移除 `.result-table td.is-selected` 等单元格级别的高亮样式；
+- 已完成：在 `tests/v3/test_table_editor.py` 中增加 `test_table_whole_block_selection_only` 单元测试，全量 23 项 App 测试与 4 项 Table 测试 100% 通过。
+
+**验证证据**
+- `pytest tests/v3/test_table_editor.py -v`：4/4 全部通过；
+- `pytest tests/v3/test_app.py -v`：23/23 全部通过。
+
+**下一步**
+- 在前端工作台中点击表格任意区域，表格将作为整体块高亮并与 PDF 双向对齐。
+
+
+### 2026-09-12 — 统一中文/英文 Markdown 表格渲染规范，落地交互式表格纠正编辑与 LaTeX 预览
+
+**目标**
+- 解决中文 Markdown 表格中每个单元格平铺堆砌操作表单的问题，保持与英文表格一致的纯净渲染外观；
+- 去除单元格内独立的编辑按钮，在表格块底栏统一提供规范的 `[复制]`、`[纠正]`、`[✦ AI解读]` 三个操作按钮；
+- 修复“纠正”操作按钮因宽度受限竖向折行变形的问题；
+- 落地表格块级专属纠正编辑模式，支持富文本对齐/加粗/倾斜/行列增删可视化编辑，并实时提供标准 LaTeX 源码预览与一键复制。
+
+**当前状态**
+- 已完成：重构 `src/easylearn/static/app.js` 中的 `appendTable`，彻底移除单元格级别的 `addEditor` 与铅笔编辑按钮，中英文视图均呈现整洁的 `result-table`；
+- 已完成：重构 `createSourceEditButton` 并为 `isBlockEditable` 接入表格类型支持，纠正按钮改用横向文本胶囊并在 `app.css` 中限制 `white-space: nowrap` 与 `width: auto`，根治竖排换行变形；
+- 已完成：在 `renderResult` 中为表格块添加标准 `[复制]`（复制为 GFM 格式 Markdown 表格）、`[纠正]` 与 `[✦ AI解读]` 统一底栏；
+- 已完成：实现 `renderTableEditCard` 深度封装的交互式表格编辑卡片，包含格式排版工具栏（左/中/右对齐、粗体、斜体、下划线、行列操作、高亮颜色）、contenteditable 可编辑单元格高亮交互，以及底部的规范 LaTeX 源码展示与一键复制；
+- 已完成：实现 `saveTableEdit` 自动比对单元格改动，在中文视图下更新译文（`wire.updateTranslation`），在原文视图下更新原文（`wire.updateSourceEdit`）；
+- 已完成：编写 `tests/v3/test_table_editor.py` 测试套件，并通过全部 149 项 `tests/v3/` 回归测试。
+
+**验证证据**
+- `pytest tests/v3/test_table_editor.py -v`：3/3 全部通过；
+- `pytest tests/v3/ -v`：149/149 全部通过（18.43s）；
+- 静态文件检查：`app.js` 与 `app.css` 结构完整，无控制台语法错误。
+
+**下一步**
+- 在浏览器中刷新工作台查看表格，点击“纠正”体验交互式编辑与 LaTeX 代码一键复制。
+
+
+### 2026-09-12 — 彻底解决长文档翻译会话膨胀与并发冲突，完成全篇 1073 单元翻译
+
+**目标**
+- 根治长文档翻译过程中远端会话历史无限膨胀触发 502/超载失败的问题，支持无状态轻量批次轮换与并发工作线程隔离，并验证完成目标长文档（1073 单元）的全量平稳翻译。
+
+**当前状态**
+- 已完成：在 `3rdparty/FreeDeepseekAPI-ZH/server.js` 中增加 `x-stateless` 机制与 502/504 异常远端会话重置/清理能力，避免显式会话陷入死循环；
+- 已完成：在 `src/easylearn/translation.py` 中重构并发与会话分配，由原先全文档所有批次共享同一个单点 `doc_session_id` 重构为基于 `worker_id` 的隔离会话与基于 `batches_per_session`（5 批次/轮）的安全周期轮换机制，上一轮会话在后台异步删除；
+- 已完成：`LLMClient` 与 `_translate_batch` 支持传递 `stateless=True`；
+- 已完成：更新 `tests/v3/test_features.py` 会话生命周期断言，确保 71 项回归测试与 FreeDeepseekAPI 48 项单元测试全量通过；
+- 已完成：重启 EasyLearn 与 FreeDeepseekAPI-ZH 服务，断点续传成功平稳跑通剩余 413 个单元，目标文档 1073 个单元全部翻译完成并持久化落盘 SQLite。
+
+**验证证据**
+- `npm test`（FreeDeepseekAPI-ZH）：48/48 项测试全量通过；
+- `pytest tests/v3/test_app.py tests/v3/test_tasks.py tests/v3/test_features.py -q`：71/71 全部通过；
+- `GET /api/documents/e4f2e1f3-a17d-4b30-9e1d-be9d3288fe9f`：`total_units=1073, translated_units=1073, translation_status=completed`；
+- `GET http://127.0.0.1:9655/health`：`agents=0, in_flight=0`，临时会话全部自动完成释放与远端删除。
+
+**下一步**
+- 前端刷新文档即可直接查看或导出完整的双语对照学术文档。
+
+
+### 2026-09-12 — 将 FreeDeepseekAPI-ZH 交互提示与菜单汉化为中文
+
+**目标**
+- 将 `3rdparty/FreeDeepseekAPI-ZH` 中的俄文、英文混合交互提示和启动菜单全面汉化为中文，提升授权和管理易用性。
+
+**当前状态**
+- 已完成：汉化 `scripts/auth.js` 中的账号状态、帮助说明与交互式菜单；
+- 已完成：汉化 `scripts/deepseek_chrome_auth.js` 中的 Chrome 打开指引、发送测试消息指引、回车确认提示与授权保存日志；
+- 已完成：汉化 `scripts/auth_import.js` 中的帮助提示、命令行输入交互与报错信息；
+- 已完成：汉化 `server.js` 启动 Banner、服务状态面板与启动选项菜单；
+- 已完成：运行全量 47 项 Node.js 单元测试并保持全部通过。
+
+**验证证据**
+- `npm test`（在 `3rdparty/FreeDeepseekAPI-ZH`）：47/47 passed in 329ms；
+- `node scripts/auth.js --status`：正确输出中文账号状态面板；
+- `node scripts/auth.js --help`：正确输出中文命令行帮助信息。
+
+**下一步**
+- 在 `3rdparty/FreeDeepseekAPI-ZH` 中直接运行 `npm run auth` 或 `npm start` 即可享受全中文交互体验。
+
+
+### 2026-09-12 — 定位翻译任务 502 报错根因并限制 DeepSeek Web 单并发
+
+**目标**
+- 分析 `logs/2026-09-12.log` 中翻译任务 `e833e031-5090-49bf-b7ec-a86537dc8360` 报 `LLM_UNAVAILABLE: LLM is temporarily unavailable (HTTP 502)` 的根因，并完成针对性修复。
+
+**当前状态**
+- 已完成：排查定位根因——默认配置 `translation_concurrency = 4` 导致 4 个协程向 FreeDeepseekAPI 代理并发请求同一个会话 ID（`x-agent-session`），触发 DeepSeek Web 网页端单会话生成冲突并返回 502；
+- 已完成：在 `config.toml` 中配置 `[tasks]` 段，设置 `translation_concurrency = 1`，将 DeepSeek Web 翻译切换为单线程串行模式，配合内置 1.0s 冷却机制防止限流与并发碰撞；
+- 已完成：验证已有 220 个已翻译单元已落盘 SQLite，下次点击翻译自动断点续传。
+
+**验证证据**
+- `Invoke-RestMethod http://127.0.0.1:9655/v1/chat/completions`：单独请求 DeepSeek Web 代理成功响应，服务状态正常；
+- `Settings.load('config.toml').translation_concurrency`：返回 1；
+- `pytest tests/v3/test_config.py -q -p no:cacheprovider`：10 passed in 0.63s。
+
+**下一步**
+- 重启 EasyLearn 服务后，在前端重新提交翻译即可自动接续剩余单元的翻译。
+
+
+### 2026-09-12 — 清空项目下的历史临时测试目录与 tmp 目录
+
+**目标**
+- 清空项目根目录下残留的各种历史临时运行/测试目录及 `tmp` 目录，彻底消除 `git status` 中的权限告警并释放磁盘空间。
+
+**当前状态**
+- 已完成：删除常规运行临时目录 `tmp/` 与未跟踪目录 `.tmp-chrome-probe/`；
+- 已完成：通过 sandbox 权限上下文批量清理此前测试生成的 17 个 `.tmp-*` 遗留目录（包括 `.tmp-browser-*`、`.tmp-target-*`、`.tmp-stage-*`、`.tmp-model-catalog`、`.tmp-ui-check` 等）以及 `.pytest_cache/`；
+- 已完成：确认根目录下所有临时目录均已完全移除，`git status` 恢复干净整洁。
+
+**验证证据**
+- `Remove-Item -Path tmp, .tmp-chrome-probe -Recurse -Force`：成功移除；
+- `codex sandbox powershell.exe ... Remove-Item -Path $_.FullName`：17 个带有隔离沙箱权限的 `.tmp-*` 目录与 `.pytest_cache` 全部成功删除；
+- `git status`：不再输出任何 `could not open directory ... Permission denied` 告警；
+- 根目录下子目录数量由 32 个收敛为 12 个规范业务与系统目录。
+
+**下一步**
+- 保持根目录整洁，常规运行无需任何额外临时文件清理。
+
+
+### 2026-09-12 — 配置 LLM 和翻译服务使用 DeepSeek Web
+
+**目标**
+- 在 `config.toml` 中配置 `[llm]` 与 `[extensions]`，使翻译和 AI 解读统一接入本地 FreeDeepseekAPI 代理（DeepSeek Web）。
+
+**当前状态**
+- 已完成：在 `config.toml` 增加 `[llm]` 配置，指定 `active_provider = "deepseek"`，配置 DeepSeek Web 代理端口 `http://127.0.0.1:9655/v1`；
+- 已完成：翻译服务使用 `deepseek-chat` 模型，AI 解读（QA）自动派生使用 `deepseek-reasoner` 推理模型；
+- 已完成：在 `[extensions]` 中开启 `qa_enabled = true`，使前端完整开放 AI 解读与双语翻译功能；
+- 已完成：检测确认本机 9655 端口代理处于活跃监听状态，验证 `/api/health` 成功上报 LLM 配置就绪。
+
+**验证证据**
+- `Test-NetConnection -Port 9655`：TcpTestSucceeded 为 True；
+- `Invoke-RestMethod http://127.0.0.1:9655/v1/models`：成功拉取模型列表（包含 `deepseek-chat` 与 `deepseek-reasoner`）；
+- `TestClient(app).get('/api/health')`：HTTP 200，LLM configured=True, active_provider='deepseek', translation_concurrency=4, qa_enabled=True；
+- `pytest tests/v3/test_config.py -q -p no:cacheprovider`：10 passed in 0.58s。
+
+**下一步**
+- 确保 FreeDeepseekAPI 代理保持运行，直接运行 `E:\Softwares\Anaconda3\envs\learn\python.exe -m easylearn` 启动 EasyLearn。
+
+
+### 2026-09-12 — 规范 config.toml 中的 MinerU 模型配置结构
+
+**目标**
+- 修正 `config.toml` 中 `[mineru]` 配置段的旧字段格式，使其与 `config.example.toml` 和 `src/easylearn/config.py` 的 Pydantic 严格模式对齐。
+
+**当前状态**
+- 已完成：将 `config.toml` 中的 `model_path = "D:/Models/MinerU2.5-Pro-2605-1.2B"` 替换为标准 `default_model_id` 与 `[[mineru.models]]` 列表结构；
+- 已完成：使用 `E:\Softwares\Anaconda3\envs\learn\python.exe` 验证配置加载、应用初始化与定向配置单测。
+
+**验证证据**
+- `python -c "from easylearn.config import Settings; from easylearn.main import create_app; ..."`：配置校验成功，MinerU 默认模型成功加载 `D:\Models\MinerU2.5-Pro-2605-1.2B`，应用实例化正常；
+- `pytest tests/v3/test_config.py -q -p no:cacheprovider`：10 passed in 0.67s。
+
+**下一步**
+- 用户可直接通过 `E:\Softwares\Anaconda3\envs\learn\python.exe -m easylearn` 启动服务。
+
 
 ### 2026-09-11 — 完成架构可靠性整改全量 9 个工单 (Tickets 001-009)
 

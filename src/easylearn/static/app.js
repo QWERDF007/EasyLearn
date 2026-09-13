@@ -1145,7 +1145,7 @@ function updateQaAnchorBox(forcedBlockId = null) {
     return;
   }
   const block = state.parse?.blocks?.find((b) => b.block_id === targetBlockId);
-  titleEl.textContent = `已选块 ${targetBlockId} (${blockTypeLabel(block?.block_type) || "内容块"})`;
+  titleEl.textContent = `已选块 ${targetBlockId} (${blockTypeLabel(block?.block_type, block) || "内容块"})`;
   if (block) {
     const text = state.view === "source" ? blockSourceText(block) : blockTranslationText(block);
     snippetEl.textContent = text.slice(0, 160) + (text.length > 160 ? "…" : "");
@@ -1207,6 +1207,11 @@ function isEditableSourceNode(node) {
 
 function editableSourceNodes(block) {
   return (block.source_nodes || []).filter(isEditableSourceNode);
+}
+
+function isBlockEditable(block) {
+  if (block.block_type === "table" && block.table) return true;
+  return editableSourceNodes(block).length > 0;
 }
 
 function blockTranslationText(block) {
@@ -1302,23 +1307,57 @@ function renderResult() {
   const matches = (block) => `${block.block_id} ${blockSourceText(block)} ${blockTranslationText(block)}`
     .toLocaleLowerCase()
     .includes(query);
+  const totalVisibleBlocks = state.parse.blocks.filter(
+    (b) => b.block_type !== "table_cell" && b.block_type !== "list"
+  ).length;
   const blocks = state.parse.blocks.filter((block) => {
-    if (block.block_type === "table_cell") return false;
+    if (block.block_type === "table_cell" || block.block_type === "list") return false;
     if (!query || matches(block)) return true;
     if (block.block_type !== "table" || !block.table) return false;
     return block.table.cells.some((cell) => blockById.has(cell.block_ref.block_id)
       && matches(blockById.get(cell.block_ref.block_id)));
   });
   $("#result-search-count").textContent = query
-    ? `${blocks.length} / ${state.parse.blocks.length} 块`
-    : `${state.parse.blocks.length} 块`;
+    ? `${blocks.length} / ${totalVisibleBlocks} 块`
+    : `${totalVisibleBlocks} 块`;
   if (!blocks.length) {
     content.append(message("没有匹配的块。"));
     return;
   }
+  const appendPageDivider = (targetPageIndex) => {
+    if (!Number.isInteger(targetPageIndex)) return;
+    const divider = document.createElement("div");
+    divider.className = "result-page-divider";
+    const dividerSpan = document.createElement("span");
+    dividerSpan.textContent = `第 ${targetPageIndex + 1} 页`;
+    divider.append(dividerSpan);
+    content.append(divider);
+  };
+
+  let currentPageIndex = null;
   for (const block of blocks) {
+    const rawPage = block?.source_regions?.[0]?.page_index ?? block?.source_locator?.page_indices?.[0];
+    const pageIndex = Number.isInteger(rawPage) ? rawPage : null;
+
+    const isPageNumber = (block.block_type || "").toLowerCase() === "page_number"
+      || blockTypeLabel(block.block_type, block) === "页码";
+
+    if (pageIndex !== null && currentPageIndex !== null && pageIndex !== currentPageIndex) {
+      appendPageDivider(currentPageIndex);
+      currentPageIndex = pageIndex;
+    } else if (pageIndex !== null && currentPageIndex === null) {
+      currentPageIndex = pageIndex;
+    }
+
+    if (isPageNumber) {
+      // 独立页码块 (page-number-block) 已统一呈现在每页下方，不作为正文卡片单独渲染
+      continue;
+    }
+
     if (state.editingSourceBlockId === block.block_id) {
-      const editCard = renderBlockEditCard(block);
+      const editCard = block.block_type === "table" && block.table
+        ? renderTableEditCard(block, blockById)
+        : renderBlockEditCard(block);
       content.append(editCard);
       continue;
     }
@@ -1329,7 +1368,7 @@ function renderResult() {
     );
     wrapper.dataset.blockId = block.block_id;
     wrapper.dataset.blockType = block.block_type || "paragraph";
-    wrapper.dataset.label = blockTypeLabel(block.block_type);
+    wrapper.dataset.label = blockTypeLabel(block.block_type, block);
 
     const heading = document.createElement("div");
     heading.className = "result-block-heading";
@@ -1360,10 +1399,12 @@ function renderResult() {
     copyBlockBtn.textContent = "复制";
     copyBlockBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
-      const text = state.view === "source" ? blockSourceText(block) : blockTranslationText(block);
+      const text = block.block_type === "table" && block.table
+        ? tableToMarkdown(block, blockById, state.view)
+        : (state.view === "source" ? blockSourceText(block) : blockTranslationText(block));
       try {
         await navigator.clipboard.writeText(text);
-        notify("已复制块内容");
+        notify(block.block_type === "table" ? "已复制表格 Markdown" : "已复制块内容");
       } catch {
         notify("复制失败");
       }
@@ -1371,8 +1412,6 @@ function renderResult() {
     actions.append(copyBlockBtn);
     const edit = createSourceEditButton(block);
     if (edit) {
-      edit.classList.add("result-block-action-btn");
-      edit.textContent = "纠正";
       actions.append(edit);
     }
     const qaBlockBtn = document.createElement("button");
@@ -1389,6 +1428,9 @@ function renderResult() {
 
     bindResultBlock(wrapper, block.block_id);
     content.append(wrapper);
+  }
+  if (currentPageIndex !== null) {
+    appendPageDivider(currentPageIndex);
   }
   pdfReader.setSelected(state.selectedBlocks);
 }
@@ -1570,15 +1612,9 @@ function appendTable(container, block, blockById) {
     const row = rows[cell.row];
     if (!child || !row) continue;
     const element = document.createElement(cell.role === "header" ? "th" : "td");
-    element.dataset.blockId = child.block_id;
     element.rowSpan = cell.row_span;
     element.colSpan = cell.column_span;
     appendBlockContent(element, child, state.view);
-    if (state.view === "zh") addEditor(element, child);
-    const edit = createSourceEditButton(child);
-    if (edit) element.prepend(edit);
-    if (state.editingSourceBlockId === child.block_id) addSourceEditor(element, child);
-    bindResultBlock(element, child.block_id);
     row.append(element);
   }
   container.append(table);
@@ -1611,13 +1647,13 @@ function blockUnits(block) {
 }
 
 function createSourceEditButton(block) {
-  if (!editableSourceNodes(block).length) return null;
+  if (!isBlockEditable(block)) return null;
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "icon-button block-edit-button";
+  button.className = "result-block-action-btn block-edit-button";
   button.setAttribute("aria-label", `纠正 ${block.block_id}`);
   button.title = "纠正";
-  button.innerHTML = '<span aria-hidden="true">✎</span>';
+  button.textContent = "纠正";
   button.addEventListener("click", (event) => {
     event.stopPropagation();
     state.editingSourceBlockId = state.editingSourceBlockId === block.block_id
@@ -1908,8 +1944,458 @@ async function saveBlockEdit(card, block) {
   }
 }
 
-function addSourceEditor(wrapper, block) {
-  wrapper.append(renderBlockEditCard(block));
+function tableToMarkdown(block, blockById, view) {
+  if (!block.table || !block.table.cells) return blockDisplayText(block);
+  const rows = block.table.rows;
+  const cols = block.table.columns;
+  const grid = Array.from({ length: rows }, () => Array(cols).fill(""));
+
+  const cells = [...block.table.cells].sort((a, b) => a.row - b.row || a.column - b.column);
+  for (const cell of cells) {
+    const child = blockById.get(cell.block_ref.block_id);
+    const text = child
+      ? (view === "zh" ? blockTranslationText(child) : blockSourceText(child)).replace(/\r?\n/g, " ").trim()
+      : "";
+    for (let r = 0; r < cell.row_span; r++) {
+      for (let c = 0; c < cell.column_span; c++) {
+        if (cell.row + r < rows && cell.column + c < cols) {
+          grid[cell.row + r][cell.column + c] = (r === 0 && c === 0) ? text : "";
+        }
+      }
+    }
+  }
+
+  const lines = [];
+  for (let r = 0; r < rows; r++) {
+    lines.push(`| ${grid[r].map((val) => val || " ").join(" | ")} |`);
+    if (r === 0) {
+      lines.push(`| ${Array(cols).fill("---").join(" | ")} |`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function generateTableLatex(block, blockById, view, cellOverrides = new Map()) {
+  if (!block.table || !block.table.cells) return "";
+  const rows = block.table.rows;
+  const cols = block.table.columns;
+  const colSpec = "l".repeat(cols);
+
+  const lines = [
+    `\\begin{longtable}[]{@{}${colSpec}@{}}`,
+    `\\toprule\\noalign{}`,
+    `\\endhead`,
+    `\\bottomrule\\noalign{}`,
+    `\\endlastfoot`,
+  ];
+
+  const covered = Array.from({ length: rows }, () => Array(cols).fill(false));
+  const cellMap = new Map();
+  for (const cell of block.table.cells) {
+    cellMap.set(`${cell.row},${cell.column}`, cell);
+  }
+
+  for (let r = 0; r < rows; r++) {
+    const rowTokens = [];
+    for (let c = 0; c < cols; c++) {
+      if (covered[r][c]) continue;
+      const cell = cellMap.get(`${r},${c}`);
+      if (!cell) {
+        rowTokens.push("");
+        continue;
+      }
+      for (let dr = 0; dr < cell.row_span; dr++) {
+        for (let dc = 0; dc < cell.column_span; dc++) {
+          if (r + dr < rows && c + dc < cols) {
+            covered[r + dr][c + dc] = true;
+          }
+        }
+      }
+
+      const child = blockById.get(cell.block_ref.block_id);
+      let text = cellOverrides.has(cell.block_ref.block_id)
+        ? cellOverrides.get(cell.block_ref.block_id)
+        : (child ? (view === "zh" ? blockTranslationText(child) : blockSourceText(child)) : "");
+      text = text.replace(/\r?\n/g, " ").trim();
+
+      let token = text;
+      if (cell.column_span > 1 && cell.row_span > 1) {
+        token = `\\multicolumn{${cell.column_span}}{l}{\\multirow{${cell.row_span}}{*}{${text}}}`;
+      } else if (cell.column_span > 1) {
+        token = `\\multicolumn{${cell.column_span}}{l}{${text}}`;
+      } else if (cell.row_span > 1) {
+        token = `\\multirow{${cell.row_span}}{*}{${text}}`;
+      }
+      rowTokens.push(token);
+    }
+    lines.push(rowTokens.join(" & ") + " \\\\");
+  }
+
+  lines.push(`\\end{longtable}`);
+  return lines.join("\n");
+}
+
+function createFormatBtn(text, title, onClick, extraStyle = "") {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "table-format-btn";
+  btn.title = title;
+  btn.textContent = text;
+  if (extraStyle) btn.style.cssText = extraStyle;
+  if (onClick) {
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      onClick();
+    });
+  }
+  return btn;
+}
+
+function createDivider() {
+  const divider = document.createElement("span");
+  divider.className = "toolbar-divider";
+  return divider;
+}
+
+function renderTableEditCard(block, blockById) {
+  const card = document.createElement("article");
+  card.className = "block-edit-card table-edit-card";
+  card.dataset.blockId = block.block_id;
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "table-edit-toolbar";
+
+  const formatGroup = document.createElement("div");
+  formatGroup.className = "table-edit-format-group";
+
+  let activeCell = null;
+  const cellOverrides = new Map();
+
+  function updateLatex() {
+    latexCodeBlock.textContent = generateTableLatex(block, blockById, state.view, cellOverrides);
+  }
+
+  function applyCellAlignment(align) {
+    if (activeCell) {
+      activeCell.style.textAlign = align;
+    }
+  }
+
+  function applyFormatCommand(cmd) {
+    document.execCommand(cmd, false, null);
+    if (activeCell) {
+      cellOverrides.set(activeCell.dataset.cellBlockId, activeCell.innerText.trim());
+      updateLatex();
+    }
+  }
+
+  function applyColorCommand(cmd, val) {
+    document.execCommand(cmd, false, val);
+    if (activeCell) {
+      cellOverrides.set(activeCell.dataset.cellBlockId, activeCell.innerText.trim());
+      updateLatex();
+    }
+  }
+
+  function insertRow(pos) {
+    if (!activeCell) return;
+    const rowIdx = parseInt(activeCell.dataset.row, 10);
+    const newTr = document.createElement("tr");
+    const cols = block.table.columns;
+    for (let c = 0; c < cols; c++) {
+      const td = document.createElement("td");
+      td.contentEditable = "true";
+      td.dataset.row = pos === "above" ? rowIdx : rowIdx + 1;
+      td.dataset.col = c;
+      bindCellEvents(td);
+      newTr.append(td);
+    }
+    const targetTr = table.rows[rowIdx] || table.rows[table.rows.length - 1];
+    if (pos === "above" && targetTr) {
+      table.insertBefore(newTr, targetTr);
+    } else if (targetTr) {
+      targetTr.after(newTr);
+    }
+    notify("已插入行");
+  }
+
+  function insertCol(pos) {
+    if (!activeCell) return;
+    const colIdx = activeCell.cellIndex;
+    for (const r of table.rows) {
+      const td = document.createElement("td");
+      td.contentEditable = "true";
+      bindCellEvents(td);
+      if (pos === "left" && r.cells[colIdx]) {
+        r.insertBefore(td, r.cells[colIdx]);
+      } else if (r.cells[colIdx]) {
+        r.cells[colIdx].after(td);
+      } else {
+        r.append(td);
+      }
+    }
+    notify("已插入列");
+  }
+
+  function deleteRow() {
+    if (!activeCell) return;
+    const tr = activeCell.closest("tr");
+    if (tr && table.rows.length > 1) {
+      tr.remove();
+      activeCell = null;
+      notify("已删除行");
+      updateLatex();
+    }
+  }
+
+  function deleteCol() {
+    if (!activeCell) return;
+    const colIdx = activeCell.cellIndex;
+    if (colIdx >= 0) {
+      for (const r of table.rows) {
+        if (r.cells[colIdx]) r.cells[colIdx].remove();
+      }
+      activeCell = null;
+      notify("已删除列");
+      updateLatex();
+    }
+  }
+
+  const alignLeftBtn = createFormatBtn("≡", "左对齐", () => applyCellAlignment("left"));
+  const alignCenterBtn = createFormatBtn("≡", "居中对齐", () => applyCellAlignment("center"));
+  const alignRightBtn = createFormatBtn("≡", "右对齐", () => applyCellAlignment("right"));
+
+  const boldBtn = createFormatBtn("B", "加粗 (Ctrl+B)", () => applyFormatCommand("bold"), "font-weight: 700;");
+  const italicBtn = createFormatBtn("I", "斜体 (Ctrl+I)", () => applyFormatCommand("italic"), "font-style: italic;");
+  const underlineBtn = createFormatBtn("U", "下划线 (Ctrl+U)", () => applyFormatCommand("underline"), "text-decoration: underline;");
+
+  const tableIconBtn = createFormatBtn("田", "表格结构", null);
+  const addRowAboveBtn = createFormatBtn("⊞↑", "在上方插入行", () => insertRow("above"));
+  const addRowBelowBtn = createFormatBtn("⊞↓", "在下方插入行", () => insertRow("below"));
+  const addColLeftBtn = createFormatBtn("⊞←", "在左侧插入列", () => insertCol("left"));
+  const addColRightBtn = createFormatBtn("⊞→", "在右侧插入列", () => insertCol("right"));
+  const deleteRowBtn = createFormatBtn("⊟行", "删除当前行", () => deleteRow());
+  const deleteColBtn = createFormatBtn("⊟列", "删除当前列", () => deleteCol());
+
+  const textColorBtn = createFormatBtn("A", "文字颜色", () => applyColorCommand("foreColor", "#2563eb"), "color: #2563eb; font-weight: 700;");
+  const bgColorBtn = createFormatBtn("A", "背景高亮", () => applyColorCommand("hiliteColor", "#fef08a"), "background: #fef08a; font-weight: 700; padding: 0 4px;");
+
+  formatGroup.append(
+    alignLeftBtn, alignCenterBtn, alignRightBtn,
+    createDivider(),
+    boldBtn, italicBtn, underlineBtn,
+    createDivider(),
+    tableIconBtn, addRowAboveBtn, addRowBelowBtn, addColLeftBtn, addColRightBtn, deleteRowBtn, deleteColBtn,
+    createDivider(),
+    textColorBtn, bgColorBtn
+  );
+
+  const actionGroup = document.createElement("div");
+  actionGroup.className = "block-edit-action-group";
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "block-edit-cancel-btn";
+  cancelBtn.textContent = "取消";
+  cancelBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    state.editingSourceBlockId = null;
+    renderResult();
+  });
+
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.className = "block-edit-save-btn";
+  saveBtn.textContent = "保存";
+  saveBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    void saveTableEdit(card, block, blockById);
+  });
+
+  actionGroup.append(cancelBtn, saveBtn);
+  toolbar.append(formatGroup, actionGroup);
+  card.append(toolbar);
+
+  const gridContainer = document.createElement("div");
+  gridContainer.className = "table-edit-grid-container";
+
+  const table = document.createElement("table");
+  table.className = "table-edit-grid";
+
+  const rows = Array.from({ length: block.table.rows }, () => {
+    const row = document.createElement("tr");
+    table.append(row);
+    return row;
+  });
+
+  function bindCellEvents(element) {
+    element.addEventListener("focus", () => {
+      activeCell = element;
+    });
+    element.addEventListener("input", () => {
+      if (element.dataset.cellBlockId) {
+        cellOverrides.set(element.dataset.cellBlockId, element.innerText.trim());
+      }
+      updateLatex();
+    });
+    element.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        e.preventDefault();
+        void saveTableEdit(card, block, blockById);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        state.editingSourceBlockId = null;
+        renderResult();
+      } else if (e.key === "Tab") {
+        e.preventDefault();
+        navigateCells(element, e.shiftKey ? -1 : 1);
+      }
+    });
+  }
+
+  function navigateCells(current, direction) {
+    const allCells = Array.from(table.querySelectorAll("th, td"));
+    const idx = allCells.indexOf(current);
+    if (idx !== -1) {
+      const next = allCells[idx + direction];
+      if (next) {
+        next.focus();
+      }
+    }
+  }
+
+  const cells = [...block.table.cells].sort((a, b) => a.row - b.row || a.column - b.column);
+  for (const cell of cells) {
+    const child = blockById.get(cell.block_ref.block_id);
+    const row = rows[cell.row];
+    if (!child || !row) continue;
+    const element = document.createElement(cell.role === "header" ? "th" : "td");
+    element.contentEditable = "true";
+    element.dataset.cellBlockId = child.block_id;
+    element.dataset.row = cell.row;
+    element.dataset.col = cell.column;
+    element.rowSpan = cell.row_span;
+    element.colSpan = cell.column_span;
+
+    const initialText = state.view === "zh"
+      ? blockTranslationText(child)
+      : blockSourceText(child);
+    element.innerText = initialText;
+
+    bindCellEvents(element);
+    row.append(element);
+  }
+
+  gridContainer.append(table);
+  card.append(gridContainer);
+
+  const latexSection = document.createElement("section");
+  latexSection.className = "table-edit-latex-section";
+
+  const latexCodeBlock = document.createElement("pre");
+  latexCodeBlock.className = "table-edit-latex-content";
+  latexSection.append(latexCodeBlock);
+
+  const latexFooter = document.createElement("div");
+  latexFooter.className = "table-edit-latex-footer";
+
+  const latexTag = document.createElement("span");
+  latexTag.className = "table-edit-latex-tag";
+  latexTag.textContent = "latex";
+
+  const copyLatexBtn = document.createElement("button");
+  copyLatexBtn.type = "button";
+  copyLatexBtn.className = "table-latex-copy-btn";
+  copyLatexBtn.textContent = "📋 复制";
+  copyLatexBtn.title = "复制 LaTeX 代码";
+  copyLatexBtn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(latexCodeBlock.textContent);
+      notify("已复制 LaTeX 代码");
+    } catch {
+      notify("复制失败");
+    }
+  });
+
+  latexFooter.append(latexTag, copyLatexBtn);
+  latexSection.append(latexFooter);
+  card.append(latexSection);
+
+  updateLatex();
+
+  requestAnimationFrame(() => {
+    const firstCell = table.querySelector("th[contenteditable='true'], td[contenteditable='true']");
+    if (firstCell) {
+      firstCell.focus();
+    }
+  });
+
+  return card;
+}
+
+async function saveTableEdit(card, block, blockById) {
+  if (!state.document || !state.parse) return;
+  const parseId = state.parse.parse_run_id;
+  const saveBtn = card.querySelector(".block-edit-save-btn");
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.textContent = "保存中…";
+  }
+
+  try {
+    const cells = card.querySelectorAll("th[data-cell-block-id], td[data-cell-block-id]");
+    let modifiedCount = 0;
+
+    for (const cellEl of cells) {
+      const cellBlockId = cellEl.dataset.cellBlockId;
+      const child = blockById.get(cellBlockId);
+      if (!child) continue;
+
+      const newText = cellEl.innerText.trim();
+
+      if (state.view === "zh") {
+        const units = blockUnits(child);
+        const unit = units[0];
+        const previousText = unit?.effective_text ?? blockTranslationText(child);
+        if (newText !== previousText && unit) {
+          await wire.updateTranslation(state.document.document_id, unit.unit_id, {
+            parse_id: parseId,
+            block_id: child.block_id,
+            expected_revision: unit.revision,
+            text: newText,
+          });
+          modifiedCount++;
+        }
+      } else {
+        const node = editableSourceNodes(child)[0];
+        const currentEdit = node ? state.sourceEdits.get(sourceEditKey(child.block_id, node.node_id)) : null;
+        const previousText = currentEdit?.effective_text ?? (node ? nodeText(node) : "");
+        if (newText !== previousText && node) {
+          const updated = await wire.updateSourceEdit(state.document.document_id, {
+            parse_id: parseId,
+            block_id: child.block_id,
+            node_id: node.node_id,
+            expected_revision: currentEdit?.revision ?? 0,
+            text: newText,
+          });
+          state.sourceEdits.set(sourceEditKey(child.block_id, node.node_id), updated);
+          modifiedCount++;
+        }
+      }
+    }
+
+    state.editingSourceBlockId = null;
+    await openParse(parseId);
+    notify(modifiedCount > 0 ? "表格已纠正并保存" : "未做任何修改");
+  } catch (error) {
+    notify(error.message);
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.textContent = "保存";
+    }
+  }
 }
 
 function addEditor(wrapper, block) {
@@ -2074,7 +2560,7 @@ function updateResultSelection() {
       ? `已选 ${state.selectedBlocks.size} 块`
       : "";
   }
-  for (const block of content.querySelectorAll(".result-block, th, td")) {
+  for (const block of content.querySelectorAll(".result-block")) {
     const isSelected = state.selectedBlocks.has(block.dataset.blockId);
     block.classList.toggle("is-selected", isSelected);
   }
@@ -2637,7 +3123,7 @@ $("#copy-button")?.addEventListener("click", async () => {
     text = state.markdownCache.get(state.parse.parse_run_id) || "";
   } else {
     text = state.parse.blocks
-      .filter((b) => b.block_type !== "table_cell")
+      .filter((b) => b.block_type !== "table_cell" && b.block_type !== "list")
       .map((b) => (state.view === "source" ? blockSourceText(b) : blockTranslationText(b)))
       .filter(Boolean)
       .join("\n\n");
@@ -2771,11 +3257,15 @@ $("#translate-button")?.addEventListener("click", async () => {
   const documentId = state.document.document_id;
   const parseId = state.parse.parse_run_id;
   const blockIds = state.selectedBlocks.size ? [...state.selectedBlocks] : null;
+  const activeRes = state.document?.parse_results?.find((p) => p.parse_id === parseId) || state.document?.parse_results?.[0];
+  const docStatus = activeRes?.translation_status || state.document?.translation_status || "none";
+  const force = Boolean(blockIds && blockIds.length > 0) || docStatus === "completed";
   await withButtonBusy("translate-button", "翻译中…", async () => {
     try {
       await runTask(`/api/documents/${documentId}/translate`, {
         parse_id: parseId,
         block_ids: blockIds,
+        force,
       }, "翻译完成");
       if (state.document?.document_id === documentId && state.parse?.parse_run_id === parseId) {
         await openParse(parseId);

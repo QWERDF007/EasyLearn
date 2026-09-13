@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+import re
 from typing import Annotated, Literal, Self
 from uuid import UUID
 
@@ -165,6 +166,7 @@ class _Block(_Upstream):
     lines_deleted: bool = False
     cross_page: bool = False
     guess_lang: str | None = None
+    is_composite: bool = False
 
     @model_validator(mode="after")
     def validate_content_shape(self) -> Self:
@@ -229,6 +231,7 @@ class _Block(_Upstream):
                                 "blocks": (),
                                 "lines_deleted": body.lines_deleted,
                                 "cross_page": self.cross_page or body.cross_page,
+                                "is_composite": self.is_composite,
                             }
                         ),
                     )
@@ -238,6 +241,133 @@ class _Block(_Upstream):
             if self.blocks or self.type in ("image_body", "chart_body", "table_body", "code_body"):
                 raise DomainError("MINERU_PROTOCOL_MISMATCH", "Unexpected nested body")
             yield block_id, parent_id, self
+
+
+_PRIMARY_FIGURE_CAPTION_RE = re.compile(
+    r"^(?:Figure|Fig\.?|图)\s*([0-9A-Za-z]+)", re.IGNORECASE
+)
+
+
+def _caption_text(caption_block: _Block) -> str:
+    return "".join(
+        span.content
+        for line in caption_block.lines
+        for span in line.spans
+        if isinstance(span, _TextSpan)
+    ).strip()
+
+
+def _is_primary_figure_caption(caption_block: _Block) -> bool:
+    return bool(_PRIMARY_FIGURE_CAPTION_RE.match(_caption_text(caption_block)))
+
+
+def _group_composite_para_blocks(blocks: tuple[_Block, ...]) -> tuple[_Block, ...]:
+    result: list[_Block] = []
+    i = 0
+    n = len(blocks)
+    while i < n:
+        block = blocks[i]
+        if block.type not in ("image", "chart"):
+            result.append(block)
+            i += 1
+            continue
+
+        run: list[_Block] = []
+        while i < n and blocks[i].type in ("image", "chart"):
+            run.append(blocks[i])
+            i += 1
+
+        if len(run) == 1:
+            result.append(run[0])
+            continue
+
+        primary_indices = [
+            idx
+            for idx, b in enumerate(run)
+            if any(
+                _is_primary_figure_caption(child)
+                for child in b.blocks
+                if child.type in (f"{b.type}_caption", "caption")
+            )
+        ]
+
+        if not primary_indices:
+            result.extend(run)
+            continue
+
+        partitions: list[list[_Block]] = []
+        start_idx = 0
+        for p_idx in primary_indices:
+            partitions.append(run[start_idx : p_idx + 1])
+            start_idx = p_idx + 1
+        if start_idx < len(run):
+            for b in run[start_idx:]:
+                partitions.append([b])
+
+        for part in partitions:
+            if len(part) == 1:
+                result.append(part[0])
+                continue
+
+            composite_type = part[0].type
+            primary_cap = next(
+                child
+                for b in part
+                for child in b.blocks
+                if child.type in (f"{b.type}_caption", "caption")
+                and _is_primary_figure_caption(child)
+            )
+            footnotes = [
+                child
+                for b in part
+                for child in b.blocks
+                if child.type in (f"{composite_type}_footnote", "footnote")
+            ]
+            sub_captions = [
+                child
+                for b in part
+                for child in b.blocks
+                if child.type in (f"{composite_type}_caption", "caption")
+                and child is not primary_cap
+            ]
+            bodies = [
+                child
+                for b in part
+                for child in b.blocks
+                if child.type == f"{b.type}_body"
+            ]
+
+            bboxes_to_union = (
+                [b.bbox for b in part if b.bbox]
+                + [body.bbox for body in bodies if body.bbox]
+                + [sub.bbox for sub in sub_captions if sub.bbox]
+            )
+            if bboxes_to_union:
+                union_bbox: BBox = (
+                    min(b[0] for b in bboxes_to_union),
+                    min(b[1] for b in bboxes_to_union),
+                    max(b[2] for b in bboxes_to_union),
+                    max(b[3] for b in bboxes_to_union),
+                )
+            else:
+                union_bbox = part[0].bbox
+
+            merged_lines = tuple(line for body in bodies for line in body.lines)
+            merged_body = _Block(
+                type=f"{composite_type}_body",
+                bbox=union_bbox,
+                lines=merged_lines,
+            )
+            composite_block = _Block(
+                type=composite_type,
+                bbox=union_bbox,
+                blocks=(merged_body, primary_cap, *footnotes),
+                is_composite=True,
+            )
+            result.append(composite_block)
+
+    return tuple(result)
+
 
 
 class _Page(_Upstream):
@@ -304,9 +434,10 @@ class MinerUAdapter:
                 raise DomainError(
                     "ADAPTER_COORDINATE_INVALID", "Invalid middle coordinate registration"
                 )
+            para_blocks = _group_composite_para_blocks(page.para_blocks)
             content_blocks = (
                 (content, namespace == "d")
-                for namespace, group in (("b", page.para_blocks), ("d", page.discarded_blocks))
+                for namespace, group in (("b", para_blocks), ("d", page.discarded_blocks))
                 for index, upstream in enumerate(group)
                 for content in upstream.flatten(f"p{page.page_idx}.{namespace}{index}")
             )
@@ -380,18 +511,22 @@ class MinerUAdapter:
                     for line in upstream.lines
                 ):
                     source_warnings.append("TABLE_SOURCE_UNRESOLVED")
-                for line in upstream.lines:
-                    source_page = page.page_idx
-                    if upstream.cross_page or any(span.cross_page for span in line.spans):
-                        candidates = line_sources.get(line.source_key, set()) - {page.page_idx}
-                        if len(candidates) != 1:
-                            source_warnings.append("CROSS_PAGE_SOURCE_UNRESOLVED")
-                            continue
-                        source_page = next(iter(candidates))
-                    locations.append((source_page, line.bbox))
                 unresolved = bool(source_warnings)
-                if not any(bbox is not None for _, bbox in locations) and not unresolved:
+                if upstream.type in ("image", "chart") and upstream.bbox is not None:
                     locations = [(page.page_idx, upstream.bbox)]
+                else:
+                    for line in upstream.lines:
+                        source_page = page.page_idx
+                        if upstream.cross_page or any(span.cross_page for span in line.spans):
+                            candidates = line_sources.get(line.source_key, set()) - {page.page_idx}
+                            if len(candidates) != 1:
+                                source_warnings.append("CROSS_PAGE_SOURCE_UNRESOLVED")
+                                continue
+                            source_page = next(iter(candidates))
+                        locations.append((source_page, line.bbox))
+                    unresolved = bool(source_warnings)
+                    if not any(bbox is not None for _, bbox in locations) and not unresolved:
+                        locations = [(page.page_idx, upstream.bbox)]
                 regions: list[SourceRegion] = []
                 if not unresolved:
                     for source_page, bbox in locations:
@@ -423,6 +558,7 @@ class MinerUAdapter:
                         parse_warnings=(
                             (f"UPSTREAM_DISCARDED:{upstream.type}",) if discarded else ()
                         )
+                        + (("COMPOSITE_FIGURE",) if upstream.is_composite else ())
                         + (
                             tuple(dict.fromkeys(source_warnings))
                             if unresolved

@@ -799,3 +799,17 @@ async def test_document_total_units_legacy_backfill(client, pdf_bytes):
         ).fetchone()
         assert json.loads(row["metadata_json"]).get("total_units") == 1
 
+
+@pytest.mark.asyncio
+async def test_list_container_blocks_and_static_labels(client):
+    res_js = await client.get("/static/app.js")
+    assert res_js.status_code == 200
+    assert 'b.block_type !== "list"' in res_js.text
+
+    res_pdf = await client.get("/static/pdf-viewer.js")
+    assert res_pdf.status_code == 200
+    assert 'list: "列表"' in res_pdf.text
+    assert 'list_item: "列表"' in res_pdf.text
+    assert 'if (block.block_type === "list") continue;' in res_pdf.text
+
+

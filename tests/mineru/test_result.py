@@ -726,3 +726,122 @@ async def test_real_paper_can_be_normalized_against_its_fixed_preview(result_inp
     assert ir.blocks[0].source_regions[0].bbox_pdf == (10, 752, 50, 772)
     assert [block.source_regions[0].page_index for block in ir.blocks] == list(range(27))
     assert hashlib.sha256(path.read_bytes()).hexdigest() == expected
+
+
+@pytest.mark.asyncio
+async def test_normalized_result_materializes_composite_figure_image_crop(result_input):
+    from easylearn.document_ir.schema import DocumentIR
+    from easylearn.mineru.result import MinerUResultValidator, ParseSource
+
+    middle = {
+        "_version_name": "3.4.5",
+        "_backend": "vlm",
+        "pdf_info": [
+            {
+                "page_idx": 0,
+                "page_size": [612, 792],
+                "para_blocks": [
+                    {
+                        "type": "image",
+                        "bbox": [50, 50, 200, 150],
+                        "blocks": [
+                            {
+                                "type": "image_caption",
+                                "bbox": [50, 30, 200, 45],
+                                "lines": [
+                                    {
+                                        "bbox": [50, 30, 200, 45],
+                                        "spans": [{"type": "text", "content": "Sub-label A"}],
+                                    }
+                                ],
+                            },
+                            {
+                                "type": "image_body",
+                                "bbox": [50, 50, 200, 150],
+                                "lines": [
+                                    {
+                                        "bbox": [50, 50, 200, 150],
+                                        "spans": [
+                                            {
+                                                "type": "image",
+                                                "image_path": "images/figure.png",
+                                                "content": "A",
+                                            }
+                                        ],
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "type": "image",
+                        "bbox": [50, 160, 350, 300],
+                        "blocks": [
+                            {
+                                "type": "image_body",
+                                "bbox": [50, 160, 350, 300],
+                                "lines": [
+                                    {
+                                        "bbox": [50, 160, 350, 300],
+                                        "spans": [
+                                            {
+                                                "type": "image",
+                                                "image_path": "images/figure.png",
+                                                "content": "B",
+                                            }
+                                        ],
+                                    }
+                                ],
+                            },
+                            {
+                                "type": "image_caption",
+                                "bbox": [50, 310, 350, 330],
+                                "lines": [
+                                    {
+                                        "bbox": [50, 310, 350, 330],
+                                        "spans": [
+                                            {"type": "text", "content": "Figure 1: Full comparison."}
+                                        ],
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            }
+        ],
+    }
+    storage, archive, contents = result_input(
+        {"input/vlm/input_middle.json": json.dumps(middle).encode()}
+    )
+    preview = storage.write([contents["input/vlm/input_origin.pdf"]])
+    source = ParseSource(
+        document_id=UUID(int=1),
+        parse_run_id=UUID(int=2),
+        preview_asset_id=UUID(int=3),
+        preview=preview,
+    )
+    validator = MinerUResultValidator(
+        storage,
+        archive_limits=MinerUArchiveLimits(),
+        image_limits=ImageLimits(),
+        preview_limits=PreviewLimits(),
+    )
+    result = await validator.normalize(archive, options=MinerUOptions(page_count=1), source=source)
+    ir = DocumentIR.model_validate_json(b"".join(storage.read(result.document_ir.key)))
+    assert len(ir.blocks) == 2
+    figure, caption = ir.blocks
+    assert figure.block_type == "image"
+    assert "COMPOSITE_FIGURE" in figure.parse_warnings
+    assert len(figure.source_nodes) == 1
+    assert figure.source_nodes[0].type == "image"
+    crop_asset_id = figure.source_nodes[0].asset_id
+    crop_asset = next(a for a in ir.assets if a.asset_id == crop_asset_id)
+    assert crop_asset.mime == "image/jpeg"
+    assert crop_asset.export_path.startswith("images/composite_")
+    assert crop_asset.sha256 in [o.sha256 for o in result.objects.values()]
+    member = next(m for m in result.manifest.members if m.sha256 == crop_asset.sha256)
+    assert member.image is not None
+    assert member.image.mime == "image/jpeg"
+    assert member.image.width > 0 and member.image.height > 0
+

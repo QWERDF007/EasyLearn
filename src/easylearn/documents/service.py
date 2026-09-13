@@ -297,16 +297,26 @@ class DocumentService:
             metadata = json.loads(parse_row["metadata_json"])
             total_units = metadata.get("total_units")
             parse_id = UUID(parse_row["id"])
-            if total_units is None:
-                try:
-                    ir = await self.load_ir(document_id, parse_id)
-                    from easylearn.translation import translation_units
+            corrupt_reasons: list[str] = []
+            ir = None
+            try:
+                ir = await self.load_ir(document_id, parse_id)
+            except Exception as exc:
+                corrupt_reasons.append(f"Failed to load IR: {exc}")
 
-                    total_units = len(translation_units(ir))
+            if ir is not None:
+                from easylearn.translation import translation_units
+
+                actual_units = len(translation_units(ir))
+                if total_units != actual_units:
+                    total_units = actual_units
                     metadata["total_units"] = total_units
-                    await self.store.update_parse_metadata(parse_id, metadata)
-                except Exception:
-                    total_units = 0
+                    try:
+                        await self.store.update_parse_metadata(parse_id, metadata)
+                    except Exception as exc:
+                        logger.warning("Failed to update parse metadata for %s: %s", parse_id, exc)
+            elif total_units is None:
+                total_units = 0
 
             translated_units = int(parse_row["translated_units"])
             if total_units > 0 and translated_units >= total_units:
@@ -316,9 +326,7 @@ class DocumentService:
             else:
                 translation_status = "none"
 
-            corrupt_reasons: list[str] = []
-            try:
-                ir = await self.load_ir(document_id, parse_id)
+            if ir is not None:
                 parse_root = self.files.paths.document(document_id) / "parses" / str(parse_id)
                 for asset in ir.assets:
                     asset_file = parse_root / asset.export_path
@@ -330,8 +338,6 @@ class DocumentService:
                             corrupt_reasons.append(
                                 f"Asset checksum mismatch: {asset.export_path}"
                             )
-            except Exception as exc:
-                corrupt_reasons.append(f"Failed to load IR: {exc}")
 
             integrity_status: Literal["valid", "corrupt"] = (
                 "corrupt" if corrupt_reasons else "valid"

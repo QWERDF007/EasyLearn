@@ -847,20 +847,76 @@ h1, h2 { margin: 0; font-size: 17px; }
   background: #f59e0b;
 }
 
-/* Image (图片/图表) 绿色系：常态与普通块一致，仅在悬浮或选中时显示绿色样式 */
+/* Image (图片/图表) 居中排版，自适应展开，与下方标题紧密排布 */
+.result-block[data-block-type="image"],
+.result-block[data-block-type="figure"] {
+  text-align: center;
+  margin: 6px 0 2px;
+  padding: 4px 6px;
+  background: transparent;
+  border-color: transparent;
+}
 .result-block[data-block-type="image"].is-hovered,
 .result-block[data-block-type="image"].is-selected,
 .result-block[data-block-type="figure"].is-hovered,
 .result-block[data-block-type="figure"].is-selected {
-  border-color: #10b981;
-  background: #f0fdf4;
-  box-shadow: 0 2px 10px rgba(16, 185, 129, 0.12);
+  border-color: #cbd5e1;
+  background: transparent;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.04);
 }
-.result-block[data-block-type="image"].is-hovered::before,
-.result-block[data-block-type="image"].is-selected::before,
-.result-block[data-block-type="figure"].is-hovered::before,
-.result-block[data-block-type="figure"].is-selected::before {
-  background: #10b981;
+.result-block[data-block-type="image"]::before,
+.result-block[data-block-type="figure"]::before {
+  display: none !important;
+}
+.result-block[data-block-type="image"] .result-block-actions,
+.result-block[data-block-type="figure"] .result-block-actions {
+  display: none !important;
+}
+
+/* Caption (图片/表格标题) 学术紧随排版：去除遮挡角标，优化字号与间距 */
+.result-block[data-block-type="caption"] {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #475569;
+  margin-top: 0;
+  margin-bottom: 12px;
+  padding: 6px 12px;
+}
+.result-block[data-block-type="caption"]::before {
+  display: none !important;
+}
+.result-block[data-block-type="caption"].is-selected {
+  border-color: #7ea5f8;
+  background-color: #f8faff;
+  box-shadow: 0 1px 4px rgba(56, 96, 244, 0.05);
+}
+
+/* 页码块已统一在每页底部以优雅分割线展示，隐藏独立数字卡片 */
+.result-block.page-number-block {
+  display: none !important;
+}
+
+/* 跨页分页分割线（纯静态展示，不触发跳转） */
+.result-page-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 20px 0 16px;
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 500;
+  user-select: none;
+  cursor: default;
+}
+.result-page-divider::before,
+.result-page-divider::after {
+  content: "";
+  flex: 1;
+  border-bottom: 1px solid #e2e8f0;
+}
+.result-page-divider span {
+  padding: 0 12px;
+  letter-spacing: 0.5px;
 }
 
 /* 公式展示排版容器 */
@@ -888,10 +944,11 @@ h1, h2 { margin: 0; font-size: 17px; }
 }
 
 .result-block-heading { display: none; }
-.result-block:hover .result-block-actions, .result-block.is-selected .result-block-actions { display: inline-flex; }
-.result-block-actions { position: absolute; right: 8px; bottom: 6px; display: none; align-items: center; gap: 6px; background: #ffffff; padding: 2px 6px; border-radius: 4px; border: 1px solid #e2e8f0; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06); z-index: 3; }
-.result-block-action-btn { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border: 0; border-radius: 4px; background: transparent; color: #475569; font-size: 11px; cursor: pointer; transition: color .15s, background .15s; }
+.result-block:hover .result-block-actions { display: inline-flex; }
+.result-block-actions { position: absolute; right: 8px; bottom: 6px; display: none; align-items: center; gap: 6px; background: #ffffff; padding: 2px 6px; border-radius: 4px; border: 1px solid #e2e8f0; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06); z-index: 10; }
+.result-block-action-btn { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border: 0; border-radius: 4px; background: transparent; color: #475569; font-size: 11px; white-space: nowrap; cursor: pointer; transition: color .15s, background .15s; }
 .result-block-action-btn:hover { color: #2468f2; background: #eff6ff; }
+.result-block-actions .block-edit-button { width: auto; height: auto; font-size: 11px; white-space: nowrap; margin-left: 0; }
 .result-block-heading { display: none !important; }
 .block-selection { accent-color: var(--blue); }
 .block-edit-button { width: 25px; height: 25px; margin-left: auto; font-size: 16px; }
@@ -904,12 +961,171 @@ h1, h2 { margin: 0; font-size: 17px; }
 .inline-code, .code-block { color: #334155; font-family: Consolas, monospace; }
 .code-block { margin: 0; white-space: pre-wrap; }
 .inline-reference { padding: 0; border: 0; background: none; color: var(--blue); text-decoration: underline; cursor: pointer; }
-.inline-image { display: block; max-width: min(100%, 520px); max-height: 360px; margin: 8px 0; object-fit: contain; }
+.inline-image { display: block; width: auto; max-width: 100%; max-height: 560px; margin: 8px auto; object-fit: contain; }
 .result-table { width: 100%; border-collapse: collapse; margin: 4px 0 8px; table-layout: fixed; }
 .result-table th, .result-table td { position: relative; padding: 7px 8px; border: 1px solid #d8e0ec; vertical-align: top; text-align: left; }
 .result-table th { color: #334155; background: #f8fafc; font-weight: 600; }
-.result-table td.is-hovered, .result-table th.is-hovered, .result-table td.is-selected, .result-table th.is-selected { background: #dbeafe; }
 .markdown-source { margin: 0; white-space: pre-wrap; line-height: 1.6; font: 12px/1.6 Consolas, monospace; }
+
+.table-edit-card {
+  position: relative;
+  margin: 0 0 16px;
+  padding: 12px 16px 16px;
+  background: #ffffff;
+  border: 1px solid #e5e6eb;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.table-edit-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #f1f5f9;
+  user-select: none;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.table-edit-format-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+
+.table-format-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 5px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: #475569;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all .15s;
+}
+
+.table-format-btn:hover {
+  background: #f1f5f9;
+  color: #1e293b;
+}
+
+.table-format-btn.is-active {
+  background: #eff6ff;
+  color: #2563eb;
+  border-color: #bfdbfe;
+}
+
+.toolbar-divider {
+  width: 1px;
+  height: 18px;
+  background: #e2e8f0;
+  margin: 0 4px;
+}
+
+.table-edit-grid-container {
+  overflow-x: auto;
+  margin: 8px 0;
+  padding: 4px;
+}
+
+.table-edit-grid {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  background: #ffffff;
+}
+
+.table-edit-grid th, .table-edit-grid td {
+  position: relative;
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  vertical-align: top;
+  text-align: left;
+  font-size: 13px;
+  color: #1e293b;
+  min-height: 28px;
+  min-width: 60px;
+  transition: background-color .15s, outline .15s;
+}
+
+.table-edit-grid th {
+  background: #f8fafc;
+  font-weight: 600;
+}
+
+.table-edit-grid td[contenteditable="true"]:focus,
+.table-edit-grid th[contenteditable="true"]:focus {
+  outline: 2px solid #2563eb !important;
+  outline-offset: -1px;
+  background: #f0f7ff !important;
+}
+
+.table-edit-latex-section {
+  margin-top: 14px;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  overflow: hidden;
+}
+
+.table-edit-latex-content {
+  padding: 10px 12px;
+  margin: 0;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #334155;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 240px;
+  overflow-y: auto;
+  background: transparent;
+}
+
+.table-edit-latex-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  background: #f1f5f9;
+  border-top: 1px solid #e2e8f0;
+}
+
+.table-edit-latex-tag {
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: lowercase;
+}
+
+.table-latex-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 8px;
+  color: #475569;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all .15s;
+}
+
+.table-latex-copy-btn:hover {
+  color: #2563eb;
+  border-color: #2563eb;
+  background: #eff6ff;
+}
 
 .block-edit-card {
   position: relative;
