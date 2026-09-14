@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import shutil
 from pathlib import Path
 from uuid import uuid4
@@ -13,12 +14,29 @@ from easylearn.document_ir.schema import Block, DocumentIR, PageGeometry, TextNo
 from easylearn.main import create_app
 
 
+def _parse_test_input(content: str) -> dict[str, str]:
+    stripped = content.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            return json.loads(stripped)
+        except Exception:
+            pass
+    anchors = re.findall(r"\[§(\d+)\]\s*([\s\S]*?)(?=(?:\[§\d+\]|\Z))", content)
+    if anchors:
+        return {f"[§{idx}]": text.strip() for idx, text in anchors}
+    return {"[§1]": stripped}
+
+
 class FakeLLM:
     async def complete_json(self, messages: list[dict[str, str]]) -> str:
-        payload = json.loads(messages[-1]["content"])
-        return json.dumps(
-            {unit_id: f"译：{text}" for unit_id, text in payload.items()}, ensure_ascii=False
-        )
+        content = messages[-1]["content"]
+        if content.strip().startswith("{") and content.strip().endswith("}"):
+            payload = json.loads(content)
+            return json.dumps(
+                {unit_id: f"译：{text}" for unit_id, text in payload.items()}, ensure_ascii=False
+            )
+        payload = _parse_test_input(content)
+        return "\n\n".join(f"{key} 译：{text}" for key, text in payload.items())
 
     async def stream(self, messages: list[dict[str, str]]):
         del messages

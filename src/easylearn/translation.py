@@ -9,7 +9,7 @@ import re
 import time
 import urllib.request
 from collections import Counter
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -1070,53 +1070,57 @@ class TranslationService:
         pending_units: list[TranslationUnit] = list(units)
         max_attempts = 1 + max(0, getattr(self.settings.llm, "max_retries", 2))
         last_structure_error: str | None = None
-        last_json_error: bool = False
+        last_protocol_error: bool = False
         last_empty_error: bool = False
 
         for attempt in range(max_attempts):
-            payload = {unit.unit_id: unit.source_text for unit in pending_units}
-            prompt_messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "你是一位专业的高质量学术与技术文档翻译专家。请将输入的文档英文文本翻译为规范、地道、学术风格的简体中文。\n"
-                        "必须且仅返回一个合法的 JSON 对象，键为输入的每个 unit_id，值为翻译后的非空字符串。\n"
-                        "严禁增加、删除、遗漏或修改任何 unit_id 键名。\n"
-                        "严格保留文本中的专有名词、公式、代码、数字、URL、文件路径以及形如 {{PLACEHOLDER}} 的占位符格式。\n"
-                        "仅翻译所提供的 unit_id 对应内容，切勿生成或预测任何其他键。"
-                    ),
-                },
-                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-            ]
+            prompt_messages = _build_translation_prompt(pending_units)
             try:
-                content = await self.llm.complete_json(
-                    prompt_messages, session_id=session_id, stateless=stateless
-                )
-            except TypeError:
                 try:
-                    content = await self.llm.complete_json(prompt_messages, session_id=session_id)
+                    content = await self.llm.complete_json(
+                        prompt_messages, session_id=session_id, stateless=stateless
+                    )
                 except TypeError:
-                    content = await self.llm.complete_json(prompt_messages)
-            content = _strip_code_fence(content)
-            try:
-                raw_value = json.loads(content, object_pairs_hook=_unique_json_object)
-            except (ValueError, TypeError):
-                last_json_error = True
+                    try:
+                        content = await self.llm.complete_json(
+                            prompt_messages, session_id=session_id
+                        )
+                    except TypeError:
+                        content = await self.llm.complete_json(prompt_messages)
+            except DomainError:
+                raise
+            except Exception as exc:
                 logger.warning(
-                    "LLM returned invalid JSON on attempt %d/%d for %d units: %s",
+                    "LLM request exception on attempt %d/%d for %d units: %s",
                     attempt + 1,
                     max_attempts,
                     len(pending_units),
-                    content[:200],
+                    exc,
                 )
                 if attempt < max_attempts - 1:
                     await asyncio.sleep(0.1 * (attempt + 1))
                 continue
 
-            if not isinstance(raw_value, dict):
-                last_json_error = True
+            try:
+                parsed_values = _parse_translation_response(content, pending_units)
+            except DomainError:
+                raise
+            except Exception as exc:
+                last_protocol_error = True
                 logger.warning(
-                    "LLM did not return a JSON object on attempt %d/%d: %s",
+                    "Error parsing translation response on attempt %d/%d: %s",
+                    attempt + 1,
+                    max_attempts,
+                    exc,
+                )
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(0.1 * (attempt + 1))
+                continue
+
+            if not parsed_values:
+                last_protocol_error = True
+                logger.warning(
+                    "LLM returned empty or invalid translation structure on attempt %d/%d: %s",
                     attempt + 1,
                     max_attempts,
                     content[:200],
@@ -1125,14 +1129,10 @@ class TranslationService:
                     await asyncio.sleep(0.1 * (attempt + 1))
                 continue
 
-            cleaned_value: dict[str, Any] = {
-                k.strip(): v for k, v in raw_value.items() if isinstance(k, str)
-            }
-
             for unit in list(pending_units):
-                if unit.unit_id not in cleaned_value:
+                if unit.unit_id not in parsed_values:
                     continue
-                text = cleaned_value[unit.unit_id]
+                text = parsed_values[unit.unit_id]
                 if not isinstance(text, str) or not text.strip():
                     last_empty_error = True
                     logger.warning(
@@ -1165,29 +1165,27 @@ class TranslationService:
                 return completed_results
 
             missing_ids = [u.unit_id for u in pending_units]
-            extra_ids = [k for k in cleaned_value if k not in {u.unit_id for u in units}]
             logger.warning(
                 "LLM batch translation incomplete (attempt %d/%d): %d/%d resolved, "
-                "missing=%s, extra=%s",
+                "missing=%s",
                 attempt + 1,
                 max_attempts,
                 len(completed_results),
                 len(units),
                 missing_ids,
-                extra_ids,
             )
             if attempt < max_attempts - 1:
                 await asyncio.sleep(0.1 * (attempt + 1))
 
         if last_structure_error is not None:
             raise DomainError("TRANSLATION_STRUCTURE_INVALID", last_structure_error)
-        if last_json_error and not completed_results:
-            raise DomainError(
-                "TRANSLATION_PROTOCOL_INVALID", "LLM did not return a JSON object"
-            )
         if last_empty_error and not completed_results:
             raise DomainError(
                 "TRANSLATION_PROTOCOL_INVALID", "LLM returned empty translation text"
+            )
+        if last_protocol_error and not completed_results:
+            raise DomainError(
+                "TRANSLATION_PROTOCOL_INVALID", "LLM did not follow translation protocol"
             )
         missing_ids = [u.unit_id for u in pending_units]
         raise DomainError(
@@ -1196,12 +1194,93 @@ class TranslationService:
         )
 
 
+_ANCHOR_PATTERN = re.compile(r"\[§(\d+)\][:：]?\s*([\s\S]*?)(?=(?:\[§\d+\]|\Z))")
+_ANCHOR_KEY_PATTERN = re.compile(r"^\[?§?(\d+)\]?$")
+
+_TRANSLATION_SYSTEM_PROMPT = (
+    "你是一位专业的高质量学术与技术文档翻译专家。请将输入的文档英文文本翻译为规范、地道、学术风格的简体中文。\n"
+    "输入文本由段落编号锚点（如 [§1]、[§2] 等）分隔。\n"
+    "翻译要求：\n"
+    "1. 保持段落锚点标记（如 [§1]、[§2]）严格不变，且置于对应译文段落的最前面；\n"
+    "2. 保持段落顺序与数量严格一致，严禁合并、删除或遗漏任何段落锚点；\n"
+    "3. 严格保留文本中的专有名词、公式、代码、数字、URL、文件路径以及形如 {{PLACEHOLDER}} 的占位符格式；\n"
+    "4. 仅输出翻译结果与段落锚点，不要输出多余的解释、前后缀或元说明。"
+)
+
+
+def _build_translation_prompt(units: Sequence[TranslationUnit]) -> list[dict[str, str]]:
+    user_content = "\n\n".join(f"[§{i + 1}] {unit.source_text}" for i, unit in enumerate(units))
+    return [
+        {"role": "system", "content": _TRANSLATION_SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+
+
+def _parse_translation_response(
+    content: str, units: Sequence[TranslationUnit]
+) -> dict[str, str]:
+    content = _strip_code_fence(content).strip()
+    if not content:
+        return {}
+
+    # Level 2 (Dual parsing): JSON fallback if response is wrapped as a JSON object
+    if content.startswith("{") and content.endswith("}"):
+        try:
+            raw_json = json.loads(content, object_pairs_hook=_unique_json_object)
+            if isinstance(raw_json, dict):
+                result: dict[str, str] = {}
+                unit_by_id = {u.unit_id: u for u in units}
+                for k, v in raw_json.items():
+                    if not isinstance(k, str):
+                        continue
+                    k_clean = k.strip()
+                    if k_clean in unit_by_id:
+                        result[k_clean] = str(v).strip()
+                    else:
+                        m = _ANCHOR_KEY_PATTERN.match(k_clean)
+                        if m:
+                            idx = int(m.group(1))
+                            if 1 <= idx <= len(units):
+                                result[units[idx - 1].unit_id] = str(v).strip()
+                return result
+        except ValueError:
+            raise DomainError(
+                "TRANSLATION_PROTOCOL_INVALID", "Duplicate JSON key in translation response"
+            )
+        except Exception:
+            pass
+
+    # Level 1 (Primary): Anchor stream regex extraction
+    matches = _ANCHOR_PATTERN.findall(content)
+    if matches:
+        seen_indices: set[int] = set()
+        result = {}
+        for num_str, text in matches:
+            idx = int(num_str)
+            if idx in seen_indices:
+                raise DomainError(
+                    "TRANSLATION_PROTOCOL_INVALID", f"Duplicate translation anchor [§{idx}]"
+                )
+            seen_indices.add(idx)
+            if 1 <= idx <= len(units):
+                cleaned = text.strip()
+                if cleaned:
+                    result[units[idx - 1].unit_id] = cleaned
+        return result
+
+    # Level 3: Single unit fallback without anchor
+    if len(units) == 1 and content:
+        return {units[0].unit_id: content}
+
+    return {}
+
+
 def _batches(units: tuple[TranslationUnit, ...]) -> list[tuple[TranslationUnit, ...]]:
     batches: list[tuple[TranslationUnit, ...]] = []
     current: list[TranslationUnit] = []
     size = 0
     for unit in units:
-        if current and (len(current) >= 20 or size + len(unit.source_text) > 8000):
+        if current and (len(current) >= 40 or size + len(unit.source_text) > 8000):
             batches.append(tuple(current))
             current = []
             size = 0

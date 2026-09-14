@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import re
 from pathlib import Path
 from uuid import UUID, uuid4
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -121,8 +122,14 @@ async def test_parse_can_queue_translation_only_after_result_publication(tmp_pat
 
         class AutoTranslateLLM:
             async def complete_json(self, messages: list[dict[str, str]]) -> str:
-                payload = json.loads(messages[-1]["content"])
-                return json.dumps({key: f"译：{value}" for key, value in payload.items()})
+                content = messages[-1]["content"]
+                if content.strip().startswith("{") and content.strip().endswith("}"):
+                    payload = json.loads(content)
+                    return json.dumps({key: f"译：{value}" for key, value in payload.items()})
+                anchors = re.findall(r"\[§(\d+)\]\s*([\s\S]*?)(?=(?:\[§\d+\]|\Z))", content)
+                if anchors:
+                    return "\n\n".join(f"[§{idx}] 译：{text.strip()}" for idx, text in anchors)
+                return f"译：{content.strip()}"
 
         app.state.services.translation.llm = AutoTranslateLLM()
 

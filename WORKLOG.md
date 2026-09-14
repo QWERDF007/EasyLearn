@@ -6,6 +6,30 @@
 
 - 无。
 
+### 2026-09-14 — 实现自然篇章流式合并与段落锚点对齐翻译（方案 C）
+
+**目标**
+- 实现多段合并流式翻译（方案 C），消除原先每个小段落都需要嵌套冗余 JSON 结构和高频格式约束提示词的问题；
+- 将单批次上限从 20 提高到 40（且单批次总字符上限限制为 8000），使用轻量段落锚点（`[§1]`, `[§2]`...）实现自然流式输入与输出；
+- 构建具备双模兼容（Dual Parsing）与自愈能力的解析器，支持锚点流式提取、JSON 降级提取以及单段落免锚点回退；保留丢失段落局部重试与占位符保护机制。
+
+**当前状态**
+- 已完成：在 `src/easylearn/translation.py` 中重构 `_batches`，单批次容量从 20 扩展至 40 个单元（保持 8000 字符限制），大幅压缩长文档的 LLM 调用轮次；
+- 已完成：实现 `_build_translation_prompt`，生成由 `[§1]`, `[§2]` 锚点分隔的自然段落流，去除原先冗长且易诱发格式错误的 JSON schema 指令；
+- 已完成：实现 `_parse_translation_response` 双模解析器：Level 1 正则提取段落锚点；Level 2 降级支持模型或测试 double 输出的合法 JSON；Level 3 支持单单元直接文本回退；并严格拒绝重复锚点和重复键；
+- 已完成：在 `_translate_batch` 中对接新解析流，遇到模型丢段时仅重新请求未完成的 `pending_units`；同时完整保留 `_protected_tokens` 占位符与 URL 校验；
+- 已完成：编写专项目标测试 `tests/v3/test_translation_stream.py`（覆盖批次容量、流式解析、Markdown代码块前缀清洗、单单元回退、重复锚点拦截、JSON兼容解析、丢段增量自愈等 10 个测试用例，100% 通过）；
+- 已完成：同步适配 `tests/v3/test_features.py`、`tests/v3/test_parser.py` 与 `tests/v3/test_source_edits.py` 中的测试 double，保证全量测试绿灯。
+
+**验证证据**
+- `pytest tests/v3/test_translation_stream.py`：10 passed in 0.20s；
+- `pytest tests/v3/`：164 passed in 27.67s；
+- `pytest tests/document_ir/`：65 passed in 0.25s；
+- `pytest tests/mineru/test_adapter.py tests/mineru/test_result.py -q`：129 passed, 3 skipped in 40.27s。
+
+**下一步**
+- 在实际服务中调用翻译接口测试真实长文档，验证自然篇章翻译的上下文连贯性与翻译吞吐速度。
+
 ### 2026-09-13 — 修复翻译进度卡在 99% 且继续翻译空转问题与 SSOT 自愈机制
 
 **目标**

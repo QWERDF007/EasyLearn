@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import shutil
 import threading
 from io import BytesIO
@@ -41,12 +42,29 @@ from easylearn.qa import QARequest
 from easylearn.translation import LLMClient, TranslateRequest
 
 
+def _parse_test_input(content: str) -> dict[str, str]:
+    stripped = content.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            return json.loads(stripped)
+        except Exception:
+            pass
+    anchors = re.findall(r"\[§(\d+)\]\s*([\s\S]*?)(?=(?:\[§\d+\]|\Z))", content)
+    if anchors:
+        return {f"[§{idx}]": text.strip() for idx, text in anchors}
+    return {"[§1]": stripped}
+
+
 class FakeLLM:
     async def complete_json(self, messages: list[dict[str, str]]) -> str:
-        payload = json.loads(messages[-1]["content"])
-        return json.dumps(
-            {unit_id: f"译：{text}" for unit_id, text in payload.items()}, ensure_ascii=False
-        )
+        content = messages[-1]["content"]
+        if content.strip().startswith("{") and content.strip().endswith("}"):
+            payload = json.loads(content)
+            return json.dumps(
+                {unit_id: f"译：{text}" for unit_id, text in payload.items()}, ensure_ascii=False
+            )
+        payload = _parse_test_input(content)
+        return "\n\n".join(f"{key} 译：{text}" for key, text in payload.items())
 
     async def stream(self, messages: list[dict[str, str]]):
         del messages
@@ -74,7 +92,7 @@ class BlockingTranslationLLM(FakeLLM):
 
 class DuplicateKeyTranslationLLM(FakeLLM):
     async def complete_json(self, messages: list[dict[str, str]]) -> str:
-        payload = json.loads(messages[-1]["content"])
+        payload = _parse_test_input(messages[-1]["content"])
         unit_id = next(iter(payload))
         return json.dumps({unit_id: "first 42%"})[:-1] + f',"{unit_id}":"second 42%"}}'
 
@@ -86,20 +104,19 @@ class DropKeyOnceTranslationLLM(FakeLLM):
 
     async def complete_json(self, messages: list[dict[str, str]]) -> str:
         self.call_count += 1
-        payload = json.loads(messages[-1]["content"])
+        payload = _parse_test_input(messages[-1]["content"])
         self.requested_keys.append(list(payload.keys()))
         items = list(payload.items())
         if self.call_count == 1 and len(items) > 1:
             items = items[:-1]
-        return json.dumps({unit_id: f"译：{text}" for unit_id, text in items}, ensure_ascii=False)
+        return "\n\n".join(f"{k} 译：{text}" for k, text in items)
 
 
 class WhitespaceKeyTranslationLLM(FakeLLM):
     async def complete_json(self, messages: list[dict[str, str]]) -> str:
-        payload = json.loads(messages[-1]["content"])
-        return json.dumps(
-            {f" {unit_id} \n": f"译：{text}" for unit_id, text in payload.items()},
-            ensure_ascii=False,
+        payload = _parse_test_input(messages[-1]["content"])
+        return "\n\n".join(
+            f"  {unit_id}  \n 译：{text}" for unit_id, text in payload.items()
         )
 
 
@@ -109,9 +126,9 @@ class FailSecondBatchThenResumeLLM(FakeLLM):
         self.should_fail_b2 = True
 
     async def complete_json(self, messages: list[dict[str, str]]) -> str:
-        payload = json.loads(messages[-1]["content"])
-        self.call_history.append(list(payload.keys()))
-        if any("b2" in k for k in payload) and self.should_fail_b2:
+        payload = _parse_test_input(messages[-1]["content"])
+        self.call_history.append(list(payload.values()))
+        if any("explanation" in text for text in payload.values()) and self.should_fail_b2:
             await asyncio.sleep(0.05)
             raise DomainError("LLM_UNAVAILABLE", "Transient network drop", retryable=True)
         return await super().complete_json(messages)
@@ -119,8 +136,8 @@ class FailSecondBatchThenResumeLLM(FakeLLM):
 
 class MissingPlaceholderTranslationLLM(FakeLLM):
     async def complete_json(self, messages: list[dict[str, str]]) -> str:
-        payload = json.loads(messages[-1]["content"])
-        return json.dumps({unit_id: "缺少占位符的译文" for unit_id in payload})
+        payload = _parse_test_input(messages[-1]["content"])
+        return "\n\n".join(f"{unit_id} 缺少占位符的译文" for unit_id in payload)
 
 
 class ConcurrentBatchTrackingLLM(FakeLLM):
@@ -1042,8 +1059,8 @@ async def test_translation_saves_batches_incrementally_and_resumes_on_retry(
 
     # Verify that only b2 was sent to LLM on the retry (b1 was skipped!)
     assert len(llm.call_history) == 1
-    assert not any("b1" in k for k in llm.call_history[0])
-    assert any("b2" in k for k in llm.call_history[0])
+    assert not any("42%" in text for text in llm.call_history[0])
+    assert any("explanation" in text for text in llm.call_history[0])
 
     # Verify both are now completed
     final_units = (
