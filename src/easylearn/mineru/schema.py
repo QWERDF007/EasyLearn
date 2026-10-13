@@ -33,10 +33,16 @@ class MinerULimits(BaseModel):
     download_timeout_seconds: float = Field(default=300, gt=0, allow_inf_nan=False)
 
 
+VLMBackend = Literal["auto", "lmdeploy-engine", "transformers", "vllm-engine"]
+
+
 class MinerUParseOptions(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     backend: MinerUBackend = "vlm-engine"
+    vlm_backend: VLMBackend = "auto"
+    batch_size: int = Field(default=0, ge=0, le=128)
+    lmdeploy_backend: Literal["turbomind", "pytorch"] | None = None
     server_url: ServiceUrl | None = None
     language: Literal["ch", "en"] = "ch"
     parse_method: Literal["auto", "txt", "ocr"] = "auto"

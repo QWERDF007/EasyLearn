@@ -30,6 +30,12 @@ path = "F:/models/MinerU2.5-Pro-2605-1.2B"
 
 [mineru.parse]
 backend = "vlm-engine"
+# VLM 推理后端引擎: "auto" (环境支持时自动优选 CUDA+lmdeploy TurboMind) | "lmdeploy-engine" | "transformers"
+vlm_backend = "auto"
+# 推理批处理大小: 0 表示按显存自动分配 (8GB 显存默认批大小为 4)
+batch_size = 0
+# LMDeploy 内部执行模式: "turbomind" | "pytorch" (留空自动优选)
+# lmdeploy_backend = "turbomind"
 language = "ch"
 parse_method = "auto"
 effort = "medium"

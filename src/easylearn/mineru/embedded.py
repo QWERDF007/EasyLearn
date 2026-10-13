@@ -22,6 +22,22 @@ from easylearn.mineru.schema import MinerUBackend, MinerUOptions, MinerUParseOpt
 type Analyzer = Callable[..., Awaitable[tuple[dict[str, Any], Any]]]
 
 
+def resolve_vlm_backend(configured_backend: str) -> str:
+    """Resolve configured VLM backend; in 'auto' mode, prefer lmdeploy if CUDA is available."""
+    if configured_backend != "auto":
+        return configured_backend
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            import lmdeploy  # noqa: F401
+
+            return "lmdeploy-engine"
+    except Exception:
+        pass
+    return "transformers"
+
+
 class EmbeddedMinerU:
     """Own the vendored MinerU runtime and its process-wide model lifecycle."""
 
@@ -52,7 +68,6 @@ class EmbeddedMinerU:
                 f"Embedded MinerU does not support backend '{options.backend}'; supported: {supported}",
                 status=422,
             )
-
 
     @property
     def configured(self) -> bool:
@@ -142,13 +157,24 @@ class EmbeddedMinerU:
         )
 
         image_writer = FileBasedDataWriter(str(image_directory))
+        backend = resolve_vlm_backend(getattr(options, "vlm_backend", "auto"))
+        analyzer_kwargs: dict[str, Any] = {
+            "backend": backend,
+            "model_path": str(model_path),
+            "image_analysis": options.image_analysis,
+        }
+        batch_size = getattr(options, "batch_size", 0)
+        if batch_size > 0:
+            analyzer_kwargs["batch_size"] = batch_size
+        lmdeploy_backend = getattr(options, "lmdeploy_backend", None)
+        if lmdeploy_backend is not None:
+            analyzer_kwargs["lmdeploy_backend"] = lmdeploy_backend
+
         return await asyncio.wait_for(
             analyzer(
                 pdf_bytes,
                 image_writer=image_writer,
-                backend="transformers",
-                model_path=str(model_path),
-                image_analysis=options.image_analysis,
+                **analyzer_kwargs,
             ),
             timeout=self.timeout,
         )
