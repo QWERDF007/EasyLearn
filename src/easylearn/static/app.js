@@ -621,6 +621,12 @@ function renderDocumentList() {
 
 async function refreshDocuments() {
   state.documents = await wire.listDocuments();
+  if (state.document) {
+    const currentDoc = state.documents.find((d) => d.document_id === state.document.document_id);
+    if (currentDoc) {
+      state.document = { ...state.document, ...currentDoc };
+    }
+  }
   for (const doc of state.documents) {
     if (Array.isArray(doc.tasks)) {
       for (const t of doc.tasks) {
@@ -750,12 +756,14 @@ async function openParse(parseId, documentGeneration = state.documentLoadGenerat
   const generation = ++state.parseLoadGeneration;
   const documentId = state.document.document_id;
   try {
-    const [parse, translations, sourceEdits] = await Promise.all([
+    const [doc, parse, translations, sourceEdits] = await Promise.all([
+      wire.getDocument(documentId),
       wire.getParse(documentId, parseId),
       wire.listTranslations(documentId, parseId),
       wire.listSourceEdits(documentId, parseId),
     ]);
     if (generation !== state.parseLoadGeneration || documentGeneration !== state.documentLoadGeneration) return;
+    state.document = doc;
     state.parse = parse;
     state.translations = new Map(translations.map((item) => [item.unit_id, item]));
     state.sourceEdits = new Map(
@@ -837,7 +845,8 @@ function syncToolbar() {
   const translateBtn = $("#translate-button");
   if (translateBtn) {
     translateBtn.disabled = !hasParse || state.busyButtons.has("translate-button");
-    const activeRes = state.document?.parse_results?.find((p) => p.parse_id === state.document?.active_parse_id) || state.document?.parse_results?.[0];
+    const currentParseId = state.parse?.parse_run_id || state.document?.active_parse_id;
+    const activeRes = state.document?.parse_results?.find((p) => p.parse_id === currentParseId) || state.document?.parse_results?.[0];
     const docStatus = activeRes?.translation_status || state.document?.translation_status || "none";
     if (docStatus === "partial") {
       const total = activeRes?.total_units || state.document?.total_units || 0;
@@ -1188,8 +1197,23 @@ function message(text) {
   return paragraph;
 }
 
+function blockSourceMarkdown(block) {
+  const starEdit = state.sourceEdits.get(sourceEditKey(block.block_id, "all"));
+  if (starEdit && starEdit.effective_text) {
+    return starEdit.effective_text;
+  }
+  return (block.source_nodes || []).map((node) => {
+    const current = state.sourceEdits.get(sourceEditKey(block.block_id, node.node_id));
+    if (current && current.effective_text) return current.effective_text;
+    if (node.type === "math") return `$${node.latex}$`;
+    if (node.type === "code") return `\`${node.code}\``;
+    if (node.type === "link") return `[${node.label}](${node.target})`;
+    return nodeText(node);
+  }).join("");
+}
+
 function blockSourceText(block) {
-  return (block.source_nodes || []).map((node) => sourceNodeText(block, node)).join("");
+  return blockSourceMarkdown(block);
 }
 
 function sourceEditKey(blockId, nodeId) {
@@ -1214,11 +1238,23 @@ function isBlockEditable(block) {
   return editableSourceNodes(block).length > 0;
 }
 
-function blockTranslationText(block) {
+function blockTranslationMarkdown(block) {
+  const blockUnit = state.translations.get(block.block_id);
+  if (blockUnit && blockUnit.effective_text) {
+    return blockUnit.effective_text;
+  }
   return (block.source_nodes || []).map((node) => {
     const unit = state.translations.get(`${block.block_id}:${node.node_id}`);
-    return unit?.effective_text ?? nodeText(node);
+    if (unit && unit.effective_text) return unit.effective_text;
+    if (node.type === "math") return `$${node.latex}$`;
+    if (node.type === "code") return `\`${node.code}\``;
+    if (node.type === "link") return `[${node.label}](${node.target})`;
+    return nodeText(node);
   }).join("");
+}
+
+function blockTranslationText(block) {
+  return blockTranslationMarkdown(block);
 }
 
 function blockDisplayText(block) {
@@ -1576,9 +1612,20 @@ function appendBlockContent(container, block, view) {
     appendInlineNodes(source, block, "source");
     const chinese = document.createElement("div");
     chinese.className = "bilingual-chinese rich-text";
-    appendInlineNodes(chinese, block, "chinese");
+    if (state.translations.has(block.block_id)) {
+      renderTextWithMath(state.translations.get(block.block_id)?.effective_text || "", chinese);
+    } else {
+      appendInlineNodes(chinese, block, "chinese");
+    }
     container.append(source, chinese);
     return;
+  }
+  if (view === "zh" && state.translations.has(block.block_id)) {
+    const blockUnit = state.translations.get(block.block_id);
+    if (blockUnit && blockUnit.effective_text) {
+      renderTextWithMath(blockUnit.effective_text, container);
+      return;
+    }
   }
   const language = view === "zh" ? "chinese" : "source";
   if (block.block_type === "formula" || block.block_type === "equation") {
@@ -1648,12 +1695,13 @@ function blockUnits(block) {
 
 function createSourceEditButton(block) {
   if (!isBlockEditable(block)) return null;
+  const isZh = state.view === "zh";
   const button = document.createElement("button");
   button.type = "button";
   button.className = "result-block-action-btn block-edit-button";
-  button.setAttribute("aria-label", `纠正 ${block.block_id}`);
-  button.title = "纠正";
-  button.textContent = "纠正";
+  button.setAttribute("aria-label", `${isZh ? "修改译文" : "修改原文"} ${block.block_id}`);
+  button.title = isZh ? "修改译文" : "修改原文";
+  button.textContent = "修改";
   button.addEventListener("click", (event) => {
     event.stopPropagation();
     state.editingSourceBlockId = state.editingSourceBlockId === block.block_id
@@ -1705,7 +1753,129 @@ function applyTextareaFormat(textarea, type) {
   textarea.style.height = `${Math.max(60, textarea.scrollHeight)}px`;
 }
 
+function renderMarkdownPreview(markdown, container) {
+  container.innerHTML = "";
+  if (!markdown || !markdown.trim()) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = "（空内容预览）";
+    container.append(empty);
+    return;
+  }
+
+  const lines = markdown.split("\n");
+  let p = document.createElement("p");
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) {
+      if (p.childNodes.length > 0) {
+        container.append(p);
+        p = document.createElement("p");
+      }
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
+    if (headingMatch && p.childNodes.length === 0) {
+      const level = headingMatch[1].length;
+      const h = document.createElement(`h${Math.min(6, level + 1)}`);
+      renderFormattedText(headingMatch[2], h);
+      container.append(h);
+      continue;
+    }
+
+    if (p.childNodes.length > 0) {
+      p.append(document.createElement("br"));
+    }
+    renderFormattedText(line, p);
+  }
+
+  if (p.childNodes.length > 0) {
+    container.append(p);
+  }
+}
+
+function renderFormattedText(text, container) {
+  const regex = /(\\\[[\s\S]*?\\\]|\$\$[\s\S]*?\$\$|\\\([\s\S]*?\\\)|\$(?:[^\$\n\\]|\\.)+?\$)/g;
+  let lastIndex = 0;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      renderInlineMarkdownChunk(text.slice(lastIndex, match.index), container);
+    }
+    const token = match[0];
+    let isDisplay = false;
+    let mathContent = "";
+    if (token.startsWith("\\[") && token.endsWith("\\]")) {
+      isDisplay = true;
+      mathContent = token.slice(2, -2).trim();
+    } else if (token.startsWith("$$") && token.endsWith("$$")) {
+      isDisplay = true;
+      mathContent = token.slice(2, -2).trim();
+    } else if (token.startsWith("\\(") && token.endsWith("\\)")) {
+      isDisplay = false;
+      mathContent = token.slice(2, -2).trim();
+    } else if (token.startsWith("$") && token.endsWith("$")) {
+      isDisplay = false;
+      mathContent = token.slice(1, -1).trim();
+    }
+    if (mathContent) {
+      const span = document.createElement("span");
+      span.className = "math-node" + (isDisplay ? " math-display" : "");
+      span.setAttribute("aria-label", "数学公式");
+      try {
+        katex.render(mathContent, span, { displayMode: isDisplay, throwOnError: false });
+        container.append(span);
+      } catch {
+        container.append(document.createTextNode(token));
+      }
+    } else {
+      container.append(document.createTextNode(token));
+    }
+    lastIndex = regex.lastIndex;
+  }
+  if (lastIndex < text.length) {
+    renderInlineMarkdownChunk(text.slice(lastIndex), container);
+  }
+}
+
+function renderInlineMarkdownChunk(chunk, container) {
+  const inlineRegex = /(\*\*[^*]+\*\*|\*[^*]+\*|~~[^~]+~~|`[^`]+`)/g;
+  let lastIdx = 0;
+  let m;
+  while ((m = inlineRegex.exec(chunk)) !== null) {
+    if (m.index > lastIdx) {
+      container.append(document.createTextNode(chunk.slice(lastIdx, m.index)));
+    }
+    const t = m[0];
+    if (t.startsWith("**") && t.endsWith("**")) {
+      const b = document.createElement("strong");
+      b.textContent = t.slice(2, -2);
+      container.append(b);
+    } else if (t.startsWith("*") && t.endsWith("*")) {
+      const em = document.createElement("em");
+      em.textContent = t.slice(1, -1);
+      container.append(em);
+    } else if (t.startsWith("~~") && t.endsWith("~~")) {
+      const del = document.createElement("del");
+      del.textContent = t.slice(2, -2);
+      container.append(del);
+    } else if (t.startsWith("`") && t.endsWith("`")) {
+      const code = document.createElement("code");
+      code.className = "inline-code";
+      code.textContent = t.slice(1, -1);
+      container.append(code);
+    }
+    lastIdx = inlineRegex.lastIndex;
+  }
+  if (lastIdx < chunk.length) {
+    container.append(document.createTextNode(chunk.slice(lastIdx)));
+  }
+}
+
 function renderBlockEditCard(block) {
+  const isZh = state.view === "zh";
   const card = document.createElement("article");
   card.className = "block-edit-card";
   card.dataset.blockId = block.block_id;
@@ -1713,25 +1883,102 @@ function renderBlockEditCard(block) {
   const toolbar = document.createElement("div");
   toolbar.className = "block-edit-toolbar";
 
+  const modeGroup = document.createElement("div");
+  modeGroup.className = "block-edit-mode-group";
+
+  const previewBtn = document.createElement("button");
+  previewBtn.type = "button";
+  previewBtn.className = "block-edit-mode-btn";
+  previewBtn.textContent = "预览";
+  previewBtn.title = "预览 Markdown 渲染效果";
+
+  const codeBtn = document.createElement("button");
+  codeBtn.type = "button";
+  codeBtn.className = "block-edit-mode-btn is-active";
+  codeBtn.textContent = "code";
+  codeBtn.title = "编辑 Markdown 源码";
+
+  modeGroup.append(previewBtn, codeBtn);
+
   const formatGroup = document.createElement("div");
   formatGroup.className = "block-edit-format-group";
 
-  const titleBtn = document.createElement("button");
-  titleBtn.type = "button";
-  titleBtn.className = "block-format-btn";
-  titleBtn.title = "标题格式";
-  titleBtn.innerHTML = 'T<sub style="font-size: 10px; bottom: 0;">ᴛ</sub>';
+  const undoBtn = document.createElement("button");
+  undoBtn.type = "button";
+  undoBtn.className = "block-format-btn";
+  undoBtn.title = "撤销 (Ctrl+Z)";
+  undoBtn.innerHTML = "↩";
+  undoBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    document.execCommand("undo");
+  });
+
+  const redoBtn = document.createElement("button");
+  redoBtn.type = "button";
+  redoBtn.className = "block-format-btn";
+  redoBtn.title = "重做 (Ctrl+Y)";
+  redoBtn.innerHTML = "↪";
+  redoBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    document.execCommand("redo");
+  });
+
+  const dropdown = document.createElement("div");
+  dropdown.className = "block-format-dropdown";
+
+  const dropdownBtn = document.createElement("button");
+  dropdownBtn.type = "button";
+  dropdownBtn.className = "block-format-dropdown-btn";
+  dropdownBtn.title = "选择段落或标题格式";
+  dropdownBtn.innerHTML = '<span>正文</span><span class="dropdown-caret">▾</span>';
+
+  const dropdownMenu = document.createElement("div");
+  dropdownMenu.className = "block-format-dropdown-menu";
+  dropdownMenu.style.display = "none";
+
+  const headingOptions = [
+    { label: "正文", prefix: "" },
+    { label: "标题 1", prefix: "# " },
+    { label: "标题 2", prefix: "## " },
+    { label: "标题 3", prefix: "### " },
+  ];
+
+  for (const opt of headingOptions) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "block-format-dropdown-item";
+    item.textContent = opt.label;
+    item.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      applyHeadingOption(opt);
+    });
+    dropdownMenu.append(item);
+  }
+
+  dropdownBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const isOpen = dropdownMenu.style.display === "block";
+    dropdownMenu.style.display = isOpen ? "none" : "block";
+  });
+
+  document.addEventListener("click", () => {
+    dropdownMenu.style.display = "none";
+  });
+
+  dropdown.append(dropdownBtn, dropdownMenu);
 
   const boldBtn = document.createElement("button");
   boldBtn.type = "button";
   boldBtn.className = "block-format-btn font-bold";
-  boldBtn.title = "加粗";
+  boldBtn.title = "加粗 (Ctrl+B)";
   boldBtn.textContent = "B";
 
   const italicBtn = document.createElement("button");
   italicBtn.type = "button";
   italicBtn.className = "block-format-btn font-italic";
-  italicBtn.title = "斜体";
+  italicBtn.title = "斜体 (Ctrl+I)";
   italicBtn.textContent = "I";
 
   const strikeBtn = document.createElement("button");
@@ -1740,7 +1987,31 @@ function renderBlockEditCard(block) {
   strikeBtn.title = "删除线";
   strikeBtn.textContent = "S";
 
-  formatGroup.append(titleBtn, boldBtn, italicBtn, strikeBtn);
+  const mathBtn = document.createElement("button");
+  mathBtn.type = "button";
+  mathBtn.className = "block-format-btn";
+  mathBtn.title = "插入行内数学公式";
+  mathBtn.textContent = "$";
+
+  const inlineCodeBtn = document.createElement("button");
+  inlineCodeBtn.type = "button";
+  inlineCodeBtn.className = "block-format-btn";
+  inlineCodeBtn.title = "行内代码";
+  inlineCodeBtn.textContent = "`";
+
+  formatGroup.append(
+    modeGroup,
+    createDivider(),
+    undoBtn,
+    redoBtn,
+    createDivider(),
+    dropdown,
+    boldBtn,
+    italicBtn,
+    strikeBtn,
+    mathBtn,
+    inlineCodeBtn
+  );
 
   const actionGroup = document.createElement("div");
   actionGroup.className = "block-edit-action-group";
@@ -1758,129 +2029,141 @@ function renderBlockEditCard(block) {
   const saveBtn = document.createElement("button");
   saveBtn.type = "button";
   saveBtn.className = "block-edit-save-btn";
-  saveBtn.textContent = "保存";
-
-  actionGroup.append(cancelBtn, saveBtn);
-  toolbar.append(formatGroup, actionGroup);
-  card.append(toolbar);
-
-  const editableNodes = editableSourceNodes(block);
-  let activeTextarea = null;
-
-  titleBtn.addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (activeTextarea) applyTextareaFormat(activeTextarea, "title");
-  });
-  boldBtn.addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (activeTextarea) applyTextareaFormat(activeTextarea, "bold");
-  });
-  italicBtn.addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (activeTextarea) applyTextareaFormat(activeTextarea, "italic");
-  });
-  strikeBtn.addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (activeTextarea) applyTextareaFormat(activeTextarea, "strike");
-  });
-
+  saveBtn.textContent = isZh ? "保存译文" : "保存原文";
   saveBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     void saveBlockEdit(card, block);
   });
 
+  actionGroup.append(cancelBtn, saveBtn);
+  toolbar.append(formatGroup, actionGroup);
+  card.append(toolbar);
+
   card.addEventListener("click", (e) => {
     e.stopPropagation();
   });
 
-  if (editableNodes.length <= 1) {
-    const node = editableNodes[0];
-    const textarea = document.createElement("textarea");
-    textarea.className = "block-edit-textarea";
-    if (node) {
-      textarea.dataset.nodeId = node.node_id;
-      const current = state.sourceEdits.get(sourceEditKey(block.block_id, node.node_id));
-      textarea.value = current?.effective_text ?? nodeText(node);
-    } else {
-      textarea.value = blockSourceText(block);
-    }
-    textarea.setAttribute("aria-label", `纠正文本 ${block.block_id}`);
-    activeTextarea = textarea;
+  const initialMarkdown = isZh ? blockTranslationMarkdown(block) : blockSourceMarkdown(block);
 
-    textarea.addEventListener("focus", () => { activeTextarea = textarea; });
-    textarea.addEventListener("input", () => {
-      textarea.style.height = "auto";
-      textarea.style.height = `${Math.max(60, textarea.scrollHeight)}px`;
-    });
-    textarea.addEventListener("keydown", (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-        e.preventDefault();
-        void saveBlockEdit(card, block);
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        state.editingSourceBlockId = null;
-        renderResult();
-      }
-    });
+  const textarea = document.createElement("textarea");
+  textarea.className = "block-edit-textarea block-edit-code-pane";
+  textarea.value = initialMarkdown;
+  textarea.placeholder = isZh ? "输入修改后的中文 Markdown…" : "输入修改后的 Markdown 原文…";
+  textarea.setAttribute("aria-label", `${isZh ? "修改译文" : "修改原文"} ${block.block_id}`);
 
-    card.append(textarea);
-    requestAnimationFrame(() => {
-      textarea.style.height = "auto";
-      textarea.style.height = `${Math.max(60, textarea.scrollHeight)}px`;
-      textarea.focus();
-    });
-  } else {
-    const nodesContainer = document.createElement("div");
-    nodesContainer.className = "block-edit-nodes";
-    for (let i = 0; i < editableNodes.length; i++) {
-      const node = editableNodes[i];
-      const current = state.sourceEdits.get(sourceEditKey(block.block_id, node.node_id));
-      const nodeWrapper = document.createElement("div");
-      nodeWrapper.className = "block-edit-node-item";
+  const previewPane = document.createElement("div");
+  previewPane.className = "block-edit-preview-pane rich-text";
+  previewPane.style.display = "none";
 
-      const nodeHeader = document.createElement("div");
-      nodeHeader.className = "block-edit-node-header";
-      const nodeTag = document.createElement("span");
-      nodeTag.className = "block-edit-node-tag";
-      nodeTag.textContent = `${node.type} #${node.node_id}`;
-      nodeHeader.append(nodeTag);
+  card.append(textarea, previewPane);
 
-      const textarea = document.createElement("textarea");
-      textarea.className = "block-edit-textarea";
-      textarea.dataset.nodeId = node.node_id;
-      textarea.value = current?.effective_text ?? nodeText(node);
-      textarea.setAttribute("aria-label", `纠正节点 ${node.node_id}`);
-      if (i === 0) activeTextarea = textarea;
-
-      textarea.addEventListener("focus", () => { activeTextarea = textarea; });
-      textarea.addEventListener("input", () => {
-        textarea.style.height = "auto";
-        textarea.style.height = `${Math.max(40, textarea.scrollHeight)}px`;
-      });
-      textarea.addEventListener("keydown", (e) => {
-        if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-          e.preventDefault();
-          void saveBlockEdit(card, block);
-        } else if (e.key === "Escape") {
-          e.preventDefault();
-          state.editingSourceBlockId = null;
-          renderResult();
-        }
-      });
-
-      nodeWrapper.append(nodeHeader, textarea);
-      nodesContainer.append(nodeWrapper);
-    }
-    card.append(nodesContainer);
-    requestAnimationFrame(() => {
-      const firstTa = card.querySelector(".block-edit-textarea");
-      if (firstTa) firstTa.focus();
-    });
+  function wrapCodeSelection(before, after) {
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const val = textarea.value;
+    const selected = val.substring(start, end);
+    const replacement = before + (selected || "内容") + after;
+    textarea.setRangeText(replacement, start, end, "select");
+    textarea.focus();
+    autoResizeTextarea();
   }
+
+  function applyHeadingOption(opt) {
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const val = textarea.value;
+    const lineStart = val.lastIndexOf("\n", start - 1) + 1;
+    const lineEnd = val.indexOf("\n", end);
+    const actualLineEnd = lineEnd === -1 ? val.length : lineEnd;
+    let line = val.substring(lineStart, actualLineEnd);
+    line = line.replace(/^#{1,6}\s+/, "");
+    const newLine = opt.prefix + line;
+    textarea.setRangeText(newLine, lineStart, actualLineEnd, "select");
+    dropdownBtn.querySelector("span").textContent = opt.label;
+    dropdownMenu.style.display = "none";
+    textarea.focus();
+    autoResizeTextarea();
+  }
+
+  function updateDropdownLabelFromCursor() {
+    const val = textarea.value;
+    const start = textarea.selectionStart;
+    const lineStart = val.lastIndexOf("\n", start - 1) + 1;
+    const lineEnd = val.indexOf("\n", start);
+    const line = val.substring(lineStart, lineEnd === -1 ? val.length : lineEnd);
+    if (line.startsWith("### ")) {
+      dropdownBtn.querySelector("span").textContent = "标题 3";
+    } else if (line.startsWith("## ")) {
+      dropdownBtn.querySelector("span").textContent = "标题 2";
+    } else if (line.startsWith("# ")) {
+      dropdownBtn.querySelector("span").textContent = "标题 1";
+    } else {
+      dropdownBtn.querySelector("span").textContent = "正文";
+    }
+  }
+
+  boldBtn.addEventListener("click", (e) => { e.preventDefault(); wrapCodeSelection("**", "**"); });
+  italicBtn.addEventListener("click", (e) => { e.preventDefault(); wrapCodeSelection("*", "*"); });
+  strikeBtn.addEventListener("click", (e) => { e.preventDefault(); wrapCodeSelection("~~", "~~"); });
+  mathBtn.addEventListener("click", (e) => { e.preventDefault(); wrapCodeSelection("$", "$"); });
+  inlineCodeBtn.addEventListener("click", (e) => { e.preventDefault(); wrapCodeSelection("`", "`"); });
+
+  function switchMode(newMode) {
+    if (newMode === "preview") {
+      previewBtn.classList.add("is-active");
+      codeBtn.classList.remove("is-active");
+      textarea.style.display = "none";
+      previewPane.style.display = "block";
+      renderMarkdownPreview(textarea.value, previewPane);
+    } else {
+      codeBtn.classList.add("is-active");
+      previewBtn.classList.remove("is-active");
+      previewPane.style.display = "none";
+      textarea.style.display = "block";
+      textarea.focus();
+      autoResizeTextarea();
+    }
+  }
+
+  previewBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    switchMode("preview");
+  });
+
+  codeBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    switchMode("code");
+  });
+
+  function autoResizeTextarea() {
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.max(80, textarea.scrollHeight)}px`;
+  }
+
+  textarea.addEventListener("input", autoResizeTextarea);
+  textarea.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      void saveBlockEdit(card, block);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      state.editingSourceBlockId = null;
+      renderResult();
+    } else if ((e.ctrlKey || e.metaKey) && (e.key === "b" || e.key === "B")) {
+      e.preventDefault();
+      wrapCodeSelection("**", "**");
+    } else if ((e.ctrlKey || e.metaKey) && (e.key === "i" || e.key === "I")) {
+      e.preventDefault();
+      wrapCodeSelection("*", "*");
+    }
+  });
+
+  requestAnimationFrame(() => {
+    autoResizeTextarea();
+    textarea.focus();
+  });
 
   return card;
 }
@@ -1888,8 +2171,7 @@ function renderBlockEditCard(block) {
 async function saveBlockEdit(card, block) {
   if (!state.document || !state.parse) return;
   const parseId = state.parse.parse_run_id;
-  const editableNodes = editableSourceNodes(block);
-  if (!editableNodes.length) return;
+  const isZh = state.view === "zh";
 
   const saveBtn = card.querySelector(".block-edit-save-btn");
   if (saveBtn) {
@@ -1898,48 +2180,60 @@ async function saveBlockEdit(card, block) {
   }
 
   try {
-    const textareas = card.querySelectorAll(".block-edit-textarea");
-    for (const ta of textareas) {
-      if (!ta.value.trim()) {
-        throw new Error("原文内容不能为空");
-      }
+    const textarea = card.querySelector(".block-edit-textarea");
+    if (!textarea || !textarea.value.trim()) {
+      throw new Error(isZh ? "译文内容不能为空" : "原文内容不能为空");
     }
+    const newText = textarea.value.trim();
 
-    let modifiedCount = 0;
-    for (const ta of textareas) {
-      const nodeId = ta.dataset.nodeId;
-      const node = editableNodes.find((n) => n.node_id === nodeId);
-      if (!node) continue;
-      const current = state.sourceEdits.get(sourceEditKey(block.block_id, nodeId));
-      const previousText = current?.effective_text ?? nodeText(node);
-      const newText = ta.value;
+    if (isZh) {
+      const nodes = editableSourceNodes(block);
+      const isSingleNode = nodes.length === 1;
+      const targetUnitId = isSingleNode ? `${block.block_id}:${nodes[0].node_id}` : block.block_id;
+      const unit = state.translations.get(targetUnitId);
+      const previousText = unit?.effective_text ?? blockTranslationMarkdown(block);
+
+      if (newText !== previousText) {
+        const updated = await wire.updateTranslation(state.document.document_id, targetUnitId, {
+          parse_id: parseId,
+          block_id: block.block_id,
+          expected_revision: unit?.revision ?? 0,
+          text: newText,
+        });
+        state.translations.set(targetUnitId, updated);
+      }
+    } else {
+      const nodes = editableSourceNodes(block);
+      const isSingleNode = nodes.length === 1;
+      const targetNodeId = isSingleNode ? nodes[0].node_id : "all";
+      const current = state.sourceEdits.get(sourceEditKey(block.block_id, targetNodeId));
+      const previousText = current?.effective_text ?? blockSourceMarkdown(block);
 
       if (newText !== previousText) {
         const updated = await wire.updateSourceEdit(state.document.document_id, {
           parse_id: parseId,
           block_id: block.block_id,
-          node_id: nodeId,
+          node_id: targetNodeId,
           expected_revision: current?.revision ?? 0,
           text: newText,
         });
-        state.sourceEdits.set(sourceEditKey(block.block_id, nodeId), updated);
-        modifiedCount++;
+        state.sourceEdits.set(sourceEditKey(block.block_id, targetNodeId), updated);
       }
     }
 
     state.editingSourceBlockId = null;
     await openParse(parseId);
-    notify(modifiedCount > 0 ? "原文已纠正并保存" : "未做任何修改");
+    notify(isZh ? "译文已修改并保存" : "原文已修改并保存");
   } catch (error) {
-    if (error.code === "SOURCE_EDIT_CONFLICT") {
-      notify("原文已被并发修改，已重新加载最新内容");
+    if (error.code === "SOURCE_EDIT_CONFLICT" || error.code === "TRANSLATION_REVISION_CONFLICT") {
+      notify(isZh ? "内容已被并发修改，已重新加载最新数据" : "原文已被并发修改，已重新加载最新数据");
       await openParse(parseId);
     } else {
       notify(error.message);
     }
     if (saveBtn) {
       saveBtn.disabled = false;
-      saveBtn.textContent = "保存";
+      saveBtn.textContent = isZh ? "保存译文" : "保存原文";
     }
   }
 }
@@ -2388,7 +2682,7 @@ async function saveTableEdit(card, block, blockById) {
 
     state.editingSourceBlockId = null;
     await openParse(parseId);
-    notify(modifiedCount > 0 ? "表格已纠正并保存" : "未做任何修改");
+    notify(modifiedCount > 0 ? "表格已修改并保存" : "未做任何修改");
   } catch (error) {
     notify(error.message);
     if (saveBtn) {
@@ -2425,7 +2719,7 @@ function addTranslationUnit(editor, unit, block) {
     const staleBadge = document.createElement("span");
     staleBadge.className = "translation-stale-badge";
     staleBadge.textContent = "待更新（原文已修改）";
-    staleBadge.title = "该单元原文已被纠正，当前翻译待更新";
+    staleBadge.title = "该单元原文已被修改，当前翻译待更新";
     header.append(staleBadge);
   }
   section.append(header);

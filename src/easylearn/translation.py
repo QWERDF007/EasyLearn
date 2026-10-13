@@ -929,6 +929,28 @@ class TranslationService:
                     stale=stale,
                 )
             )
+
+        block_by_id = {b.block_id: b for b in snapshot.ir.blocks}
+        for unit_id, row in values.items():
+            if ":" not in unit_id and unit_id in block_by_id:
+                blk = block_by_id[unit_id]
+                effective_text = row[3] if row[3] is not None and row[4] else (row[3] or row[2] or blk.source_text)
+                result.append(
+                    TranslationUnitView(
+                        parse_id=parse_id,
+                        block_id=blk.block_id,
+                        unit_id=unit_id,
+                        source_text=blk.source_text,
+                        auto_text=row[2],
+                        manual_text=row[3],
+                        effective_text=effective_text,
+                        use_manual=bool(row[4]),
+                        locked=bool(row[5]),
+                        revision=row[6],
+                        source_fingerprint=row[7] if len(row) > 7 else None,
+                        stale=False,
+                    )
+                )
         return tuple(result)
 
     async def effective_map_for_ir(
@@ -957,6 +979,10 @@ class TranslationService:
                         stale = False
                     if not stale:
                         result[unit.unit_id] = _effective(unit, row)
+        block_ids = {b.block_id for b in ir.blocks}
+        for unit_id, row in values.items():
+            if ":" not in unit_id and unit_id in block_ids and (row[2] is not None or row[3] is not None):
+                result[unit_id] = row[3] if (row[3] is not None and row[4]) else (row[3] or row[2] or "")
         return result
 
     async def effective_map(self, document_id: UUID, parse_id: UUID) -> dict[str, str]:
@@ -968,6 +994,15 @@ class TranslationService:
     ) -> TranslationUnitView:
         snapshot = await self.documents.effective_snapshot(document_id, request.parse_id)
         unit = next((item for item in translation_units(snapshot.ir) if item.unit_id == unit_id), None)
+        if unit is None and unit_id == request.block_id:
+            block = next((item for item in snapshot.ir.blocks if item.block_id == request.block_id), None)
+            if block is not None:
+                unit = TranslationUnit(
+                    block_id=block.block_id,
+                    unit_id=block.block_id,
+                    source_text=block.source_text,
+                    kind=block.block_type,
+                )
         if unit is None or unit.block_id != request.block_id:
             raise DomainError(
                 "TRANSLATION_UNIT_NOT_FOUND", "Translation unit not found", status=404

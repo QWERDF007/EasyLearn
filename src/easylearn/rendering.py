@@ -77,6 +77,8 @@ def _render_block(
     language: RenderLanguage,
     asset_links: Mapping[str, str],
 ) -> str:
+    if language == "chinese" and block.block_id in translations:
+        return translations[block.block_id]
     parts: list[str] = []
     for node in block.source_nodes:
         unit_id = f"{block.block_id}:{node.node_id}"

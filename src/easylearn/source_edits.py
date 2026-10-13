@@ -90,10 +90,15 @@ class SourceEditService:
     async def list(self, document_id: UUID, parse_id: UUID) -> tuple[SourceEditView, ...]:
         ir = await self.documents.load_ir(document_id, parse_id)
         blocks = _editable_nodes(ir)
+        block_by_id = {b.block_id: b for b in ir.blocks}
         rows = await self.store.list_edits(parse_id)
         result: list[SourceEditView] = []
         for row in rows:
             node = blocks.get((row[0], row[1]))
+            if node is None and row[1] == "all":
+                blk = block_by_id.get(row[0])
+                if blk is not None:
+                    node = TextNode(node_id="all", text=blk.source_text)
             if node is None:
                 continue
             result.append(
@@ -133,6 +138,10 @@ class SourceEditService:
     async def edit(self, document_id: UUID, request: SourceEditRequest) -> SourceEditView:
         ir = await self.documents.load_ir(document_id, request.parse_id)
         node = _editable_nodes(ir).get((request.block_id, request.node_id))
+        if node is None and request.node_id == "all":
+            block = next((b for b in ir.blocks if b.block_id == request.block_id), None)
+            if block is not None:
+                node = TextNode(node_id="all", text=block.source_text)
         if node is None:
             raise DomainError("SOURCE_NODE_NOT_FOUND", "Editable source node not found", status=404)
         if not request.text.strip():
@@ -171,6 +180,14 @@ def apply_source_edits(ir: DocumentIR, edits: tuple[SourceEditView, ...]) -> Doc
         return ir
     blocks: list[Block] = []
     for block in ir.blocks:
+        if (block.block_id, "all") in values:
+            star_text = values[(block.block_id, "all")]
+            blocks.append(
+                block.model_copy(
+                    update={"source_nodes": (TextNode(node_id="all", text=star_text),)}
+                )
+            )
+            continue
         nodes = tuple(
             _replace_node(node, values[(block.block_id, node.node_id)])
             if (block.block_id, node.node_id) in values
