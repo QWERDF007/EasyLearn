@@ -1138,8 +1138,17 @@ class TranslationService:
 
             try:
                 parsed_values = _parse_translation_response(content, pending_units)
-            except DomainError:
-                raise
+            except DomainError as exc:
+                last_protocol_error = True
+                logger.warning(
+                    "Translation protocol error on attempt %d/%d: %s",
+                    attempt + 1,
+                    max_attempts,
+                    exc,
+                )
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(0.1 * (attempt + 1))
+                continue
             except Exception as exc:
                 last_protocol_error = True
                 logger.warning(
@@ -1236,10 +1245,11 @@ _TRANSLATION_SYSTEM_PROMPT = (
     "你是一位专业的高质量学术与技术文档翻译专家。请将输入的文档英文文本翻译为规范、地道、学术风格的简体中文。\n"
     "输入文本由段落编号锚点（如 [§1]、[§2] 等）分隔。\n"
     "翻译要求：\n"
-    "1. 保持段落锚点标记（如 [§1]、[§2]）严格不变，且置于对应译文段落的最前面；\n"
-    "2. 保持段落顺序与数量严格一致，严禁合并、删除或遗漏任何段落锚点；\n"
-    "3. 严格保留文本中的专有名词、公式、代码、数字、URL、文件路径以及形如 {{PLACEHOLDER}} 的占位符格式；\n"
-    "4. 仅输出翻译结果与段落锚点，不要输出多余的解释、前后缀或元说明。"
+    "1. 直接输出最终翻译结果，严禁输出任何思考推导过程（严禁输出任何分析过程、草稿或说明），直接以 [§1] 开头；\n"
+    "2. 保持段落锚点标记（如 [§1]、[§2]）严格不变，且置于对应译文段落的最前面；\n"
+    "3. 保持段落顺序与数量严格一致，严禁合并、删除或遗漏任何段落锚点；\n"
+    "4. 严格保留文本中的专有名词、公式、代码、数字、URL、文件路径以及形如 {{PLACEHOLDER}} 的占位符格式；\n"
+    "5. 仅输出翻译结果与段落锚点，不要输出多余的解释、前后缀或元说明。"
 )
 
 
@@ -1263,21 +1273,32 @@ def _parse_translation_response(
         try:
             raw_json = json.loads(content, object_pairs_hook=_unique_json_object)
             if isinstance(raw_json, dict):
-                result: dict[str, str] = {}
-                unit_by_id = {u.unit_id: u for u in units}
-                for k, v in raw_json.items():
-                    if not isinstance(k, str):
-                        continue
-                    k_clean = k.strip()
-                    if k_clean in unit_by_id:
-                        result[k_clean] = str(v).strip()
-                    else:
-                        m = _ANCHOR_KEY_PATTERN.match(k_clean)
-                        if m:
-                            idx = int(m.group(1))
-                            if 1 <= idx <= len(units):
-                                result[units[idx - 1].unit_id] = str(v).strip()
-                return result
+                if len(raw_json) == 1 and any(
+                    k.lower() in ("translation", "translations", "result", "output")
+                    for k in raw_json
+                ):
+                    inner = next(iter(raw_json.values()))
+                    if isinstance(inner, str):
+                        content = inner.strip()
+                    elif isinstance(inner, list):
+                        content = "\n\n".join(str(item) for item in inner).strip()
+                else:
+                    result: dict[str, str] = {}
+                    unit_by_id = {u.unit_id: u for u in units}
+                    for k, v in raw_json.items():
+                        if not isinstance(k, str):
+                            continue
+                        k_clean = k.strip()
+                        if k_clean in unit_by_id:
+                            result[k_clean] = str(v).strip()
+                        else:
+                            m = _ANCHOR_KEY_PATTERN.match(k_clean)
+                            if m:
+                                idx = int(m.group(1))
+                                if 1 <= idx <= len(units):
+                                    result[units[idx - 1].unit_id] = str(v).strip()
+                    if result:
+                        return result
         except ValueError:
             raise DomainError(
                 "TRANSLATION_PROTOCOL_INVALID", "Duplicate JSON key in translation response"
@@ -1286,22 +1307,60 @@ def _parse_translation_response(
             pass
 
     # Level 1 (Primary): Anchor stream regex extraction
-    matches = _ANCHOR_PATTERN.findall(content)
-    if matches:
-        seen_indices: set[int] = set()
-        result = {}
-        for num_str, text in matches:
-            idx = int(num_str)
-            if idx in seen_indices:
+    raw_matches = _ANCHOR_PATTERN.findall(content)
+    if raw_matches:
+        matches = [(int(num_str), text) for num_str, text in raw_matches]
+        total_units = len(units)
+
+        # Check for duplicates
+        seen: set[int] = set()
+        has_duplicates = False
+        for idx, _ in matches:
+            if idx in seen:
+                has_duplicates = True
+                break
+            seen.add(idx)
+
+        # Fast path: strictly unique anchors
+        if not has_duplicates:
+            result = {}
+            for idx, text in matches:
+                if 1 <= idx <= total_units:
+                    cleaned = text.strip()
+                    if cleaned:
+                        result[units[idx - 1].unit_id] = cleaned
+            return result
+
+        # When duplicates exist: find all candidate sequence starting positions where idx == 1.
+        # Models often produce thoughts/preambles quoting anchors, followed by the real [1..N] sequence.
+        candidates: list[dict[str, str]] = []
+        starts = [i for i, (idx, _) in enumerate(matches) if idx == 1]
+        for start_pos in starts:
+            candidate_res: dict[str, str] = {}
+            for idx, text in matches[start_pos:]:
+                if idx in candidate_res:
+                    break
+                if 1 <= idx <= total_units:
+                    cleaned = text.strip()
+                    if cleaned:
+                        candidate_res[units[idx - 1].unit_id] = cleaned
+            if candidate_res:
+                candidates.append(candidate_res)
+
+        if candidates:
+            # Choose the candidate sequence covering the most units; if tied, choose the latest one
+            best = max(candidates, key=lambda c: (len(c), candidates.index(c)))
+            if len(best) == total_units or (len(best) > 1 and len(best) >= len(candidates[0])):
+                return best
+
+        # If no valid multi-unit sequence could be recovered, raise duplicate anchor error
+        counts: dict[int, int] = {}
+        for idx, _ in matches:
+            counts[idx] = counts.get(idx, 0) + 1
+            if counts[idx] > 1:
                 raise DomainError(
                     "TRANSLATION_PROTOCOL_INVALID", f"Duplicate translation anchor [§{idx}]"
                 )
-            seen_indices.add(idx)
-            if 1 <= idx <= len(units):
-                cleaned = text.strip()
-                if cleaned:
-                    result[units[idx - 1].unit_id] = cleaned
-        return result
 
     # Level 3: Single unit fallback without anchor
     if len(units) == 1 and content:

@@ -150,3 +150,74 @@ def test_parse_translation_response_missing_anchor_enables_partial_recovery():
     parsed = _parse_translation_response(content, units)
     assert "b1:n1" in parsed
     assert "b2:n1" not in parsed
+
+
+def test_parse_translation_response_unwraps_translation_container_object_and_list():
+    units = (
+        _make_unit("b1", "n1", "First paragraph."),
+        _make_unit("b2", "n1", "Second paragraph."),
+    )
+    # Single container key with string content
+    content_str = '{"translation": "[§1] 第一段\\n\\n[§2] 第二段"}'
+    parsed_str = _parse_translation_response(content_str, units)
+    assert parsed_str == {"b1:n1": "第一段", "b2:n1": "第二段"}
+
+    # Single container key with list of strings
+    content_list = '{"translation": ["[§1] 第一段", "[§2] 第二段"]}'
+    parsed_list = _parse_translation_response(content_list, units)
+    assert parsed_list == {"b1:n1": "第一段", "b2:n1": "第二段"}
+
+
+@pytest.mark.asyncio
+async def test_translate_batch_retries_on_duplicate_anchor_domain_error():
+    from unittest.mock import MagicMock
+    from easylearn.translation import TranslationService
+
+    units = (
+        _make_unit("b1", "n1", "First paragraph."),
+        _make_unit("b2", "n1", "Second paragraph."),
+    )
+
+    class MockLLM:
+        def __init__(self):
+            self.calls = 0
+
+        async def complete_json(self, messages, session_id=None, stateless=True):
+            self.calls += 1
+            if self.calls == 1:
+                # First attempt returns duplicate anchor error
+                return "[§1] 重复\n\n[§1] 重复"
+            # Second attempt returns correct anchors
+            return "[§1] 正确第一段\n\n[§2] 正确第二段"
+
+    service = TranslationService.__new__(TranslationService)
+    service.settings = MagicMock()
+    service.settings.llm.max_retries = 2
+    service.llm = MockLLM()
+
+    result = await service._translate_batch(units)
+    assert service.llm.calls == 2
+    assert result == {"b1:n1": "正确第一段", "b2:n1": "正确第二段"}
+
+
+def test_parse_translation_response_recovers_from_thought_scratchpad_with_duplicate_anchors():
+    units = (
+        _make_unit("b1", "n1", "Unit 1 source"),
+        _make_unit("b2", "n1", "Unit 2 source"),
+        _make_unit("b3", "n1", "Unit 3 source"),
+    )
+    content = (
+        "<think>\n"
+        "Drafting translation... Note that [§2] and [§3] have special formatting.\n"
+        "</think>\n\n"
+        "[§1] 译文1\n\n"
+        "[§2] 译文2\n\n"
+        "[§3] 译文3"
+    )
+    parsed = _parse_translation_response(content, units)
+    assert parsed == {
+        "b1:n1": "译文1",
+        "b2:n1": "译文2",
+        "b3:n1": "译文3",
+    }
+
